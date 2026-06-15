@@ -1,0 +1,9 @@
+[package]
+name = "omx-plugin-codex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omx-core = { path = "../omx-core" }

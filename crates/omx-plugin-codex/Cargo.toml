@@ -7,3 +7,5 @@ repository.workspace = true
 
 [dependencies]
 omx-core = { path = "../omx-core" }
+serde_json = { workspace = true }
+toml = { workspace = true }

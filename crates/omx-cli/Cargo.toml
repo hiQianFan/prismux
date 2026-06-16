@@ -6,8 +6,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+anstream = { workspace = true }
+anstyle = { workspace = true }
 anyhow = { workspace = true }
+chrono = { workspace = true }
 clap = { workspace = true }
+comfy-table = { workspace = true }
+inquire = { workspace = true }
 omx-core = { path = "../omx-core" }
 omx-plugin-codex = { path = "../omx-plugin-codex" }
 

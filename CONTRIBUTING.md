@@ -86,11 +86,64 @@ docs: explain branch strategy
 chore(ci): add cargo checks
 ```
 
+## Local Development Commands
+
+Use the stable Rust toolchain. If `cargo` is not on `PATH`, run:
+
+```sh
+export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"
+```
+
+Before finishing code changes:
+
+```sh
+cargo fmt --all
+cargo test
+cargo clippy --all-targets --all-features
+```
+
+Run the CLI from source during development:
+
+```sh
+cargo run -p omx-cli -- status
+cargo run -p omx-cli -- list
+cargo run -p omx-cli -- list codex
+```
+
+For commands that may read or write Codex state, isolate local state with
+temporary directories:
+
+```sh
+OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home cargo run -p omx-cli -- status
+OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home cargo run -p omx-cli -- list codex
+```
+
+Build local binaries:
+
+```sh
+cargo build -p omx-cli
+./target/debug/omx status
+```
+
+Build a release binary for packaging or manual distribution:
+
+```sh
+cargo build --release -p omx-cli
+./target/release/omx status
+```
+
+Install the current workspace version into Cargo's bin directory:
+
+```sh
+cargo install --path crates/omx-cli --locked
+omx status
+```
+
 ## Pull Request Checklist
 
 - `cargo fmt --all`
-- `cargo clippy --all-targets --all-features`
 - `cargo test`
+- `cargo clippy --all-targets --all-features`
 - README or docs updated when behavior changes
 - No tokens, auth payloads, or private paths committed
 

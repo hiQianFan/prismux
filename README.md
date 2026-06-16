@@ -1,37 +1,34 @@
 # OpenMux
 
-OpenMux is a local account manager for AI coding tools.
+Local Account Manager for AI Coding Tools.
 
-It is being designed around one small, reliable core: import the current login
-state from a tool such as Codex, store it locally under a friendly alias, and
-switch between accounts without making the user remember where each tool keeps
-its auth files.
+Manage, unify, and switch accounts and subscriptions across AI coding tools.
+Codex is supported today; Claude Code, Gemini CLI, and everything else can be added through plugins.
+CLI first, with room for menu bar and GUI workflows.
 
-The first milestone is a Rust core plus CLI. GUI, tray, daemon, and dynamic
-plugins can be added later without moving account switching logic out of the
-core crates.
+OpenMux 是 AI coding tools 的本地账号和订阅管理器。
 
-> Status: early scaffold. The workspace compiles and exposes the initial CLI
-> shape, but real Codex auth import/switching is not implemented yet.
+它的核心心智不是“管理 auth 文件”，而是：用户在 Codex、Claude Code、Gemini CLI 以及其他 plugin-supported tools 里有多个账号和订阅来源，希望能通过一个统一的本地 workflow 添加账号、查看平台账号池总览，并用平台内编号快速切换账号。
 
-## Goals
+> 当前状态：早期 Rust 实现。Codex 插件已经支持 `omx login codex`、`omx login codex --device-auth`、可选 alias、编号账号池、Codex account/plan metadata、重复 auth hash 检测、`omx list [platform]`、`omx use codex <number|alias>`、`omx alias`、`omx save codex` 保存当前 active auth 和基础 doctor。
 
-- Provide a simple CLI for account switching across AI coding tools.
-- Keep platform-specific behavior isolated in plugin crates.
-- Store sensitive auth material through a vault abstraction instead of printing
-  or scattering tokens in plain text.
-- Make switching safe: detect paths, back up current state, write atomically,
-  and roll back on failure.
-- Leave room for a future macOS/Windows tray app and GUI without rewriting the
-  core.
+## 目标
 
-## Non-goals
+- 用简单 CLI 管理多个 AI coding 平台的本地账号池。
+- 普通用户添加账号时走 `omx login <platform>`，由 OpenMux 调用平台官方登录流程并自动记录账号。
+- 不强制用户给账号取 alias；平台内编号是默认 selector。
+- 全局 `omx list` 是跨平台 overview，只展示平台、当前 active 账号、账号数、账号池总体可用概览、账号池 5h 剩余额度和收敛后的状态。
+- 平台明细 `omx list <platform>` 再展示每个账号的编号、active、alias、account、plan 和 availability。
+- Codex account/plan 从官方 auth JWT claims 中提取 email / plan；availability 使用 Codex backend usage endpoint 做 best-effort 查询，失败时显示 `unknown`。
+- 平台行为放在 plugin crate 中，CLI 保持薄层。
+- 替换 active auth 前备份，写入使用原子文件操作，并避免打印 raw auth payload。
 
-- OpenMux is not an API gateway or model router.
-- OpenMux is not a provider marketplace.
-- The first version will not try to support every AI tool at once.
-- Linux GUI/tray support is intentionally out of scope for the early desktop
-  plan, though the CLI should remain portable.
+## 非目标
+
+- OpenMux 不是 API gateway、model router 或 provider marketplace。
+- 当前阶段不实现 GUI、daemon、watcher 或动态插件加载。
+- 当前阶段不读取 provider 私有 API 获取额度。
+- alias 不是账号导入的必要条件。
 
 ## Workspace
 
@@ -42,144 +39,172 @@ openmux/
 │   ├── omx-core/
 │   ├── omx-plugin-codex/
 │   └── omx-cli/
-└── rust-toolchain.toml
+├── docs/
+└── openspec/
 ```
 
-- `crates/omx-core`: shared domain types, errors, reports, and platform plugin
-  interfaces.
-- `crates/omx-plugin-codex`: Codex platform adapter. This is currently a
-  scaffold and will become the first real platform implementation.
-- `crates/omx-cli`: `omx` command line frontend. It should stay thin and call
-  core/plugin APIs instead of owning business logic.
-
-Future crates may include:
-
-- `omx-vault`: system keychain / credential manager integration.
-- `omx-plugin-claude`: Claude Code adapter.
-- `omx-plugin-gemini`: Gemini CLI adapter.
-- `omx-daemon`: optional local service for tray/GUI clients.
-- `apps/desktop`: optional Tauri or native desktop frontend.
-
-## Architecture
-
-OpenMux follows a small layered design:
-
-```text
-CLI / future GUI / future tray
-        |
-        v
-platform plugins
-        |
-        v
-omx-core
-```
-
-The core crate owns shared concepts such as:
-
-- platform identity
-- account references
-- account status
-- switch reports
-- doctor reports
-- platform plugin trait
-
-Each platform plugin should own only the behavior specific to that tool:
-
-- detect whether the tool is installed
-- locate config/auth paths
-- import the currently active account
-- list stored accounts
-- switch to an account
-- run diagnostics
+- `crates/omx-core`：共享领域类型、错误、报告和平台插件 trait。
+- `crates/omx-plugin-codex`：Codex 平台适配器，负责路径解析、官方登录包装、账号池 registry、auth snapshot 和切换。
+- `crates/omx-cli`：`omx` 命令行入口，只负责命令解析和输出展示。
+- `docs/PRD.md`：产品路线和用户心智。
+- `docs/ARCHITECTURE.md`：当前 monorepo 技术架构。
+- `openspec/changes/account-pool-numbered-import/`：账号池提案、设计、任务和验收规格。
 
 ## CLI
 
-Current scaffolded commands:
+普通添加账号：
+
+```sh
+omx login codex
+```
+
+远程、SSH、容器或无浏览器环境：
+
+```sh
+omx login codex --device-auth
+```
+
+登录时顺手设置 alias，或登录后立即切换：
+
+```sh
+omx login codex --alias work
+omx login codex --use
+```
+
+查看全局总览：
 
 ```sh
 omx list
-omx current codex
-omx status
-omx import codex work
+```
+
+`omx list` 展示的是平台级 overview，而不是单个账号列表。每个平台一行，用于快速判断当前选择的账号是谁、整个账号池还剩多少总体用量、关键窗口（例如 Codex 的 `5h`）是否紧张，以及是否有账号进入 limited/exhausted 状态。
+
+查看某个平台账号池：
+
+```sh
+omx list codex
+```
+
+切换账号：
+
+```sh
+omx use codex 2
 omx use codex work
+```
+
+给账号设置 alias：
+
+```sh
+omx alias codex 2 work
+```
+
+保存当前 active auth：
+
+```sh
+omx save codex
+omx save codex --alias work
+```
+
+导入外部中转站/env 配置：
+
+```sh
+omx import codex --name apikey-fun "
+model_provider = \"codex\"
+model = \"gpt-5.5\"
+
+[model_providers.codex]
+name = \"codex\"
+base_url = \"https://api.apikey.fun\"
+wire_api = \"responses\"
+requires_openai_auth = true
+"
+```
+
+也可以导入 OpenAI-compatible KV，OpenMux 会生成 Codex profile 文件且不会把 raw API key 写入 profile：
+
+```sh
+omx import codex "
+OPENAI_API_KEY=sk-xxx
+OPENAI_BASE_URL=https://api.example.com/v1
+OPENAI_MODEL=gpt-5
+"
+```
+
+诊断：
+
+```sh
+omx status
 omx doctor
+omx doctor codex
 ```
 
-The intended command style is:
+## Development
 
-```sh
-omx import <platform> <alias>
-omx use <platform> <alias>
-omx current <platform>
-```
-
-Examples:
-
-```sh
-omx import codex work
-omx use codex personal
-omx current codex
-```
-
-## Development Setup
-
-Install Rust with `rustup`, then use the stable toolchain:
+安装 Rust stable toolchain：
 
 ```sh
 rustup default stable
 rustup component add rustfmt clippy
 ```
 
-This repository includes `rust-toolchain.toml` so Cargo should select stable
-automatically.
-
-Build and test:
-
-```sh
-cargo build
-cargo test
-cargo clippy --all-targets --all-features
-cargo fmt --all
-```
-
-Run the CLI during development:
-
-```sh
-cargo run -p omx-cli -- list
-cargo run -p omx-cli -- status
-cargo run -p omx-cli -- doctor
-```
-
-If `cargo` is not on your PATH after installing Homebrew `rustup`, make sure the
-active toolchain bin directory is available in your shell:
+如果当前 shell 找不到 `cargo`，可以临时加入 stable toolchain：
 
 ```sh
 export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"
 ```
 
-## Safety Principles
+常用检查，提交代码前至少跑一遍：
 
-OpenMux will deal with auth files and tokens, so the core should be conservative:
+```sh
+cargo fmt --all
+cargo test
+cargo clippy --all-targets --all-features
+```
 
-- Do not print tokens or raw auth payloads.
-- Do not store sensitive auth material in the registry.
-- Prefer system credential stores for secrets.
-- Use atomic writes when replacing a tool's active auth file.
-- Back up existing active auth before switching.
-- Roll back if a switch operation fails partway through.
-- Keep `doctor` output useful without leaking private data.
+开发阶段直接运行 CLI：
 
-## Roadmap
+```sh
+cargo run -p omx-cli -- list
+cargo run -p omx-cli -- list codex
+cargo run -p omx-cli -- status
+```
 
-1. Implement Codex detection and auth path discovery.
-2. Add local account registry.
-3. Add import/list/use/current for Codex.
-4. Add backups, atomic writes, and rollback.
-5. Add a vault abstraction for sensitive auth material.
-6. Add `doctor` checks for common path and permission problems.
-7. Add Claude Code as the second platform plugin.
-8. Decide whether the first desktop frontend should be Tauri or native
-   macOS/Windows apps.
+涉及 Codex auth 的手动检查建议隔离状态目录，避免误写真实账号文件：
+
+```sh
+OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home cargo run -p omx-cli -- status
+OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home cargo run -p omx-cli -- list codex
+```
+
+本地编译 debug binary：
+
+```sh
+cargo build -p omx-cli
+./target/debug/omx status
+```
+
+打包 release binary：
+
+```sh
+cargo build --release -p omx-cli
+./target/release/omx status
+```
+
+把当前 workspace 的 `omx` 安装到 Cargo bin 目录，方便像普通 CLI 一样执行：
+
+```sh
+cargo install --path crates/omx-cli --locked
+omx status
+```
+
+## Safety
+
+- 不打印 token 或 raw auth payload。
+- registry 只保存 metadata，不保存 raw auth。
+- auth snapshot、backup、registry 写入时使用私有权限。
+- 切换 active auth 前先备份已有 auth 文件。
+- 替换 auth 文件和 registry 时使用原子写入。
+- 遇到未来版本 registry schema 时拒绝继续写入。
 
 ## License
 

@@ -1,0 +1,31 @@
+# 任务
+
+- [x] 更新 core domain types，支持 platform pool summary、account number、optional alias、optional account/plan metadata 和 availability state。
+- [x] 更新 CLI 命令形态：
+      - `omx login <platform> [--device-auth] [--alias <alias>] [--use]`
+      - `omx save <platform> [--alias <alias>]`
+      - `omx list [platform]`
+      - `omx use <platform> <selector>`
+      - `omx alias <platform> <selector> <alias>`
+- [x] 建立 Codex numbered account-pool registry schema。
+- [x] 实现 Codex login flow：临时 `CODEX_HOME`、运行 `codex login`、支持 `--device-auth`、登录后自动记录账号。
+- [x] 实现 `--alias` 和 `--use` login options。
+- [x] 在 Codex login/save 中实现 content-hash 重复检测。
+- [x] 保留 Codex save 作为恢复/高级路径，支持保存当前 active auth。
+- [x] 实现 selector resolution：先按 number，再按 alias。
+- [x] 将 `omx list` 更新为克制的全平台 overview。
+- [x] 实现 `omx list codex` 平台明细视图。
+- [x] 增加 alias set 支持，并拒绝全数字 alias。
+- [x] 保留安全切换行为：auth 内容变化时先备份、原子写入、私有权限、active/previous tracking。
+- [x] 增加测试：
+      - `login codex` 成功后分配 `#1`；
+      - 第二个不同 auth login 会分配 `#2`；
+      - `login codex --device-auth` 会调用 device auth 登录参数；
+      - `login codex --alias work` 会保存 alias；
+      - `login codex --use` 会登录后切换 active；
+      - 重复 login/save 会更新已有账号而不是追加；
+      - 按 number 切换；
+      - 按 alias 切换；
+      - 拒绝全数字 alias。
+- [x] 更新 README、PRD、architecture docs 和 changelog，使其匹配新的命令流程。
+- [x] 运行 `cargo fmt --all`、`cargo test --locked` 和 `cargo clippy --all-targets --all-features`。

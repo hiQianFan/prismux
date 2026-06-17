@@ -458,6 +458,7 @@ dependencies = [
  "comfy-table",
  "inquire",
  "omx-core",
+ "omx-plugin-claude",
  "omx-plugin-codex",
 ]
 
@@ -467,6 +468,16 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "thiserror",
+]
+
+[[package]]
+name = "omx-plugin-claude"
+version = "0.1.0"
+dependencies = [
+ "omx-core",
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]

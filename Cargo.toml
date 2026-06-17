@@ -3,6 +3,7 @@ resolver = "3"
 members = [
   "crates/omx-core",
   "crates/omx-plugin-codex",
+  "crates/omx-plugin-claude",
   "crates/omx-cli",
 ]
 

@@ -14,6 +14,7 @@ clap = { workspace = true }
 comfy-table = { workspace = true }
 inquire = { workspace = true }
 omx-core = { path = "../omx-core" }
+omx-plugin-claude = { path = "../omx-plugin-claude" }
 omx-plugin-codex = { path = "../omx-plugin-codex" }
 
 [[bin]]

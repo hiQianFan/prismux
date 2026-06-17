@@ -10,7 +10,7 @@ OpenMux 是 AI coding tools 的本地账号和订阅管理器。
 
 它的核心心智不是“管理 auth 文件”，而是：用户在 Codex、Claude Code、Gemini CLI 以及其他 plugin-supported tools 里有多个账号和订阅来源，希望能通过一个统一的本地 workflow 添加账号、查看平台账号池总览，并用平台内编号快速切换账号。
 
-> 当前状态：早期 Rust 实现。Codex 插件已经支持 `omx login codex`、`omx login codex --device-auth`、可选 alias、编号账号池、Codex account/plan metadata、重复 auth hash 检测、`omx list [platform]`、`omx use codex <number|alias>`、`omx alias`、`omx save codex` 保存当前 active auth 和基础 doctor。
+> 当前状态：早期 Rust 实现。Codex 插件已经支持 `omx login codex`、`omx login codex --device-auth`、可选 alias、编号账号池、Codex account/plan metadata、重复 auth hash 检测、`omx list [platform]`、`omx use codex <number|alias>`、`omx alias`、`omx save codex` 保存当前 active auth 和基础 doctor。Claude Code 已支持中转/API profile 导入与切换，并支持 OAuth account snapshot 导入与切换；macOS 使用 Keychain backend，非 macOS 或显式 `CLAUDE_CONFIG_DIR` 使用 plaintext `.credentials.json` backend。
 
 ## 目标
 
@@ -38,13 +38,15 @@ openmux/
 ├── crates/
 │   ├── omx-core/
 │   ├── omx-plugin-codex/
+│   ├── omx-plugin-claude/
 │   └── omx-cli/
 ├── docs/
 └── openspec/
 ```
 
-- `crates/omx-core`：共享领域类型、错误、报告和平台插件 trait。
+- `crates/omx-core`：共享领域类型、错误、报告、profile/account capability 和安全 storage helper。
 - `crates/omx-plugin-codex`：Codex 平台适配器，负责路径解析、官方登录包装、账号池 registry、auth snapshot 和切换。
+- `crates/omx-plugin-claude`：Claude Code 平台适配器，负责 profile settings env 切换，以及 Keychain/plaintext OAuth account snapshot 导入/恢复。
 - `crates/omx-cli`：`omx` 命令行入口，只负责命令解析和输出展示。
 - `docs/PRD.md`：产品路线和用户心智。
 - `docs/ARCHITECTURE.md`：当前 monorepo 技术架构。
@@ -69,6 +71,8 @@ omx login codex --device-auth
 ```sh
 omx login codex --alias work
 omx login codex --use
+omx login claude --alias work
+omx login claude --use
 ```
 
 查看全局总览：
@@ -83,6 +87,7 @@ omx list
 
 ```sh
 omx list codex
+omx list claude
 ```
 
 切换账号：
@@ -130,6 +135,27 @@ OPENAI_MODEL=gpt-5
 "
 ```
 
+Claude Code 的中转/API profile 与 OAuth account 是两个不同层次。profile 写入 `settings.json` 的 `env`，不会替换 Claude.ai 登录凭据：
+
+```sh
+omx import claude --name gateway-work "
+ANTHROPIC_BASE_URL=https://gateway.example.com
+ANTHROPIC_AUTH_TOKEN=secret
+ANTHROPIC_MODEL=sonnet
+"
+omx use claude gateway-work
+```
+
+Claude OAuth account 也走统一的 `claude` 入口。`omx login claude` 会调用官方 Claude Code 登录流程，登录成功后自动导入 account snapshot；`omx import claude` 有配置内容时导入中转/API profile，没有配置内容时导入本机已有官方登录产物。`omx list claude` 会分组展示 accounts 和 profiles，但使用同一组连续选择编号；例如两个 account 后面的第一个 profile 会显示为 `#3`。切换时 `omx use claude <selector>` 会在当前列表编号、account alias 和 profile name 中自动推断；如果 alias/name 同时命中两者，会拒绝并要求改成唯一名称。列表编号是当前展示编号，不是底层持久 ID；脚本中建议优先使用稳定 alias/profile name。OpenMux 不实现自己的 Anthropic OAuth token exchange，也不调用 Anthropic 私有 endpoint；macOS 默认读写 Keychain，非 macOS 或显式 `CLAUDE_CONFIG_DIR` 读写 `<claude-home>/.credentials.json`：
+
+```sh
+omx login claude --alias work
+omx import claude --name work
+omx list claude
+omx use claude 3
+omx use claude work
+```
+
 诊断：
 
 ```sh
@@ -174,6 +200,7 @@ cargo run -p omx-cli -- status
 ```sh
 OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home cargo run -p omx-cli -- status
 OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home cargo run -p omx-cli -- list codex
+OMUX_STATE_ROOT=/tmp/openmux-state CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p omx-cli -- list claude
 ```
 
 本地编译 debug binary：
@@ -204,6 +231,7 @@ omx status
 - auth snapshot、backup、registry 写入时使用私有权限。
 - 切换 active auth 前先备份已有 auth 文件。
 - 替换 auth 文件和 registry 时使用原子写入。
+- Claude profile 和 Claude OAuth account 底层分开管理，但 CLI 使用统一 `claude` 入口；selector 唯一命中 profile 时只修改 settings env，唯一命中 account 时才替换 OAuth credential。
 - 遇到未来版本 registry schema 时拒绝继续写入。
 
 ## License

@@ -278,6 +278,15 @@ ANTHROPIC_MODEL=claude-sonnet-4-5
 
 Profile 命名规则应尽量贴近中转站身份：显式 `--name` 优先；未提供时优先从 `base_url` host 推断，例如 `https://api.apikey.fun/v1` 生成 `api-apikey-fun`；再回退到 `model_provider` 或 provider id。
 
+Claude Code 需要额外区分 profile 和 OAuth account：
+
+- `omx import claude` 导入中转/API profile，只写 Claude Code user `settings.json` 的 `env`。
+- `omx login claude --alias work` 调用官方 Claude Code 登录流程，并在登录成功后自动导入 OAuth account snapshot。
+- `omx import claude` 在没有配置内容时从本机已有官方 Claude Code 登录产物导入 OAuth account snapshot。
+- `omx use claude <selector>` 在 account/profile 中自动推断，唯一命中 profile 时只切换 profile，唯一命中 account 时只恢复 OAuth credential snapshot 和 `oauthAccount` metadata。
+- 如果 selector 同时命中 account 和 profile，OpenMux 必须报歧义错误，不静默选择。
+- 当前实现支持 macOS Keychain backend 和 plaintext `.credentials.json` backend；Keychain 读写必须通过独立 backend，禁止在日志、错误或命令行参数中暴露 payload。
+
 ### 诊断和恢复
 
 用户运行：
@@ -320,12 +329,14 @@ omx use codex 2
 ### Login / Save / Import
 
 - `omx login <platform>` 是普通用户添加账号的主路径。
+- `omx login claude` 不是 OpenMux 自研 OAuth flow；它包装官方 Claude Code CLI 登录，登录完成后导入本机 credential snapshot。
 - `omx login <platform> --device-auth` 支持远程/无浏览器环境的设备授权登录模式；它只是选择 provider 官方登录方式，不改变账号池记录、编号、重复检测和切换语义。
 - `omx login <platform> --alias <alias>` 可以在登录成功后顺手设置 alias。
 - `omx login <platform> --use` 可以在登录成功后立刻切换到新账号。
 - `omx save <platform>` 是恢复/高级路径，用于保存当前已经存在的 active account。
 - `omx save <platform> --file <path>` 和 `omx save <platform> --dir <path>` 是未来恢复/迁移能力。
 - `omx import <platform> "<TOML-or-KV>"` 用于导入外部中转站或 provider/profile 配置，配置内容放在命令最后。
+- `omx import claude [--name <name>]` 在没有外部 KV/TOML 内容时用于导入本机已有 Claude Code OAuth account snapshot。
 - `save` 和 `import` 都不得打印 raw auth content 或 raw API key。
 - login/save 都应尽可能避免重复账号。
 - login/save 创建新账号时分配下一个平台内编号。
@@ -341,11 +352,15 @@ omx use codex 2
 
 ### Use
 
-- `omx use <platform> <selector>` 切换某个平台的 active auth。
-- selector 首先支持 account number 和 alias。
+- `omx use <platform> <selector>` 切换某个平台的 active account 或 profile。
+- 对于聚合平台，数字 selector 按 `omx list <platform>` 当前展示编号解析；展示编号由 accounts 在前、profiles 在后连续生成，不等同于底层 registry 持久编号。
+- 非数字 selector 支持 account alias 和 profile name；唯一命中时自动执行对应切换。
+- 非数字 selector 同时命中 account 和 profile 时必须报歧义错误，要求用户改成唯一 alias/profile name。
+- 聚合平台在用户心智上同一时间只能有一个 active target；切换 account 时 profile 不再显示为 active，切换 profile 时 account 不再显示为 active。
 - 后续可以支持 `next`、previous account、identity、`best` 或 fuzzy matching。
 - switch 必须在替换前备份当前 auth state。
 - switch 必须在平台支持时使用 atomic writes。
+- Claude profile switch 和 Claude OAuth account switch 在 CLI 上使用统一 `claude` 入口，但底层能力、registry、snapshot apply 和回滚逻辑必须分离。
 
 ### Capacity
 

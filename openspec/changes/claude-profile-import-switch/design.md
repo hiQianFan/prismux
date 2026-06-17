@@ -6,7 +6,7 @@ Claude Code 与 Codex 的关键差异在认证存储：
 
 - Codex 当前实现依赖 `CODEX_HOME/auth.json`，可以通过 snapshot + 原子替换实现账号切换。
 - Claude Code 源码说明一方 OAuth 凭据由 secure storage 管理：
-  - macOS：`security` CLI 读写 Keychain generic password；
+  - macOS：Keychain generic password；
   - 非 macOS：`<claude-home>/.credentials.json`，权限 `0600`；
   - secure storage payload 中的关键字段是 `claudeAiOauth`，包含 `accessToken`、`refreshToken`、`expiresAt`、`scopes`、`subscriptionType`、`rateLimitTier`；
   - global config 中的 `oauthAccount` 保存 `accountUuid`、`organizationUuid`、email、display name、billing/subscription metadata。
@@ -48,7 +48,31 @@ Claude Platform
       active: true
 ```
 
-第一阶段 `omx list claude` 展示 profiles。第二阶段新增 `omx list claude-account` 或在 `omx list claude --accounts` 中展示 OAuth accounts；默认输出只展示安全 metadata，不输出 token、refresh token 或完整 credential JSON。
+`omx list claude` 同屏展示 profiles 和 OAuth accounts。默认输出只展示安全 metadata，不输出 token、refresh token 或完整 credential JSON。
+
+## Core 与 Plugin API 设计
+
+Claude 不复用 Codex 早期的 “account first, profile fallback” 模式。OpenMux core 需要提供以下稳定边界：
+
+- `PlatformCapabilities`：plugin 声明是否支持 accounts、account login、account save、profiles、profile import、account import。CLI 只展示和调用已声明能力。
+- profile 模型：`ProfileRef` / `ConfigProfile` 至少表达 `platform`、`number`、`name`、`active`、`provider/base_url/model`、`auth_type`。Claude profile 必须有编号；Codex profile 可以先用 `None` 表达来自工具 home 的无编号 profile，后续迁移到 numbered profile registry。
+- account/profile 聚合模型：OAuth account 与 profile 底层 registry 和 snapshot apply 逻辑分离，但 CLI 使用统一平台入口。`omx list claude` 分组展示 accounts 与 profiles，并按 accounts 在前、profiles 在后的顺序生成当前列表选择编号；`omx use claude <number>` 按该展示编号选择目标。非数字 selector 在 account alias 与 profile name 中自动推断；唯一命中时执行对应切换，同时命中时返回歧义错误。
+- active target 互斥：聚合平台的用户心智是同一时间只有一个 active target。切换 profile 后 account registry active 必须清空或在展示层被抑制；切换 account 后 profile registry active 必须清空或在展示层被抑制，避免 `omx list <platform>` 同时出现 account 与 profile 两个 active marker。
+- storage helper：core 提供私有目录、私有原子写入、snapshot hash、backup helper、路径展示和时间戳。plugin 只实现平台语义，不重复实现权限和原子写入细节。
+- selector 规则：数字 selector 只代表当前列表展示编号，不代表底层 registry 持久编号；如果同一命令空间内 name/alias 产生歧义，必须返回歧义错误，不静默选择第一个匹配项。
+
+这让后续 Claude、Gemini 或其他 plugin 可以复用 OpenMux 的 CLI 能力和安全 I/O 能力，但仍保持平台逻辑独立。plugin 开发者只需要实现：路径发现、输入解析、metadata 提取、snapshot apply、doctor 检查；不需要重新设计 registry 权限、hash 校验或 CLI 表格。
+
+## 模块边界
+
+当前落地结构按职责拆分：
+
+- `omx-core`：`account`、`profile`、`platform`、`plugin`、`report`、`storage`、`usage`，只承载跨平台领域模型和安全 I/O 原语。
+- `omx-cli`：`main`、`app`、`input`，只处理命令路由、展示、target resolver 和 import 内容读取。target resolver 从 account plugin 与 profile plugin 读取候选项，生成仅用于当前展示/选择的连续编号；底层 account/profile 持久编号不因展示编号变化而重排。
+- `omx-plugin-codex`：`plugin` 承载 Codex 语义流程，`registry_io` 承载 registry 文本编解码，`tests` 承载回归测试。
+- `omx-plugin-claude`：`plugin` 承载 Claude profile/account 语义流程，`registry_io` 承载 profile/account registry 编解码，`tests` 承载 profile、plaintext account 和 fake backend 回归测试。
+
+后续新增 plugin 时，应优先复用 `PlatformCapabilities`、`PlatformPlugin`、core storage helper 和共享展示模型；provider-specific secure storage、settings patch、profile/account parser 和官方工具调用必须留在对应 plugin 内，避免把某个平台的认证假设泄漏到 core 或 CLI。
 
 ## 路径发现
 
@@ -78,6 +102,8 @@ OpenMux state：
 ```
 
 `registry.omx` 保存 version、next number、active profile、active account、安全 metadata、snapshot path 和 secret hash。raw secret 只允许存在于私有权限 snapshot 文件，不进入 registry 和 stdout。
+
+registry 的读写格式可以先沿用 OpenMux 轻量文本格式，但实现应复用 core storage 原语，并在 apply snapshot 前统一校验 registry 记录的 hash。hash mismatch 时拒绝写入 Claude settings、`.credentials.json` 或 Keychain。
 
 ## Import Flow
 
@@ -114,10 +140,10 @@ OpenMux state：
 
 ## Use Flow
 
-`omx use claude <selector>`：
+`omx use claude <selector>` 唯一命中 profile 时：
 
-1. selector 优先解析 profile number。
-2. 再按 profile name 精确匹配。
+1. 聚合入口先由 CLI target resolver 解析 selector：数字按当前列表展示编号解析，非数字按 profile name 精确匹配。
+2. resolver 将 profile 目标翻译为底层 profile number 或 name。
 3. 读取目标 profile snapshot。
 4. 读取 `<claude-home>/settings.json`；不存在则创建最小 settings。
 5. 在写入前备份当前 settings。
@@ -129,13 +155,23 @@ OpenMux state：
 8. 更新 registry active profile。
 9. 输出 active profile 和 settings path。
 
+`omx use claude <selector>` 如果唯一命中 OAuth account，则执行 OAuth account 切换；如果同时命中 profile 和 account，则返回明确歧义错误，要求用户改成唯一 alias/profile name。
+
 ## OAuth Account Import Flow
 
-`omx import claude-account [--name <name>]`：
+`omx login claude [--alias <name>] [--use]`：
+
+1. 调用官方 Claude Code CLI：`claude auth login`。
+2. 继承当前终端 stdin/stdout/stderr，让官方 CLI 负责 browser/OAuth、PKCE、token exchange 和 secure storage 写入。
+3. 如果用户传入 `--device-auth`，OpenMux 将该模式透传给官方 CLI；若官方 CLI 不支持，由官方 CLI 返回错误。
+4. 官方登录成功后，按下面的 account import flow 读取本机 credential backend 并导入 account snapshot。
+5. 如果传入 `--use`，导入后立即切换到该 account。
+
+`omx import claude [--name <name>]` 在没有 KV/JSON/TOML 配置内容时：
 
 1. 解析 Claude home 和 user/global config path。
 2. 检测当前官方登录状态：
-   - macOS：通过受控的 Keychain 读路径读取 Claude Code secure storage payload；
+   - macOS：通过受控的 Security.framework Keychain backend 读取 Claude Code secure storage payload，不能使用会在命令行参数中暴露 payload 的写入方式；
    - 非 macOS：读取 `<claude-home>/.credentials.json`；
    - 如果只存在 `CLAUDE_CODE_OAUTH_TOKEN` 这类 inference-only env token，拒绝导入为 account，并提示它不是完整 OAuth account。
 3. 校验 payload 中存在 `claudeAiOauth.accessToken`、`refreshToken`、`expiresAt` 和 scopes。
@@ -150,7 +186,7 @@ OpenMux state：
 
 ## OAuth Account Use Flow
 
-`omx use claude-account <selector>`：
+`omx use claude <selector>` 唯一命中 OAuth account 时：
 
 1. selector 按 number/name 解析到 account。
 2. 读取目标 account snapshot，并校验 snapshot hash。
@@ -159,7 +195,7 @@ OpenMux state：
    - 非 macOS 备份 `.credentials.json`；
    - 备份 global config 中的 `oauthAccount`。
 4. 写入目标 account：
-   - macOS 使用受控 Keychain 写路径恢复 secure storage payload；
+   - macOS 使用受控 Security.framework Keychain backend 恢复 secure storage payload；该路径不会在日志、错误或进程参数中暴露 payload；
    - 非 macOS 使用原子写入恢复 `.credentials.json` 并设置 `0600`；
    - 恢复或更新 global config 的 `oauthAccount` metadata。
 5. 更新 registry active account。
@@ -171,6 +207,8 @@ OpenMux state：
 - `oauthAccount` 写入失败时必须回滚 credential snapshot，避免 token 与 metadata 不一致。
 - snapshot hash 不匹配时拒绝切换。
 - 不执行 `/login`、不打开浏览器、不调用 Anthropic 私有 endpoint。
+
+实现上 credential 写入和 registry active 更新必须视为一个事务边界：如果 credential/settings 已写入但 registry 保存失败，必须尝试回滚到写入前状态；如果回滚失败，错误必须包含 backup path 和恢复建议。
 
 ## List Flow
 
@@ -186,28 +224,24 @@ OpenMux state：
 `omx list claude`：
 
 ```text
+Claude accounts: 2 total, active work-max
+╭───┬───┬──────────┬──────────────────┬──────┬────────┬────────╮
+│ * ┆ # ┆ Name     ┆ Email            ┆ Plan ┆ 5h     ┆ Status │
+╞═══╪═══╪══════════╪══════════════════╪══════╪════════╪════════╡
+│ * ┆ 1 ┆ work-max ┆ u***@example.com ┆ Max  ┆ 66%    ┆ -      │
+│ - ┆ 2 ┆ personal ┆ p***@example.com ┆ Pro  ┆ 24%    ┆ low    │
+╰───┴───┴──────────┴──────────────────┴──────┴────────┴────────╯
+
 Claude profiles: 2 total, active gateway-work
 ╭───┬───┬──────────────┬─────────────────────────────┬──────────────┬────────╮
 │ * ┆ # ┆ Name         ┆ Base URL                    ┆ Auth         ┆ Model  │
 ╞═══╪═══╪══════════════╪═════════════════════════════╪══════════════╪════════╡
-│ * ┆ 1 ┆ gateway-work ┆ https://gateway.example.com ┆ bearer-token ┆ sonnet │
-│ - ┆ 2 ┆ api-direct   ┆ -                           ┆ api-key      ┆ -      │
+│ * ┆ 3 ┆ gateway-work ┆ https://gateway.example.com ┆ bearer-token ┆ sonnet │
+│ - ┆ 4 ┆ api-direct   ┆ -                           ┆ api-key      ┆ -      │
 ╰───┴───┴──────────────┴─────────────────────────────┴──────────────┴────────╯
 ```
 
-`omx list claude-account`：
-
-```text
-Claude accounts: 2 total, active work-max
-╭───┬───┬──────────┬──────────────────┬──────────────┬────────────╮
-│ * ┆ # ┆ Name     ┆ Email            ┆ Auth         ┆ Expires    │
-╞═══╪═══╪══════════╪══════════════════╪══════════════╪════════════╡
-│ * ┆ 1 ┆ work-max ┆ u***@example.com ┆ oauth/full   ┆ 2026-06-17 │
-│ - ┆ 2 ┆ personal ┆ p***@example.com ┆ oauth/full   ┆ 2026-06-17 │
-╰───┴───┴──────────┴──────────────────┴──────────────┴────────────╯
-```
-
-`omx list claude` 可以在第二阶段显示 profile 与 account 的 summary，但不默认展开 credential-sensitive metadata。
+`omx list claude` 默认展示 profile section 与 account section，但不展开 credential-sensitive metadata。内部 `claude-account` plugin 只作为实现边界和兼容入口，不作为主 UX。
 
 ## Phase Sequencing
 
@@ -217,7 +251,7 @@ Claude accounts: 2 total, active work-max
 
 ### Phase 2: Account Auth
 
-在 profile 逻辑稳定后实现 `claude-auth-account`。该阶段只导入本机已有的官方登录产物，不创建新的 OAuth login flow，不调用私有 endpoint。实现时需要先完成平台 credential backend 抽象、snapshot 权限策略、回滚测试和跨平台手工验证。
+在 profile 逻辑稳定后实现 `claude-auth-account`。该阶段可以包装官方 Claude Code 登录流程，但不自研 OAuth token exchange，不调用私有 endpoint。当前 Rust 实现落地 plaintext `.credentials.json` backend、macOS Security.framework Keychain backend、backend trait 和测试 fake backend；Keychain payload 不进入命令行参数、日志、错误或 registry。
 
 ## 安全规则
 

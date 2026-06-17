@@ -2,6 +2,18 @@
 
 ## ADDED Requirements
 
+### Requirement: Plugin capability 边界
+
+OpenMux SHALL 让 Claude plugin 明确声明 profile 与 account 能力，CLI SHALL 只展示和调用当前阶段支持的能力。
+
+#### Scenario: 统一入口展示 profile 与 account 能力
+
+- GIVEN Claude profile 与 OAuth account 能力均已实现
+- WHEN 用户查看 Claude 相关命令或运行 `omx list claude`
+- THEN CLI 展示 Claude profiles 和 accounts
+- AND `omx login claude` 作为 account 添加入口
+- AND `omx import claude "<KV>"` 作为 profile 添加入口。
+
 ### Requirement: Claude profile 导入
 
 OpenMux SHALL 支持通过 `omx import claude` 导入 Claude Code 中转/API profile。
@@ -35,20 +47,31 @@ OpenMux SHALL 支持通过 `omx import claude` 导入 Claude Code 中转/API pro
 
 OpenMux SHALL 支持通过 `omx use claude <selector>` 将 Claude profile 应用到 Claude Code user settings。
 
-#### Scenario: 按编号切换 profile
+#### Scenario: 按当前列表编号切换 profile
 
-- GIVEN Claude profile `#1` 已导入
-- WHEN 用户运行 `omx use claude 1`
+- GIVEN 已导入两个 Claude OAuth accounts
+- AND Claude profile `gateway-work` 已导入
+- AND `omx list claude` 将该 profile 展示为 `#3`
+- WHEN 用户运行 `omx use claude 3`
 - THEN OpenMux 将 profile 的 env 写入 `~/.claude/settings.json`
 - AND 写入前备份原 settings
 - AND 使用原子写入保存 settings
-- AND 将 profile `#1` 标记为 active。
+- AND 将 `gateway-work` 标记为 active profile。
 
 #### Scenario: 按名称切换 profile
 
 - GIVEN Claude profile `gateway-work` 已导入
 - WHEN 用户运行 `omx use claude gateway-work`
 - THEN OpenMux 将 `gateway-work` 应用为 active profile。
+
+#### Scenario: 名称不与 OAuth account selector 混用
+
+- GIVEN Claude profile `work` 已导入
+- AND Claude OAuth account alias `work` 也已导入
+- WHEN 用户运行 `omx use claude work`
+- THEN OpenMux 返回 selector 歧义错误
+- AND 不应用 profile `work`
+- AND 不切换 OAuth account。
 
 #### Scenario: 保留非 OpenMux settings
 
@@ -65,7 +88,9 @@ OpenMux SHALL 在 `omx list claude` 中展示 Claude profiles。
 
 - GIVEN 已导入两个 Claude profiles
 - WHEN 用户运行 `omx list claude`
-- THEN 输出包含 active marker、编号、名称、base URL、auth type 和 model
+- THEN 输出按 accounts 与 profiles 分组展示
+- AND profile section 包含 active marker、当前列表编号、名称、base URL、auth type 和 model
+- AND profiles 的当前列表编号接在 account 编号之后
 - AND 不输出 raw secret。
 
 ### Requirement: OAuth account switching deferred

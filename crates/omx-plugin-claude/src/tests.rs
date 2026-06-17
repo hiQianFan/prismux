@@ -116,7 +116,7 @@ fn login_runs_official_claude_cli_then_imports_account_snapshot() {
     let account = plugin
         .login(LoginOptions {
             alias: Some("work".to_string()),
-            activate: true,
+            activate: false,
             ..LoginOptions::default()
         })
         .unwrap();
@@ -129,6 +129,24 @@ fn login_runs_official_claude_cli_then_imports_account_snapshot() {
     let registry = fs::read_to_string(plugin.registry_path().unwrap()).unwrap();
     assert!(!registry.contains("login-access"));
     assert!(!registry.contains("login-refresh"));
+}
+
+#[test]
+fn claude_profile_uses_explicit_omux_profile_name_without_storing_it_as_env() {
+    let temp = test_temp_dir("claude-profile-explicit-name");
+    let plugin = ClaudePlugin::with_paths(temp.join("claude-home"), temp.join("openmux-state"));
+
+    let imported = plugin
+        .import_config(ImportConfigOptions {
+            name: None,
+            content: "OMUX_PROFILE=gateway-explicit ANTHROPIC_API_KEY=sk-test".to_string(),
+        })
+        .unwrap();
+
+    assert_eq!(imported.profile_name, "gateway-explicit");
+    let snapshot = fs::read_to_string(plugin.profile_snapshot_path(1).unwrap()).unwrap();
+    assert!(!snapshot.contains("OMUX_PROFILE"));
+    assert!(!snapshot.contains("gateway-explicit"));
 }
 
 #[test]
@@ -179,16 +197,12 @@ fn imports_and_switches_plaintext_claude_account_without_registry_token_leak() {
         .unwrap()
         .collect::<std::result::Result<Vec<_>, _>>()
         .unwrap();
-    assert!(
-        backups
-            .iter()
-            .any(|entry| entry.file_name().to_string_lossy().contains("credentials"))
-    );
-    assert!(
-        backups
-            .iter()
-            .any(|entry| entry.file_name().to_string_lossy().contains("settings"))
-    );
+    assert!(backups
+        .iter()
+        .any(|entry| entry.file_name().to_string_lossy().contains("credentials")));
+    assert!(backups
+        .iter()
+        .any(|entry| entry.file_name().to_string_lossy().contains("settings")));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -218,6 +232,81 @@ fn imports_and_switches_plaintext_claude_account_without_registry_token_leak() {
             .and_then(Value::as_str),
         Some("person@example.com")
     );
+}
+
+#[test]
+fn duplicate_claude_account_import_preserves_existing_number() {
+    let temp = test_temp_dir("claude-account-duplicate-preserves-number");
+    let claude_home = temp.join("claude-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&claude_home).unwrap();
+    fs::write(
+            claude_home.join(".credentials.json"),
+            br#"{"claudeAiOauth":{"accessToken":"access-1","refreshToken":"refresh-shared","expiresAt":1781629000,"scopes":["user:inference"]}}"#,
+        )
+        .unwrap();
+    fs::write(
+            claude_home.join(SETTINGS_FILE_NAME),
+            br#"{"oauthAccount":{"email":"person@example.com","accountUuid":"account-1","organizationUuid":"org-1"}}"#,
+        )
+        .unwrap();
+    let plugin = ClaudeAccountPlugin::with_paths(&claude_home, &state_root);
+
+    let first = plugin
+        .import_config(ImportConfigOptions {
+            name: Some("work".to_string()),
+            content: String::new(),
+        })
+        .unwrap();
+    plugin.use_target("work").unwrap();
+    fs::write(
+            claude_home.join(".credentials.json"),
+            br#"{"claudeAiOauth":{"accessToken":"access-2","refreshToken":"refresh-shared","expiresAt":1781629999,"scopes":["user:inference"]}}"#,
+        )
+        .unwrap();
+
+    let second = plugin
+        .import_config(ImportConfigOptions {
+            name: Some("work-renamed".to_string()),
+            content: String::new(),
+        })
+        .unwrap();
+
+    assert_eq!(first.number, Some(1));
+    assert_eq!(second.number, Some(1));
+    assert_eq!(plugin.list_accounts().unwrap().len(), 1);
+    assert_eq!(plugin.current().unwrap().unwrap().account.number, 1);
+}
+
+#[test]
+fn cross_registry_loader_rejects_future_schema() {
+    let temp = test_temp_dir("claude-cross-schema");
+    let claude_home = temp.join("claude-home");
+    let state_root = temp.join("openmux-state");
+    let profile_plugin = ClaudePlugin::with_paths(&claude_home, &state_root);
+    let account_plugin = ClaudeAccountPlugin::with_paths(&claude_home, &state_root);
+    fs::create_dir_all(account_plugin.platform_state_dir().unwrap()).unwrap();
+    fs::write(
+        account_plugin.registry_path().unwrap(),
+        "schema_version\t999\nactive_account_number\t1\nnext_account_number\t2\n",
+    )
+    .unwrap();
+    fs::write(
+        profile_plugin.registry_path().unwrap(),
+        "schema_version\t999\nactive_profile_number\t1\nnext_profile_number\t2\n",
+    )
+    .unwrap();
+
+    assert!(profile_plugin
+        .account_active()
+        .unwrap_err()
+        .to_string()
+        .contains("newer"));
+    assert!(account_plugin
+        .profile_active()
+        .unwrap_err()
+        .to_string()
+        .contains("newer"));
 }
 
 #[test]
@@ -315,7 +404,9 @@ fn claude_account_switch_rolls_back_credential_when_oauth_metadata_write_fails()
 
     let err = plugin.use_target("target").unwrap_err();
 
-    assert!(err.to_string().contains("credential rollback attempted"));
+    assert!(err
+        .to_string()
+        .contains("credential and profile rollback attempted"));
     let restored = fs::read_to_string(&keychain_path).unwrap();
     assert!(restored.contains("current-access"));
     assert!(!restored.contains("target-access"));

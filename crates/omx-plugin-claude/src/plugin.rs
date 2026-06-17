@@ -1,13 +1,13 @@
 use omx_core::{
+    platform_info,
+    storage::{
+        create_dir_private, data_local_dir, display_path, home_dir, io_error, read_file,
+        sha256_hex, unix_now, unix_now_nanos, write_file_atomic_private,
+    },
     AccountRef, AccountStatus, Availability, ConfigProfile, ConfigSwitchReport, DoctorCheck,
     DoctorReport, ImportConfigOptions, ImportedConfig, LoginOptions, OpenMuxError,
     PlatformCapabilities, PlatformInfo, PlatformInstall, PlatformPlugin, PlatformPoolSummary,
-    Result, SaveOptions, SwitchReport, UseReport, platform_info,
-    storage::{
-        create_dir_private, data_local_dir, display_path, home_dir, io_error, read_file,
-        set_private_file_permissions, sha256_hex, unix_now, unix_now_nanos,
-        write_file_atomic_private,
-    },
+    Result, SaveOptions, SwitchReport, UseReport,
 };
 use registry_io::{
     encode_account_registry, encode_registry, parse_account_registry, parse_registry,
@@ -415,7 +415,14 @@ impl ClaudePlugin {
         }
         let text = String::from_utf8(read_file(&path)?)
             .map_err(|err| OpenMuxError::Message(format!("{}: {err}", display_path(&path))))?;
-        parse_account_registry(&path, &text)
+        let registry = parse_account_registry(&path, &text)?;
+        if registry.schema_version > REGISTRY_SCHEMA_VERSION {
+            return Err(OpenMuxError::Message(format!(
+                "registry schema {} is newer than this OpenMux build supports",
+                registry.schema_version
+            )));
+        }
+        Ok(registry)
     }
 
     fn save_account_registry(&self, registry: &AccountRegistry) -> Result<()> {
@@ -430,15 +437,6 @@ impl ClaudePlugin {
             .load_account_registry()?
             .active_account_number
             .is_some())
-    }
-
-    fn deactivate_account(&self) -> Result<()> {
-        let mut registry = self.load_account_registry()?;
-        if registry.active_account_number.is_none() {
-            return Ok(());
-        }
-        registry.active_account_number = None;
-        self.save_account_registry(&registry)
     }
 
     fn resolve_profile<'a>(
@@ -578,8 +576,7 @@ impl ClaudePlugin {
                 if let Some(parent) = path.parent() {
                     create_dir_private(parent)?;
                 }
-                fs::copy(&settings_path, &path).map_err(|err| io_error(&path, err))?;
-                set_private_file_permissions(&path)?;
+                write_file_atomic_private(&path, current)?;
                 Some(display_path(&path))
             } else {
                 None
@@ -588,7 +585,24 @@ impl ClaudePlugin {
             None
         };
 
-        write_file_atomic_private(&settings_path, &next_bytes)?;
+        let previous_account_registry = self.load_account_registry()?;
+        let mut next_account_registry = previous_account_registry.clone();
+        next_account_registry.active_account_number = None;
+        if previous_account_registry.active_account_number.is_some() {
+            self.save_account_registry(&next_account_registry)?;
+        }
+
+        if let Err(err) = write_file_atomic_private(&settings_path, &next_bytes) {
+            let account_rollback = if previous_account_registry.active_account_number.is_some() {
+                self.save_account_registry(&previous_account_registry)
+            } else {
+                Ok(())
+            };
+            return Err(OpenMuxError::Message(format!(
+                "failed to apply Claude profile settings; account rollback: {}; error: {err}",
+                rollback_status(account_rollback)
+            )));
+        }
         registry.active_profile_number = Some(profile.number);
         if let Some(stored) = registry
             .profiles
@@ -603,16 +617,22 @@ impl ClaudePlugin {
                 None => fs::remove_file(&settings_path)
                     .map_err(|remove_err| io_error(&settings_path, remove_err)),
             };
+            let account_rollback = if previous_account_registry.active_account_number.is_some() {
+                self.save_account_registry(&previous_account_registry)
+            } else {
+                Ok(())
+            };
             return match rollback {
                 Ok(()) => Err(OpenMuxError::Message(format!(
-                    "failed to update Claude registry after applying profile; settings were rolled back: {err}"
+                    "failed to update Claude registry after applying profile; settings were rolled back; account rollback: {}; error: {err}",
+                    rollback_status(account_rollback)
                 ))),
                 Err(rollback_err) => Err(OpenMuxError::Message(format!(
-                    "failed to update Claude registry after applying profile and rollback failed: {err}; rollback error: {rollback_err}"
+                    "failed to update Claude registry after applying profile and rollback failed: {err}; rollback error: {rollback_err}; account rollback: {}",
+                    rollback_status(account_rollback)
                 ))),
             };
         }
-        self.deactivate_account()?;
 
         Ok(ConfigSwitchReport {
             platform: self.info(),
@@ -968,7 +988,14 @@ impl ClaudeAccountPlugin {
         }
         let text = String::from_utf8(read_file(&path)?)
             .map_err(|err| OpenMuxError::Message(format!("{}: {err}", display_path(&path))))?;
-        parse_registry(&path, &text)
+        let registry = parse_registry(&path, &text)?;
+        if registry.schema_version > REGISTRY_SCHEMA_VERSION {
+            return Err(OpenMuxError::Message(format!(
+                "registry schema {} is newer than this OpenMux build supports",
+                registry.schema_version
+            )));
+        }
+        Ok(registry)
     }
 
     fn save_profile_registry(&self, registry: &Registry) -> Result<()> {
@@ -983,15 +1010,6 @@ impl ClaudeAccountPlugin {
             .load_profile_registry()?
             .active_profile_number
             .is_some())
-    }
-
-    fn deactivate_profile(&self) -> Result<()> {
-        let mut registry = self.load_profile_registry()?;
-        if registry.active_profile_number.is_none() {
-            return Ok(());
-        }
-        registry.active_profile_number = None;
-        self.save_profile_registry(&registry)
     }
 
     fn account_ref(&self, account: &StoredAccount) -> AccountRef {
@@ -1073,12 +1091,8 @@ impl ClaudeAccountPlugin {
         }
 
         let account = self.import_account(options.alias)?;
-        if options.activate {
-            self.switch_to(&account.number.to_string())
-                .map(|report| report.current)
-        } else {
-            Ok(account)
-        }
+        self.switch_to(&account.number.to_string())
+            .map(|report| report.current)
     }
 
     fn import_account(&self, name: Option<String>) -> Result<AccountRef> {
@@ -1107,10 +1121,15 @@ impl ClaudeAccountPlugin {
         let snapshot_hash = sha256_hex(&credentials);
         let duplicate_key = parsed.refresh_token_hash;
         let mut registry = self.load_registry()?;
-        let existing_index = registry
-            .accounts
-            .iter()
-            .position(|account| account.snapshot_hash == snapshot_hash);
+        let existing_index = registry.accounts.iter().position(|account| {
+            account.snapshot_hash == snapshot_hash
+                || account
+                    .account_uuid_hash
+                    .as_ref()
+                    .zip(safe.account_uuid_hash.as_ref())
+                    .is_some_and(|(left, right)| left == right)
+                || account.refresh_token_hash == duplicate_key
+        });
         let number = if let Some(index) = existing_index {
             registry.accounts[index].number
         } else {
@@ -1154,16 +1173,7 @@ impl ClaudeAccountPlugin {
                 .and_then(|index| registry.accounts[index].last_activated_at_unix),
         };
 
-        if let Some(index) = existing_index.or_else(|| {
-            registry.accounts.iter().position(|account| {
-                account
-                    .account_uuid_hash
-                    .as_ref()
-                    .zip(stored.account_uuid_hash.as_ref())
-                    .is_some_and(|(left, right)| left == right)
-                    || account.refresh_token_hash == duplicate_key
-            })
-        }) {
+        if let Some(index) = existing_index {
             registry.accounts[index] = stored;
         } else {
             registry.accounts.push(stored);
@@ -1339,7 +1349,24 @@ impl PlatformPlugin for ClaudeAccountPlugin {
             None
         };
 
-        backend.write(&snapshot)?;
+        let previous_profile_registry = self.load_profile_registry()?;
+        let mut next_profile_registry = previous_profile_registry.clone();
+        next_profile_registry.active_profile_number = None;
+        if previous_profile_registry.active_profile_number.is_some() {
+            self.save_profile_registry(&next_profile_registry)?;
+        }
+
+        if let Err(err) = backend.write(&snapshot) {
+            let profile_rollback = if previous_profile_registry.active_profile_number.is_some() {
+                self.save_profile_registry(&previous_profile_registry)
+            } else {
+                Ok(())
+            };
+            return Err(OpenMuxError::Message(format!(
+                "failed to write Claude credential; profile rollback: {}; error: {err}",
+                rollback_status(profile_rollback)
+            )));
+        }
         let mut settings = current_settings
             .as_deref()
             .map(parse_settings)
@@ -1352,14 +1379,26 @@ impl PlatformPlugin for ClaudeAccountPlugin {
         #[cfg(test)]
         if self.fail_settings_write {
             let _ = backend.restore(current_credentials.as_deref());
+            let _ = if previous_profile_registry.active_profile_number.is_some() {
+                self.save_profile_registry(&previous_profile_registry)
+            } else {
+                Ok(())
+            };
             return Err(OpenMuxError::Message(
-                "failed to update Claude oauthAccount metadata; credential rollback attempted: injected settings write failure".to_string(),
+                "failed to update Claude oauthAccount metadata; credential and profile rollback attempted: injected settings write failure".to_string(),
             ));
         }
         if let Err(err) = write_file_atomic_private(&settings_path, &settings_bytes) {
-            let _ = backend.restore(current_credentials.as_deref());
+            let credential_rollback = backend.restore(current_credentials.as_deref());
+            let profile_rollback = if previous_profile_registry.active_profile_number.is_some() {
+                self.save_profile_registry(&previous_profile_registry)
+            } else {
+                Ok(())
+            };
             return Err(OpenMuxError::Message(format!(
-                "failed to update Claude oauthAccount metadata; credential rollback attempted: {err}"
+                "failed to update Claude oauthAccount metadata; credential rollback: {}; profile rollback: {}; error: {err}",
+                rollback_status(credential_rollback),
+                rollback_status(profile_rollback)
             )));
         }
 
@@ -1384,10 +1423,16 @@ impl PlatformPlugin for ClaudeAccountPlugin {
         if let Err(err) = self.save_registry(&registry) {
             let credential_rollback = backend.restore(current_credentials.as_deref());
             let settings_rollback = rollback_file(&settings_path, current_settings.as_deref());
+            let profile_rollback = if previous_profile_registry.active_profile_number.is_some() {
+                self.save_profile_registry(&previous_profile_registry)
+            } else {
+                Ok(())
+            };
             return Err(OpenMuxError::Message(format!(
-                "failed to update Claude account registry after switching; credential rollback: {}; settings rollback: {}; error: {}; backups: {}, {}",
+                "failed to update Claude account registry after switching; credential rollback: {}; settings rollback: {}; profile rollback: {}; error: {}; backups: {}, {}",
                 rollback_status(credential_rollback),
                 rollback_status(settings_rollback),
+                rollback_status(profile_rollback),
                 err,
                 credential_backup
                     .as_deref()
@@ -1399,7 +1444,6 @@ impl PlatformPlugin for ClaudeAccountPlugin {
                     .unwrap_or_else(|| "none".to_string())
             )));
         }
-        self.deactivate_profile()?;
 
         Ok(SwitchReport {
             previous,
@@ -1567,7 +1611,11 @@ fn rollback_file(path: &Path, bytes: Option<&[u8]>) -> Result<()> {
 }
 
 fn rollback_status(result: Result<()>) -> &'static str {
-    if result.is_ok() { "ok" } else { "failed" }
+    if result.is_ok() {
+        "ok"
+    } else {
+        "failed"
+    }
 }
 
 fn mask_email(value: &str) -> String {
@@ -1603,9 +1651,16 @@ fn parse_profile(content: &str, requested_name: Option<&str>) -> Result<ParsedPr
     } else {
         parse_shell_like_kv(raw)?
     };
+    let explicit_profile_name = vars
+        .iter()
+        .find(|(key, value)| {
+            (key == "OMUX_PROFILE" || key == "name" || key == "NAME") && !value.is_empty()
+        })
+        .map(|(_, value)| value.as_str());
     let env: BTreeMap<String, String> = vars
-        .into_iter()
+        .iter()
         .filter(|(key, value)| MANAGED_ENV_KEYS.contains(&key.as_str()) && !value.is_empty())
+        .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     if env.is_empty() {
         return Err(OpenMuxError::Message(
@@ -1630,7 +1685,7 @@ fn parse_profile(content: &str, requested_name: Option<&str>) -> Result<ParsedPr
     let name = resolve_profile_name(
         requested_name,
         base_url.as_deref(),
-        env.get("OMUX_PROFILE").map(String::as_str),
+        explicit_profile_name,
         "claude-profile",
     )?;
     Ok(ParsedProfile {

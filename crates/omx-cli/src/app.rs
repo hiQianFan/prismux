@@ -1,17 +1,17 @@
 use crate::input::{read_import_content, read_optional_import_content};
 use anstream::println;
 use anstyle::{AnsiColor, Style};
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
 use comfy_table::{
-    Attribute, Cell, Color, ContentArrangement, Table, modifiers::UTF8_ROUND_CORNERS,
-    presets::UTF8_FULL_CONDENSED,
+    modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL_CONDENSED, Attribute, Cell, Color,
+    ContentArrangement, Table,
 };
 use inquire::Select;
 use omx_core::{
     AccountRef, AccountStatus, ConfigProfile, ImportConfigOptions, LoginOptions, PlatformPlugin,
-    SaveOptions, UsageLimit, UsageSnapshot, UseReport,
+    SaveOptions, TargetCatalog, TargetKind, TargetResolution, UsageLimit, UsageSnapshot, UseReport,
 };
 use omx_plugin_claude::{ClaudeAccountPlugin, ClaudePlugin};
 use omx_plugin_codex::CodexPlugin;
@@ -229,7 +229,7 @@ pub fn run() -> Result<()> {
                 "Imported {display_name} account {}",
                 account_label(&account)
             ));
-            if use_account {
+            if use_account || platform == "claude" {
                 print_success(format!(
                     "Using {display_name} account {}",
                     account_label(&account)
@@ -453,25 +453,17 @@ fn aggregated_account_plugin<'a>(
 }
 
 fn public_platform_id(id: &str) -> &str {
-    if id == "claude-account" { "claude" } else { id }
+    if id == "claude-account" {
+        "claude"
+    } else {
+        id
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ImportKind {
     Account,
     Profile,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TargetKind {
-    Account,
-    Profile,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TargetResolution {
-    kind: TargetKind,
-    selector: String,
 }
 
 fn use_resolved_target(
@@ -492,108 +484,20 @@ fn resolve_target(
     account_plugin: Option<&dyn PlatformPlugin>,
     selector: &str,
 ) -> Result<TargetResolution> {
-    let catalog = TargetCatalog::load(profile_plugin, account_plugin)?;
-    catalog.resolve(profile_plugin.id(), selector)
+    let catalog = load_target_catalog(profile_plugin, account_plugin)?;
+    Ok(catalog.resolve(profile_plugin.id(), selector)?)
 }
 
-#[derive(Debug, Clone)]
-struct TargetCatalog {
-    accounts: Vec<AccountStatus>,
-    profiles: Vec<ConfigProfile>,
-    candidates: Vec<TargetCandidate>,
-}
-
-#[derive(Debug, Clone)]
-struct TargetCandidate {
-    display_index: u32,
-    kind: TargetKind,
-    selector: String,
-    name: Option<String>,
-}
-
-impl TargetCatalog {
-    fn load(
-        profile_plugin: &dyn PlatformPlugin,
-        account_plugin: Option<&dyn PlatformPlugin>,
-    ) -> Result<Self> {
-        let accounts = match account_plugin {
-            Some(plugin) => plugin.list_accounts()?,
-            None => profile_plugin.list_accounts()?,
-        };
-        let profiles = profile_plugin.list_configs()?;
-        Ok(Self::new(accounts, profiles))
-    }
-
-    fn new(accounts: Vec<AccountStatus>, profiles: Vec<ConfigProfile>) -> Self {
-        let mut next_index = 1_u32;
-        let mut candidates = Vec::with_capacity(accounts.len() + profiles.len());
-
-        for status in &accounts {
-            candidates.push(TargetCandidate {
-                display_index: next_index,
-                kind: TargetKind::Account,
-                selector: status.account.number.to_string(),
-                name: status.account.alias.clone(),
-            });
-            next_index += 1;
-        }
-
-        for profile in &profiles {
-            candidates.push(TargetCandidate {
-                display_index: next_index,
-                kind: TargetKind::Profile,
-                selector: profile
-                    .number
-                    .map(|number| number.to_string())
-                    .unwrap_or_else(|| profile.name.clone()),
-                name: Some(profile.name.clone()),
-            });
-            next_index += 1;
-        }
-
-        Self {
-            accounts,
-            profiles,
-            candidates,
-        }
-    }
-
-    fn resolve(&self, platform_id: &str, selector: &str) -> Result<TargetResolution> {
-        let matches: Vec<&TargetCandidate> = if let Ok(number) = selector.parse::<u32>() {
-            self.candidates
-                .iter()
-                .filter(|candidate| candidate.display_index == number)
-                .collect()
-        } else {
-            self.candidates
-                .iter()
-                .filter(|candidate| candidate.name.as_deref() == Some(selector))
-                .collect()
-        };
-
-        match matches.as_slice() {
-            [candidate] => Ok(TargetResolution {
-                kind: candidate.kind,
-                selector: candidate.selector.clone(),
-            }),
-            [] => bail!(
-                "`{selector}` did not match any account or profile for `{}`",
-                platform_id
-            ),
-            candidates => bail!(
-                "`{selector}` is ambiguous for `{platform_id}`: matched {} target(s). Use a unique alias/profile name.",
-                candidates.len()
-            ),
-        }
-    }
-
-    fn account_display_index(&self, account_index: usize) -> u32 {
-        account_index as u32 + 1
-    }
-
-    fn profile_display_index(&self, profile_index: usize) -> u32 {
-        self.accounts.len() as u32 + profile_index as u32 + 1
-    }
+fn load_target_catalog(
+    profile_plugin: &dyn PlatformPlugin,
+    account_plugin: Option<&dyn PlatformPlugin>,
+) -> Result<TargetCatalog> {
+    let accounts = match account_plugin {
+        Some(plugin) => plugin.list_accounts()?,
+        None => profile_plugin.list_accounts()?,
+    };
+    let profiles = profile_plugin.list_configs()?;
+    Ok(TargetCatalog::new(accounts, profiles))
 }
 
 fn target_choice_from_account(
@@ -654,13 +558,20 @@ fn print_aggregated_platform(
     profile_plugin: &dyn PlatformPlugin,
     account_plugin: Option<&dyn PlatformPlugin>,
 ) -> Result<()> {
-    let catalog = TargetCatalog::load(profile_plugin, account_plugin)?;
+    let catalog = load_target_catalog(profile_plugin, account_plugin)?;
     print_account_section_from_statuses(profile_plugin.name(), &catalog.accounts, Some(1));
     print_platform_profiles_with_start(
         profile_plugin,
         &catalog.profiles,
         Some(catalog.accounts.len() as u32 + 1),
     );
+    if catalog.accounts.is_empty() && catalog.profiles.is_empty() {
+        print_hint(format!("Add account: omx login {}", profile_plugin.id()));
+        print_hint(format!(
+            "Add profile: omx import {} --file <path>",
+            profile_plugin.id()
+        ));
+    }
     Ok(())
 }
 
@@ -699,13 +610,20 @@ fn print_aggregated_current(
 fn print_platform_accounts(plugin: &dyn PlatformPlugin) -> Result<()> {
     let capabilities = plugin.capabilities();
     if capabilities.accounts && capabilities.profiles {
-        let catalog = TargetCatalog::load(plugin, None)?;
+        let catalog = load_target_catalog(plugin, None)?;
         print_account_section_from_statuses(plugin.name(), &catalog.accounts, Some(1));
         print_platform_profiles_with_start(
             plugin,
             &catalog.profiles,
             Some(catalog.accounts.len() as u32 + 1),
         );
+        if catalog.accounts.is_empty() && catalog.profiles.is_empty() {
+            print_hint(format!("Add account: omx login {}", plugin.id()));
+            print_hint(format!(
+                "Add profile: omx import {} --file <path>",
+                plugin.id()
+            ));
+        }
         return Ok(());
     }
 
@@ -1286,11 +1204,9 @@ mod tests {
         let choice = target_choice_from_account(&status, 1, false);
 
         assert_eq!(choice.selector, "2");
-        assert!(
-            choice
-                .label
-                .starts_with("* #1 account work · team@example.com · Pro")
-        );
+        assert!(choice
+            .label
+            .starts_with("* #1 account work · team@example.com · Pro"));
         assert!(!choice.label.contains("overall"));
         assert!(choice.label.contains("5h 66% ("));
         assert!(choice.label.contains("weekly 88% ("));
@@ -1316,9 +1232,7 @@ mod tests {
 
         assert_eq!(
             header,
-            vec![
-                "*", "#", "Alias", "Account", "Plan", "5h", "Weekly", "Status"
-            ]
+            vec!["*", "#", "Alias", "Account", "Plan", "5h", "Weekly", "Status"]
         );
     }
 

@@ -5,6 +5,7 @@ mod plugin;
 mod profile;
 mod report;
 pub mod storage;
+mod target;
 mod usage;
 
 pub use account::*;
@@ -13,4 +14,5 @@ pub use platform::*;
 pub use plugin::*;
 pub use profile::*;
 pub use report::*;
+pub use target::*;
 pub use usage::*;

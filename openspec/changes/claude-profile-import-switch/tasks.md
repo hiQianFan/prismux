@@ -8,6 +8,7 @@
 - [x] 0.6 为 alias/profile 同名、snapshot hash mismatch、registry 保存失败回滚和临时登录目录清理增加回归测试。
 - [x] 0.7 聚合平台 UX：`omx list/use/import claude` 统一展示和分发 account/profile，selector 唯一命中时自动推断，同时命中时返回歧义错误。
 - [x] 0.8 实现聚合 target resolver：`omx list claude` 分组展示 accounts/profiles 但使用连续选择编号，`omx use claude <number>` 按当前展示编号解析到底层 account/profile selector。
+- [x] 0.9 将统一 target 选择规范抽取到 `omx-core::TargetCatalog`，后续平台必须复用同一套展示编号、selector 解析和歧义规则。
 
 ## 1. Phase 1 - Claude Profile 基础
 
@@ -53,8 +54,9 @@
 - [x] 5.2 实现导入输出：编号、名称、脱敏 email/organization、expiresAt，不输出 token。
 - [x] 5.3 实现 `omx use claude <selector>` 唯一命中 account 时：校验 snapshot hash、备份当前 credential 和 `oauthAccount`、写入目标 account、更新 active account。
 - [x] 5.4 实现 account 切换失败回滚：credential 写入失败、`oauthAccount` 写入失败、hash mismatch 均有明确错误和恢复路径。
-- [x] 5.5 实现 `omx list claude` 的 account section，展示 active marker、编号、名称、脱敏 email、auth type、expiresAt。
+- [x] 5.5 实现 `omx list claude` 的 account section，展示 active marker、编号、名称、脱敏 email 和安全状态，不输出 credential-sensitive metadata。
 - [x] 5.6 更新全局 `omx list`，在第二阶段展示 Claude active account 和 account 数量。
+- [x] 5.7 修复 Claude 官方 login 的 active 语义：官方登录成功后登记 account active，并清空 profile active marker。
 
 ## 6. Phase 2 - Account 测试
 
@@ -64,6 +66,7 @@
 - [x] 6.4 增加 account 切换备份、原子写入、`0600` 权限和回滚测试。
 - [x] 6.5 增加 `oauthAccount` metadata 保留未知字段和写入失败回滚测试。
 - [x] 6.6 增加 snapshot hash mismatch 拒绝切换测试。
+- [x] 6.7 增加 Claude account 重复导入保留编号、cross-registry future schema 拒绝和 explicit profile name 回归测试。
 
 ## 7. 文档与验证
 

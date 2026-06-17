@@ -77,7 +77,17 @@ UsageLimit
   raw_provider_key: optional
 ```
 
-账号编号是平台内 selector。`codex #1` 和 `claude #1` 没有身份上的关联。alias 是可选 metadata，不是账号创建前置条件。
+account 持久编号是平台内 account selector。`codex account #1` 和 `claude account #1` 没有身份上的关联。alias 是可选 metadata，不是账号创建前置条件。
+
+当平台同时暴露 accounts 和 profiles 时，CLI 不直接把用户输入的数字传给插件。`omx-core::TargetCatalog` 会把 accounts 和 profiles 聚合成当前列表 target：
+
+1. accounts 按插件返回顺序编号；
+2. profiles 接在 accounts 后继续编号；
+3. 数字 selector 按当前展示编号解析；
+4. 非数字 selector 按 account alias 与 profile name 精确匹配；
+5. 命中多个 target 时返回歧义错误。
+
+展示编号不写入 registry，也不改变 account/profile 持久编号。plugin 仍只接收自己的底层 selector：account number/alias，或 profile number/name。
 
 `availability` 是给旧展示和单账号保守状态判断使用的摘要字段，不能替代结构化 `usage`。平台插件应该把原始 provider quota 映射成多个 `UsageLimit`，再由最紧的可用窗口派生单账号 summary；CLI overview 的 `Overall` 则优先对结构化 limit 的剩余额度做账号池聚合。`refreshed_at_unix` 记录 OpenMux 本次获取 usage 的本地时间，不是 provider quota reset time。Codex 当前会把 `primary_window`、`secondary_window` 和 `additional_rate_limits` 解析为多个 limit，并通过 `limit_window_seconds` 识别 `5h`、`weekly` 等窗口；Claude/Gemini 后续可以复用同一模型，但保留各自的 scope、kind 和 raw provider key。provider-specific 字段只有在跨平台语义明确后才进入 core，否则应该留在插件内部或 detail formatter 中。
 
@@ -181,7 +191,7 @@ Claude profile import 使用 `omx import claude "<KV-or-JSON-or-TOML>"`。插件
 
 ## Claude OAuth Account Flow
 
-`omx login claude --alias <name>` 通过官方 Claude Code CLI 执行 `claude auth login`。OpenMux 继承当前终端 stdin/stdout/stderr，让官方流程负责 browser/OAuth、PKCE、token exchange 和 secure storage 写入。官方登录成功后，OpenMux 读取本机 credential backend 并导入 account snapshot。
+`omx login claude --alias <name>` 通过官方 Claude Code CLI 执行 `claude auth login`。OpenMux 继承当前终端 stdin/stdout/stderr，让官方流程负责 browser/OAuth、PKCE、token exchange 和 secure storage 写入。官方登录成功后，真实 Claude credential 已经被官方 CLI 激活；OpenMux 随即读取本机 credential backend、导入 account snapshot、登记该 account 为 active，并清空同平台 profile active marker。
 
 `omx import claude --name <name>` 在没有外部 KV/TOML/JSON 内容时读取本机已有官方 Claude Code credential：
 
@@ -200,18 +210,19 @@ Claude profile import 使用 `omx import claude "<KV-or-JSON-or-TOML>"`。插件
 4. 原子写入目标 `.credentials.json`，并恢复 `settings.json.oauthAccount`。
 5. 更新 `account-registry.omx` active account；registry 更新失败时尝试回滚 credential/settings。
 
-`omx use claude <selector>` 在 account/profile 中自动推断。数字 selector 按当前 `omx list claude` 的分组展示编号解析：accounts 先编号，profiles 接在后面；该编号只属于 CLI 展示/选择层，不写入 registry，也不改变底层 account/profile 持久编号。非数字 selector 按 account alias 与 profile name 精确匹配；唯一命中 profile 时只 patch `settings.json.env`，唯一命中 OAuth account 时恢复 credential snapshot 和 `oauthAccount` metadata，同时命中时返回歧义错误。内部仍保留独立 account/profile plugin 逻辑，CLI 只做统一入口聚合。
+`omx use claude <selector>` 在 account/profile 中自动推断。数字 selector 按 `TargetCatalog` 当前展示编号解析：accounts 先编号，profiles 接在后面；该编号只属于展示/选择层，不写入 registry，也不改变底层 account/profile 持久编号。非数字 selector 按 account alias 与 profile name 精确匹配；唯一命中 profile 时只 patch `settings.json.env`，唯一命中 OAuth account 时恢复 credential snapshot 和 `oauthAccount` metadata，同时命中时返回歧义错误。内部仍保留独立 account/profile plugin 逻辑，CLI 只做统一入口聚合。
 
 ## Switch Flow
 
 `omx use codex <selector>`：
 
-1. selector 优先按平台内编号解析。
-2. 如果不是编号，则按 alias 精确匹配。
-3. 读取目标账号 snapshot。
-4. 如果当前 active auth 存在且内容不同，先写入 backup。
-5. 将目标 snapshot 原子写入 Codex `auth.json`。
+1. 如果 Codex 同时有 accounts 和 profiles，CLI 先用 `TargetCatalog` 将数字展示编号翻译为底层 account selector 或 profile selector。
+2. 命中 account 时读取目标账号 snapshot。
+3. 如果当前 active auth 存在且内容不同，先写入 backup。
+4. 将目标 snapshot 原子写入 Codex `auth.json`。
+5. 如果存在 OpenMux 保存的 default config snapshot，则恢复 `config.toml`，避免旧 profile 继续显示 active。
 6. 更新 active number、previous active number 和 activation timestamp。
+7. 命中 profile 时切换 `config.toml`，并清空 account active marker，保证同一平台最多一个 active target。
 
 ## Safety Rules
 

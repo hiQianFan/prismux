@@ -175,7 +175,7 @@ omx use codex -
 
 selector 含义：
 
-- `2`：按平台内编号切换。
+- `2`：在只有 account 的平台中按账号编号切换；在同时有 accounts 和 profiles 的平台中按 `omx list <platform>` 当前展示编号切换。
 - `work`：按用户设置的 alias 切换。
 - `next`：切到该平台下一个可用账号。
 - `-`：切回上一个 active 账号。
@@ -308,31 +308,39 @@ doctor 应该回答：
 
 ## 功能需求
 
-### 平台账号池
+### 平台 Target Catalog
 
-- OpenMux 将账号存放在 platform-specific pools 下。
-- 每个账号拥有平台内编号，这是用户未命名账号时的默认 selector。
+- OpenMux 将 account 和 profile 都视为平台下可切换的 target。
+- account/profile 的底层 registry、snapshot 和 apply 逻辑必须按平台能力分离；CLI 层只做 target catalog 聚合、编号展示和 selector 分发。
+- `omx list <platform>` 是数字 selector 的唯一来源。只要平台同时有 accounts 和 profiles，列表必须按 accounts 在前、profiles 在后的顺序生成连续展示编号。
+- 展示编号是当前列表编号，不是持久 ID；新增/删除 target 后可以动态变化。底层 account/profile 持久编号不得因为展示编号变化而重排。
+- profile 没有持久编号时，仍必须获得当前列表展示编号，并可通过该编号执行 `omx use <platform> <number>`。
+- 非数字 selector 按 account alias 和 profile name 精确匹配；同时命中时必须报歧义错误，不静默偏向 account 或 profile。
+- 聚合平台同一时间只能有一个 active target。切换 account 后 profile 不再显示 active；切换 profile 后 account 不再显示 active。
+- 每个账号拥有平台内持久编号，这是 account-only 平台或底层 account plugin 的默认 selector。
 - 每个账号可以有 alias。
 - 每个账号可以有检测到的 account metadata，例如 email、account id、team 或 provider-specific account context；plan 单独展示。Codex 第一版从 `id_token` claims 提取 email 和 ChatGPT plan，并在 account 不可用时回退到 account id。
 - 每个账号可以有 usage/capacity metadata。
 
-账号编号是平台内位置，例如 `codex #1`、`codex #2`、`claude #1`。它们用于用户选择，不代表 provider identity。
+账号持久编号是平台内位置，例如 `codex account #1`、`claude account #1`。它们不代表 provider identity。展示编号是 CLI 当前列表的选择编号，例如 `codex profiles` 可以在 3 个 accounts 后显示为 `#4`。
 
 例如：
 
 ```sh
 omx use codex 2
+omx use codex 4
 ```
 
-含义是“将 Codex 切换到第二个已导入的 Codex 账号”。
+如果 `omx list codex` 中 `#2` 是账号，则切换到该账号；如果 `#4` 是 profile，则切换到该 profile。
 
 ### Login / Save / Import
 
 - `omx login <platform>` 是普通用户添加账号的主路径。
-- `omx login claude` 不是 OpenMux 自研 OAuth flow；它包装官方 Claude Code CLI 登录，登录完成后导入本机 credential snapshot。
+- `omx login claude` 不是 OpenMux 自研 OAuth flow；它包装官方 Claude Code CLI 登录。官方登录成功会改写真实 Claude credential，因此 OpenMux 导入 snapshot 后必须登记该 account 为 active，并清除同平台 profile active marker。
 - `omx login <platform> --device-auth` 支持远程/无浏览器环境的设备授权登录模式；它只是选择 provider 官方登录方式，不改变账号池记录、编号、重复检测和切换语义。
 - `omx login <platform> --alias <alias>` 可以在登录成功后顺手设置 alias。
 - `omx login <platform> --use` 可以在登录成功后立刻切换到新账号。
+- 对 Claude Code，官方登录流程本身会激活新 credential，`--use` 只是显式表达用户意图，不改变最终 active 结果。
 - `omx save <platform>` 是恢复/高级路径，用于保存当前已经存在的 active account。
 - `omx save <platform> --file <path>` 和 `omx save <platform> --dir <path>` 是未来恢复/迁移能力。
 - `omx import <platform> "<TOML-or-KV>"` 用于导入外部中转站或 provider/profile 配置，配置内容放在命令最后。
@@ -346,6 +354,8 @@ omx use codex 2
 
 - `omx list` 展示全平台 overview。
 - `omx list <platform>` 展示平台 detail。
+- 同时有 accounts 和 profiles 的平台必须分组展示，但使用同一组连续编号。
+- 空 account/profile section 仍展示空表格，避免在同一平台下出现结构跳变。
 - 默认输出优先使用 human-readable table。
 - 全局 overview 只展示紧凑可用概览；缺失的 usage 字段展示 `-`。
 - 更细的 reset、freshness、source 和诊断信息应放到平台 detail 或 doctor。
@@ -353,7 +363,7 @@ omx use codex 2
 ### Use
 
 - `omx use <platform> <selector>` 切换某个平台的 active account 或 profile。
-- 对于聚合平台，数字 selector 按 `omx list <platform>` 当前展示编号解析；展示编号由 accounts 在前、profiles 在后连续生成，不等同于底层 registry 持久编号。
+- 对于同时具备 accounts 和 profiles 的平台，数字 selector 按 `omx list <platform>` 当前展示编号解析；展示编号由 accounts 在前、profiles 在后连续生成，不等同于底层 registry 持久编号。
 - 非数字 selector 支持 account alias 和 profile name；唯一命中时自动执行对应切换。
 - 非数字 selector 同时命中 account 和 profile 时必须报歧义错误，要求用户改成唯一 alias/profile name。
 - 聚合平台在用户心智上同一时间只能有一个 active target；切换 account 时 profile 不再显示为 active，切换 profile 时 account 不再显示为 active。

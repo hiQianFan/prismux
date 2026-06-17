@@ -11,6 +11,8 @@ OpenMux SHALL 支持从本机已有 Claude Code 官方登录产物导入 Claude.
 - THEN OpenMux 调用官方 Claude Code CLI 登录流程
 - AND 官方登录成功后导入当前 credential backend 中的 `claudeAiOauth` snapshot
 - AND account 名称为 `work`
+- AND 将该 account 标记为 active
+- AND 清空同平台 active profile marker
 - AND registry 不保存 raw access token 或 refresh token。
 
 #### Scenario: 登录后立即切换

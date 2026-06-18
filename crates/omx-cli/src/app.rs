@@ -1,12 +1,12 @@
 use crate::input::{read_import_content, read_optional_import_content};
 use anstream::println;
 use anstyle::{AnsiColor, Style};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
 use comfy_table::{
-    modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL_CONDENSED, Attribute, Cell, Color,
-    ContentArrangement, Table,
+    Attribute, Cell, Color, ContentArrangement, Table, modifiers::UTF8_ROUND_CORNERS,
+    presets::UTF8_FULL_CONDENSED,
 };
 use inquire::Select;
 use omx_core::{
@@ -453,11 +453,7 @@ fn aggregated_account_plugin<'a>(
 }
 
 fn public_platform_id(id: &str) -> &str {
-    if id == "claude-account" {
-        "claude"
-    } else {
-        id
-    }
+    if id == "claude-account" { "claude" } else { id }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1204,9 +1200,11 @@ mod tests {
         let choice = target_choice_from_account(&status, 1, false);
 
         assert_eq!(choice.selector, "2");
-        assert!(choice
-            .label
-            .starts_with("* #1 account work · team@example.com · Pro"));
+        assert!(
+            choice
+                .label
+                .starts_with("* #1 account work · team@example.com · Pro")
+        );
         assert!(!choice.label.contains("overall"));
         assert!(choice.label.contains("5h 66% ("));
         assert!(choice.label.contains("weekly 88% ("));
@@ -1232,7 +1230,9 @@ mod tests {
 
         assert_eq!(
             header,
-            vec!["*", "#", "Alias", "Account", "Plan", "5h", "Weekly", "Status"]
+            vec![
+                "*", "#", "Alias", "Account", "Plan", "5h", "Weekly", "Status"
+            ]
         );
     }
 

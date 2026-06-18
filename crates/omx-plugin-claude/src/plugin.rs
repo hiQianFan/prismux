@@ -1,13 +1,12 @@
 use omx_core::{
-    platform_info,
+    AccountRef, AccountStatus, Availability, ConfigProfile, ConfigSwitchReport, DoctorCheck,
+    DoctorReport, ImportConfigOptions, ImportedConfig, LoginOptions, OpenMuxError,
+    PlatformCapabilities, PlatformInfo, PlatformInstall, PlatformPlugin, PlatformPoolSummary,
+    Result, SaveOptions, SwitchReport, UseReport, platform_info,
     storage::{
         create_dir_private, data_local_dir, display_path, home_dir, io_error, read_file,
         sha256_hex, unix_now, unix_now_nanos, write_file_atomic_private,
     },
-    AccountRef, AccountStatus, Availability, ConfigProfile, ConfigSwitchReport, DoctorCheck,
-    DoctorReport, ImportConfigOptions, ImportedConfig, LoginOptions, OpenMuxError,
-    PlatformCapabilities, PlatformInfo, PlatformInstall, PlatformPlugin, PlatformPoolSummary,
-    Result, SaveOptions, SwitchReport, UseReport,
 };
 use registry_io::{
     encode_account_registry, encode_registry, parse_account_registry, parse_registry,
@@ -1611,11 +1610,7 @@ fn rollback_file(path: &Path, bytes: Option<&[u8]>) -> Result<()> {
 }
 
 fn rollback_status(result: Result<()>) -> &'static str {
-    if result.is_ok() {
-        "ok"
-    } else {
-        "failed"
-    }
+    if result.is_ok() { "ok" } else { "failed" }
 }
 
 fn mask_email(value: &str) -> String {

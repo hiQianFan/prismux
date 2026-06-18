@@ -197,12 +197,16 @@ fn imports_and_switches_plaintext_claude_account_without_registry_token_leak() {
         .unwrap()
         .collect::<std::result::Result<Vec<_>, _>>()
         .unwrap();
-    assert!(backups
-        .iter()
-        .any(|entry| entry.file_name().to_string_lossy().contains("credentials")));
-    assert!(backups
-        .iter()
-        .any(|entry| entry.file_name().to_string_lossy().contains("settings")));
+    assert!(
+        backups
+            .iter()
+            .any(|entry| entry.file_name().to_string_lossy().contains("credentials"))
+    );
+    assert!(
+        backups
+            .iter()
+            .any(|entry| entry.file_name().to_string_lossy().contains("settings"))
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -297,16 +301,20 @@ fn cross_registry_loader_rejects_future_schema() {
     )
     .unwrap();
 
-    assert!(profile_plugin
-        .account_active()
-        .unwrap_err()
-        .to_string()
-        .contains("newer"));
-    assert!(account_plugin
-        .profile_active()
-        .unwrap_err()
-        .to_string()
-        .contains("newer"));
+    assert!(
+        profile_plugin
+            .account_active()
+            .unwrap_err()
+            .to_string()
+            .contains("newer")
+    );
+    assert!(
+        account_plugin
+            .profile_active()
+            .unwrap_err()
+            .to_string()
+            .contains("newer")
+    );
 }
 
 #[test]
@@ -404,9 +412,10 @@ fn claude_account_switch_rolls_back_credential_when_oauth_metadata_write_fails()
 
     let err = plugin.use_target("target").unwrap_err();
 
-    assert!(err
-        .to_string()
-        .contains("credential and profile rollback attempted"));
+    assert!(
+        err.to_string()
+            .contains("credential and profile rollback attempted")
+    );
     let restored = fs::read_to_string(&keychain_path).unwrap();
     assert!(restored.contains("current-access"));
     assert!(!restored.contains("target-access"));

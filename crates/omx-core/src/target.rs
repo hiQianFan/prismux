@@ -110,7 +110,7 @@ impl TargetCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{platform_info, AccountRef, Availability, AvailabilityState};
+    use crate::{AccountRef, Availability, AvailabilityState, platform_info};
 
     #[test]
     fn resolves_profile_by_display_index_after_accounts() {

@@ -1,5 +1,15 @@
 /target/
 
+# Local agent/tooling directories. These may exist in a maintainer workspace,
+# but they are not part of the public OpenMux source surface.
+/.agents/
+/.claude/
+/.codex/
+/.gemini/
+/_bmad/
+/_bmad-output/
+/design-artifacts/
+
 # Editor and OS files
 /.idea/
 /.vscode/
@@ -17,3 +27,6 @@
 
 # Local OpenMux runtime data used during manual testing
 /.openmux/
+/dist/
+/artifacts/
+/release/

@@ -1,0 +1,200 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Prepare release
+    runs-on: macos-latest
+    outputs:
+      release: ${{ steps.prepare.outputs.release }}
+      version: ${{ steps.prepare.outputs.version }}
+      tag: ${{ steps.prepare.outputs.tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect release version
+        id: prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(awk '
+            $0 == "[workspace.package]" { in_workspace = 1; next }
+            /^\[/ && $0 != "[workspace.package]" { in_workspace = 0 }
+            in_workspace && /^version = / {
+              gsub(/"/, "", $3)
+              print $3
+              exit
+            }
+          ' Cargo.toml)"
+          if [[ -z "${version}" ]]; then
+            echo "Could not read workspace package version from Cargo.toml" >&2
+            exit 1
+          fi
+
+          tag="v${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Tag ${tag} already exists; skipping release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          python3 - "$tag" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          tag = sys.argv[1]
+          text = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          pattern = re.compile(
+              rf"^##\s+{re.escape(tag)}(?:\s+-\s+.+)?\s*$"
+              rf"(?P<body>.*?)(?=^##\s+|\Z)",
+              re.MULTILINE | re.DOTALL,
+          )
+          match = pattern.search(text)
+          if not match:
+              raise SystemExit(f"CHANGELOG.md does not contain a section for {tag}")
+          body = match.group("body").strip()
+          if not body:
+              raise SystemExit(f"CHANGELOG.md section for {tag} is empty")
+          Path("release-notes.md").write_text(body + "\n", encoding="utf-8")
+          PY
+
+          echo "release=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release notes
+        if: steps.prepare.outputs.release == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+
+  preflight:
+    name: Preflight
+    runs-on: macos-latest
+    needs: prepare
+    if: needs.prepare.outputs.release == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  build:
+    name: Build ${{ matrix.suffix }}
+    needs:
+      - prepare
+      - preflight
+    if: needs.prepare.outputs.release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suffix: macos-arm64
+            runner: macos-14
+          - suffix: macos-x86_64
+            runner: macos-13
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release -p omx-cli --locked
+
+      - name: Self-test binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./target/release/omx --version
+          OMUX_STATE_ROOT="${RUNNER_TEMP}/openmux-state" \
+          CODEX_HOME="${RUNNER_TEMP}/codex-home" \
+          CLAUDE_CONFIG_DIR="${RUNNER_TEMP}/claude-home" \
+          ./target/release/omx status
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="openmux-${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}"
+          mkdir -p "dist/${artifact}"
+          cp target/release/omx "dist/${artifact}/omx"
+          tar -C dist -czf "${artifact}.tar.gz" "${artifact}"
+          shasum -a 256 "${artifact}.tar.gz" > "${artifact}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openmux-${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}
+          path: |
+            openmux-${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}.tar.gz
+            openmux-${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}.sha256
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: macos-latest
+    needs:
+      - prepare
+      - build
+    if: needs.prepare.outputs.release == 'true'
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Prepare release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find release-artifacts -name '*.tar.gz' -exec cp {} dist/ \;
+          find release-artifacts -name 'release-notes.md' -exec cp {} release-notes.md \;
+          (cd dist && shasum -a 256 *.tar.gz > SHA256SUMS)
+
+      - name: Create release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${{ needs.prepare.outputs.tag }}" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "${{ needs.prepare.outputs.tag }}" \
+            --notes-file release-notes.md

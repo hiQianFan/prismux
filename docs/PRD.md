@@ -258,7 +258,7 @@ Codex/OpenAI-compatible 输入示例：
 
 ```sh
 omx import codex "
-OPENAI_API_KEY=sk-xxx
+OPENAI_API_KEY=<your-openai-api-key>
 OPENAI_BASE_URL=https://api.example.com/v1
 OPENAI_MODEL=gpt-5
 "
@@ -268,7 +268,7 @@ Claude Code 输入示例：
 
 ```sh
 omx import claude "
-ANTHROPIC_API_KEY=sk-ant-xxx
+ANTHROPIC_API_KEY=<your-anthropic-api-key>
 ANTHROPIC_BASE_URL=https://api.example.com
 ANTHROPIC_MODEL=claude-sonnet-4-5
 "

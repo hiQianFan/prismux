@@ -1,20 +1,16 @@
 # Contributing
 
-OpenMux is currently an early-stage Rust workspace. The project should stay
-small and predictable while the account-switching core is being built.
+OpenMux is an early-stage Rust CLI. Keep changes small, reviewable, and explicit
+about credential safety.
 
-## Branch Strategy
+## Branch Model
 
-Use GitHub Flow for now:
+OpenMux uses GitHub Flow:
 
 - `main` is the only long-lived branch.
 - Create short-lived branches from `main`.
-- Merge back to `main` through pull requests.
+- Open pull requests back into `main`.
 - Delete feature branches after merge.
-
-This is intentionally lighter than Git Flow. OpenMux does not yet have a stable
-release cadence, multiple maintained release lines, or a large team that would
-justify permanent `develop` and `release/*` branches.
 
 Recommended branch names:
 
@@ -30,79 +26,74 @@ chore/<description>
 Examples:
 
 ```text
-feature/codex-import
-feature/account-registry
-bugfix/codex-auth-path
-docs/readme-roadmap
-chore/ci
+docs/prepare-github-launch
+chore/release-workflow
+bugfix/claude-account-rollback
+feature/gemini-plugin
 ```
 
-When the project starts publishing stable releases, release branches can be
-introduced only when needed:
+`main` should be protected in GitHub:
 
-```text
-release/v0.1.0
-hotfix/v0.1.1-auth-backup
-```
-
-## Versioning
-
-OpenMux uses Semantic Versioning.
-
-During `0.x`, the public API and CLI may still change:
-
-- `0.MINOR.0`: meaningful feature milestone or breaking CLI/core change
-- `0.MINOR.PATCH`: bug fix, docs, or internal improvement
-- `1.0.0`: stable CLI surface and stable core plugin API
-
-Version numbers should stay synchronized through the workspace package version
-in the root `Cargo.toml`.
-
-Release tags should use the `v` prefix:
-
-```text
-v0.1.0
-v0.1.1
-v1.0.0
-```
-
-Suggested early milestones:
-
-- `v0.1.0`: Codex detect/import/list/use/current/doctor
-- `v0.2.0`: vault abstraction and safer secret storage
-- `v0.3.0`: Claude Code plugin
-- `v0.4.0`: quota/status model
-- `v1.0.0`: stable CLI and plugin API
+- require pull requests before merge
+- require CI status checks
+- block force pushes
+- block branch deletion
+- prefer squash merge
 
 ## Commit Style
 
 Use Conventional Commits where practical:
 
 ```text
-feat(core): add account registry
-feat(codex): detect auth path
-fix(cli): return non-zero code for unknown platform
-docs: explain branch strategy
-chore(ci): add cargo checks
+feat(codex): add account import
+fix(claude): roll back credentials on settings failure
+docs(readme): add macos install guide
+chore(ci): add release workflow
+refactor(core): centralize target resolution
 ```
 
-## Local Development Commands
+## Versioning
 
-Use the stable Rust toolchain. If `cargo` is not on `PATH`, run:
+OpenMux uses Semantic Versioning.
+
+During `0.x`, the CLI and internal plugin API may still change:
+
+- `0.MINOR.0`: meaningful feature milestone or breaking CLI/core change
+- `0.MINOR.PATCH`: bug fix, documentation, CI, or packaging fix
+- `1.0.0`: stable CLI behavior and stable core plugin API
+
+The release workflow publishes when a PR changes the workspace version and
+`CHANGELOG.md` contains the matching version section.
+
+Current roadmap shape:
+
+- `v0.1.0`: macOS public release, Codex + Claude account/profile support
+- `v0.2.0`: Linux validation and official Linux binaries
+- `v0.3.0`: Windows validation and official Windows binaries
+- `v0.4.0`: Gemini or broader provider/profile support
+- `v1.0.0`: stable CLI and plugin API
+
+## Rust Toolchain
+
+Use the stable Rust toolchain selected by `rust-toolchain.toml`. OpenMux does not
+currently guarantee a minimum supported Rust version.
 
 ```sh
-export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"
+rustup default stable
+rustup component add rustfmt clippy
 ```
 
-Before finishing code changes:
+## Local Checks
+
+Before finishing a code change:
 
 ```sh
 cargo fmt --all
-cargo test
-cargo clippy --all-targets --all-features
+cargo test --locked
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-Run the CLI from source during development:
+Run from source:
 
 ```sh
 cargo run -p omx-cli -- status
@@ -110,51 +101,29 @@ cargo run -p omx-cli -- list
 cargo run -p omx-cli -- list codex
 ```
 
-For commands that may read or write Codex state, isolate local state with
-temporary directories:
+Use isolated state for manual checks:
 
 ```sh
-OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home cargo run -p omx-cli -- status
-OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home cargo run -p omx-cli -- list codex
-```
-
-Build local binaries:
-
-```sh
-cargo build -p omx-cli
-./target/debug/omx status
-```
-
-Build a release binary for packaging or manual distribution:
-
-```sh
-cargo build --release -p omx-cli
-./target/release/omx status
-```
-
-Install the current workspace version into Cargo's bin directory:
-
-```sh
-cargo install --path crates/omx-cli --locked
-omx status
+OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p omx-cli -- status
 ```
 
 ## Pull Request Checklist
 
-- `cargo fmt --all`
-- `cargo test`
-- `cargo clippy --all-targets --all-features`
-- README or docs updated when behavior changes
-- No tokens, auth payloads, or private paths committed
+- CI passes.
+- Local checks have been run or the PR explains why not.
+- README/docs are updated when behavior changes.
+- `CHANGELOG.md` is updated for user-visible changes.
+- No tokens, auth payloads, snapshots, backups, or private credential files are committed.
+- Changes touching auth replacement explain backup/rollback behavior.
 
 ## Safety Rules
 
-OpenMux will operate on auth files and account state. Changes touching account
-switching should be conservative:
+OpenMux operates on auth files and local account state. Be conservative:
 
 - Never print raw tokens.
-- Never store raw auth material in the registry.
+- Never store raw auth material in registry metadata.
 - Back up active auth state before replacing it.
 - Use atomic writes for active auth files.
+- Verify snapshot hashes before switching.
 - Roll back when a switch fails halfway.
 - Keep diagnostics useful without exposing secrets.

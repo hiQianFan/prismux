@@ -11,7 +11,8 @@ use comfy_table::{
 use inquire::Select;
 use omx_core::{
     AccountRef, AccountStatus, ConfigProfile, ImportConfigOptions, LoginOptions, PlatformPlugin,
-    SaveOptions, TargetCatalog, TargetKind, TargetResolution, UsageLimit, UsageSnapshot, UseReport,
+    RemoveReport, SaveOptions, TargetCatalog, TargetKind, TargetResolution, UsageLimit,
+    UsageSnapshot, UseReport,
 };
 use omx_plugin_claude::{ClaudeAccountPlugin, ClaudePlugin};
 use omx_plugin_codex::CodexPlugin;
@@ -82,6 +83,13 @@ enum Command {
         /// Platform id, for example: codex.
         platform: String,
         /// Account number or alias. If omitted, OpenMux will ask you to choose.
+        selector: Option<String>,
+    },
+    /// Remove a managed account or profile from OpenMux.
+    Remove {
+        /// Platform id, for example: codex.
+        platform: String,
+        /// Account/profile number, alias, or profile name. If omitted, OpenMux will ask you to choose.
         selector: Option<String>,
     },
     /// Set or replace a local alias for an account.
@@ -385,6 +393,52 @@ pub fn run() -> Result<()> {
                 }
             }
         }
+        Command::Remove { platform, selector } => {
+            let plugin = find_plugin(&plugins, &platform)?;
+            let account_plugin = aggregated_account_plugin(plugin, &plugins)?;
+            let uses_target_catalog = account_plugin.is_some()
+                || (plugin.capabilities().accounts && plugin.capabilities().profiles);
+            let selector = match selector {
+                Some(selector) => selector,
+                None => choose_target(plugin, account_plugin, uses_target_catalog)?,
+            };
+            let report = if uses_target_catalog {
+                remove_resolved_target(plugin, account_plugin, &selector)?
+            } else {
+                plugin.remove_target(&selector)?
+            };
+            match report {
+                RemoveReport::Account(report) => {
+                    print_success(format!(
+                        "Removed {} account {}",
+                        plugin.name(),
+                        account_label(&report.account)
+                    ));
+                    if report.was_active {
+                        print_hint(
+                            "Removed account was active; no replacement account was selected.",
+                        );
+                    }
+                    for path in report.removed_paths {
+                        print_hint(format!("Removed: {path}"));
+                    }
+                }
+                RemoveReport::Config(report) => {
+                    print_success(format!(
+                        "Removed {} profile `{}`",
+                        report.profile.platform.name, report.profile.name
+                    ));
+                    if report.was_active {
+                        print_hint(
+                            "Removed profile was active; no replacement profile was selected.",
+                        );
+                    }
+                    for path in report.removed_paths {
+                        print_hint(format!("Removed: {path}"));
+                    }
+                }
+            }
+        }
         Command::Alias {
             platform,
             selector,
@@ -472,6 +526,19 @@ fn use_resolved_target(
     match target.kind {
         TargetKind::Account => Ok(account_plugin.use_target(&target.selector)?),
         TargetKind::Profile => Ok(profile_plugin.use_target(&target.selector)?),
+    }
+}
+
+fn remove_resolved_target(
+    profile_plugin: &dyn PlatformPlugin,
+    account_plugin: Option<&dyn PlatformPlugin>,
+    selector: &str,
+) -> Result<RemoveReport> {
+    let target = resolve_target(profile_plugin, account_plugin, selector)?;
+    let account_plugin = account_plugin.unwrap_or(profile_plugin);
+    match target.kind {
+        TargetKind::Account => Ok(account_plugin.remove_target(&target.selector)?),
+        TargetKind::Profile => Ok(profile_plugin.remove_target(&target.selector)?),
     }
 }
 
@@ -733,6 +800,7 @@ fn account_table_header() -> Vec<Cell> {
         header_cell("Plan"),
         header_cell("5h"),
         header_cell("Weekly"),
+        header_cell("Refresh"),
         header_cell("Status"),
     ]
 }
@@ -752,6 +820,7 @@ fn account_table_row(status: &AccountStatus, display_number: u32) -> Vec<Cell> {
         usage_badge(&usage_limit_with_reset_display(
             usage.and_then(|usage| find_window_limit(usage, 604_800)),
         )),
+        muted_cell(usage_refresh_display(usage)),
         status_badge(&usage_status_display(usage, &status.availability)),
     ]
 }
@@ -898,6 +967,13 @@ fn usage_status_display(
         .first()
         .map(|diagnostic| diagnostic.code.clone())
         .unwrap_or_else(|| availability_state_display(&availability.state).to_string())
+}
+
+fn usage_refresh_display(usage: Option<&UsageSnapshot>) -> String {
+    usage
+        .and_then(|usage| usage.refreshed_at_unix)
+        .map(reset_time_display)
+        .unwrap_or_else(|| "-".to_string())
 }
 
 fn availability_state_display(state: &omx_core::AvailabilityState) -> &'static str {
@@ -1118,6 +1194,7 @@ fn paint(style: Style, value: impl AsRef<str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
     use omx_core::{Availability, AvailabilityState, UsageLimitKind, UsageLimitScope, UsageSource};
 
     #[test]
@@ -1231,9 +1308,19 @@ mod tests {
         assert_eq!(
             header,
             vec![
-                "*", "#", "Alias", "Account", "Plan", "5h", "Weekly", "Status"
+                "*", "#", "Alias", "Account", "Plan", "5h", "Weekly", "Refresh", "Status"
             ]
         );
+    }
+
+    #[test]
+    fn help_includes_remove_command() {
+        let mut help = Vec::new();
+        Cli::command().write_long_help(&mut help).unwrap();
+        let help = String::from_utf8(help).unwrap();
+
+        assert!(help.contains("remove"));
+        assert!(help.contains("Remove a managed account or profile"));
     }
 
     #[test]

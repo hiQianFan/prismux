@@ -1,15 +1,13 @@
 use omx_core::{
-    AccountRef, AccountStatus, Availability, ConfigProfile, ConfigSwitchReport, DoctorCheck,
-    DoctorReport, ImportConfigOptions, ImportedConfig, LoginOptions, OpenMuxError,
+    AccountRecord, AccountRef, AccountStatus, Availability, ConfigProfile, ConfigSwitchReport,
+    DoctorCheck, DoctorReport, ImportConfigOptions, ImportedConfig, LoginOptions, OpenMuxError,
     PlatformCapabilities, PlatformInfo, PlatformInstall, PlatformPlugin, PlatformPoolSummary,
-    Result, SaveOptions, SwitchReport, UseReport, platform_info,
+    ProfileRecord, RemoveReport, RemovedAccount, RemovedConfig, Result, SaveOptions, StateStore,
+    SwitchReport, UpsertAccount, UpsertProfile, UseReport, platform_info,
     storage::{
         create_dir_private, data_local_dir, display_path, home_dir, io_error, read_file,
         sha256_hex, unix_now, unix_now_nanos, write_file_atomic_private,
     },
-};
-use registry_io::{
-    encode_account_registry, encode_registry, parse_account_registry, parse_registry,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -20,10 +18,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-#[path = "registry_io.rs"]
-mod registry_io;
-
-const REGISTRY_SCHEMA_VERSION: u32 = 1;
+const CLAUDE_STATE_PROVIDER: &str = "claude";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const MANAGED_ENV_KEYS: &[&str] = &[
     "ANTHROPIC_BASE_URL",
@@ -202,53 +197,6 @@ impl CredentialBackend for MacOsKeychainCredentialBackend {
     }
 }
 
-#[derive(Debug, Clone)]
-struct Registry {
-    schema_version: u32,
-    active_profile_number: Option<u32>,
-    next_profile_number: u32,
-    profiles: Vec<StoredProfile>,
-}
-
-#[derive(Debug, Clone)]
-struct StoredProfile {
-    number: u32,
-    name: String,
-    auth_type: String,
-    base_url: Option<String>,
-    model: Option<String>,
-    secret_hash: String,
-    snapshot_path: String,
-    imported_at_unix: u64,
-    last_activated_at_unix: Option<u64>,
-}
-
-#[derive(Debug, Clone)]
-struct AccountRegistry {
-    schema_version: u32,
-    active_account_number: Option<u32>,
-    next_account_number: u32,
-    accounts: Vec<StoredAccount>,
-}
-
-#[derive(Debug, Clone)]
-struct StoredAccount {
-    number: u32,
-    name: String,
-    email: Option<String>,
-    account_uuid_hash: Option<String>,
-    organization_uuid_hash: Option<String>,
-    scopes: Option<String>,
-    expires_at_unix: i64,
-    refresh_token_hash: String,
-    snapshot_hash: String,
-    snapshot_path: String,
-    oauth_account_path: String,
-    partial_metadata: bool,
-    imported_at_unix: u64,
-    last_activated_at_unix: Option<u64>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct ProfileSnapshot {
     env: BTreeMap<String, String>,
@@ -261,28 +209,6 @@ struct ParsedProfile {
     base_url: Option<String>,
     model: Option<String>,
     env: BTreeMap<String, String>,
-}
-
-impl Default for Registry {
-    fn default() -> Self {
-        Self {
-            schema_version: REGISTRY_SCHEMA_VERSION,
-            active_profile_number: None,
-            next_profile_number: 1,
-            profiles: Vec::new(),
-        }
-    }
-}
-
-impl Default for AccountRegistry {
-    fn default() -> Self {
-        Self {
-            schema_version: REGISTRY_SCHEMA_VERSION,
-            active_account_number: None,
-            next_account_number: 1,
-            accounts: Vec::new(),
-        }
-    }
 }
 
 impl Default for ClaudeAccountPlugin {
@@ -359,123 +285,50 @@ impl ClaudePlugin {
         Ok(self.platform_state_dir()?.join("backups"))
     }
 
-    fn registry_path(&self) -> Result<PathBuf> {
-        Ok(self.platform_state_dir()?.join("registry.omx"))
-    }
-
-    fn account_registry_path(&self) -> Result<PathBuf> {
-        Ok(self.platform_state_dir()?.join("account-registry.omx"))
+    fn state_store(&self) -> Result<StateStore> {
+        StateStore::open(&self.state_root()?)
     }
 
     fn settings_path(&self) -> Result<PathBuf> {
         Ok(self.claude_home()?.join(SETTINGS_FILE_NAME))
     }
 
-    fn profile_snapshot_path(&self, number: u32) -> Result<PathBuf> {
-        Ok(self.profiles_dir()?.join(format!("{number}.profile.json")))
-    }
-
-    fn load_registry(&self) -> Result<Registry> {
-        let path = self.registry_path()?;
-        if !path.exists() {
-            return Ok(Registry::default());
-        }
-
-        let text = String::from_utf8(read_file(&path)?)
-            .map_err(|err| OpenMuxError::Message(format!("{}: {err}", display_path(&path))))?;
-        let mut registry = parse_registry(&path, &text)?;
-        if registry.schema_version > REGISTRY_SCHEMA_VERSION {
-            return Err(OpenMuxError::Message(format!(
-                "registry schema {} is newer than this OpenMux build supports",
-                registry.schema_version
-            )));
-        }
-        registry.profiles.sort_by_key(|profile| profile.number);
-        registry.next_profile_number = registry.next_profile_number.max(
-            registry
-                .profiles
-                .iter()
-                .map(|profile| profile.number)
-                .max()
-                .unwrap_or(0)
-                + 1,
-        );
-        Ok(registry)
-    }
-
-    fn save_registry(&self, registry: &Registry) -> Result<()> {
-        write_file_atomic_private(&self.registry_path()?, encode_registry(registry).as_bytes())
-    }
-
-    fn load_account_registry(&self) -> Result<AccountRegistry> {
-        let path = self.account_registry_path()?;
-        if !path.exists() {
-            return Ok(AccountRegistry::default());
-        }
-        let text = String::from_utf8(read_file(&path)?)
-            .map_err(|err| OpenMuxError::Message(format!("{}: {err}", display_path(&path))))?;
-        let registry = parse_account_registry(&path, &text)?;
-        if registry.schema_version > REGISTRY_SCHEMA_VERSION {
-            return Err(OpenMuxError::Message(format!(
-                "registry schema {} is newer than this OpenMux build supports",
-                registry.schema_version
-            )));
-        }
-        Ok(registry)
-    }
-
-    fn save_account_registry(&self, registry: &AccountRegistry) -> Result<()> {
-        write_file_atomic_private(
-            &self.account_registry_path()?,
-            encode_account_registry(registry).as_bytes(),
-        )
-    }
-
-    fn account_active(&self) -> Result<bool> {
+    fn profile_snapshot_path(&self, secret_hash: &str) -> Result<PathBuf> {
         Ok(self
-            .load_account_registry()?
-            .active_account_number
-            .is_some())
+            .profiles_dir()?
+            .join(format!("{secret_hash}.profile.json")))
     }
 
-    fn resolve_profile<'a>(
-        &self,
-        registry: &'a Registry,
-        selector: &str,
-    ) -> Result<&'a StoredProfile> {
-        if let Ok(number) = selector.parse::<u32>() {
-            return registry
-                .profiles
-                .iter()
-                .find(|profile| profile.number == number)
-                .ok_or_else(|| OpenMuxError::AccountNotFound {
-                    platform: self.id().to_string(),
-                    account: selector.to_string(),
-                });
-        }
+    #[cfg(test)]
+    fn profile_snapshot_path_for_number(&self, number: u32) -> Result<PathBuf> {
+        let profile = self
+            .state_store()?
+            .profile_by_selector(CLAUDE_STATE_PROVIDER, &number.to_string())?
+            .ok_or_else(|| OpenMuxError::AccountNotFound {
+                platform: self.id().to_string(),
+                account: number.to_string(),
+            })?;
+        Ok(PathBuf::from(profile.secret_ref))
+    }
 
-        registry
-            .profiles
-            .iter()
-            .find(|profile| profile.name == selector)
+    fn resolve_profile(&self, selector: &str) -> Result<ProfileRecord> {
+        self.state_store()?
+            .profile_by_selector(CLAUDE_STATE_PROVIDER, selector)?
             .ok_or_else(|| OpenMuxError::AccountNotFound {
                 platform: self.id().to_string(),
                 account: selector.to_string(),
             })
     }
 
-    fn profile_status(&self, profile: &StoredProfile, active_number: Option<u32>) -> ConfigProfile {
-        ConfigProfile {
-            platform: self.info(),
-            name: profile.name.clone(),
-            active: active_number == Some(profile.number),
-            config_path: profile.snapshot_path.clone(),
-            provider_id: None,
-            base_url: profile.base_url.clone(),
-            model: profile.model.clone(),
-            number: Some(profile.number),
-            auth_type: Some(profile.auth_type.clone()),
-        }
+    fn profile_status(
+        &self,
+        profile: &ProfileRecord,
+        active_local_id: Option<&str>,
+    ) -> ConfigProfile {
+        profile.to_config_profile(
+            self.info(),
+            active_local_id == Some(profile.local_id.as_str()),
+        )
     }
 
     fn import_profile(&self, options: ImportConfigOptions) -> Result<ImportedConfig> {
@@ -487,42 +340,22 @@ impl ClaudePlugin {
             OpenMuxError::Message(format!("failed to encode Claude profile: {err}"))
         })?;
         let secret_hash = sha256_hex(&snapshot_bytes);
-        let mut registry = self.load_registry()?;
         let now = unix_now();
-
-        let existing_index = registry
-            .profiles
-            .iter()
-            .position(|profile| profile.secret_hash == secret_hash || profile.name == parsed.name);
-        let number = if let Some(index) = existing_index {
-            registry.profiles[index].number
-        } else {
-            let number = registry.next_profile_number;
-            registry.next_profile_number += 1;
-            number
-        };
-        let snapshot_path = self.profile_snapshot_path(number)?;
+        let snapshot_path = self.profile_snapshot_path(&secret_hash)?;
         write_file_atomic_private(&snapshot_path, &snapshot_bytes)?;
-
-        let stored = StoredProfile {
-            number,
+        let profile = self.state_store()?.upsert_profile(UpsertProfile {
+            provider: CLAUDE_STATE_PROVIDER.to_string(),
             name: parsed.name.clone(),
-            auth_type: parsed.auth_type.clone(),
+            label: None,
+            profile_kind: "env".to_string(),
+            provider_id: None,
             base_url: parsed.base_url.clone(),
             model: parsed.model.clone(),
-            secret_hash,
-            snapshot_path: display_path(&snapshot_path),
+            auth_type: Some(parsed.auth_type.clone()),
+            config_hash: secret_hash,
+            secret_ref: display_path(&snapshot_path),
             imported_at_unix: now,
-            last_activated_at_unix: existing_index
-                .and_then(|index| registry.profiles[index].last_activated_at_unix),
-        };
-        if let Some(index) = existing_index {
-            registry.profiles[index] = stored;
-        } else {
-            registry.profiles.push(stored);
-        }
-        registry.profiles.sort_by_key(|profile| profile.number);
-        self.save_registry(&registry)?;
+        })?;
 
         Ok(ImportedConfig {
             platform: self.info(),
@@ -531,20 +364,19 @@ impl ClaudePlugin {
             provider_id: None,
             base_url: parsed.base_url,
             model: parsed.model,
-            number: Some(number),
+            number: profile.display_number,
             auth_type: Some(parsed.auth_type),
         })
     }
 
     fn use_profile(&self, selector: &str) -> Result<ConfigSwitchReport> {
-        let mut registry = self.load_registry()?;
-        let profile = self.resolve_profile(&registry, selector)?.clone();
-        let snapshot_path = PathBuf::from(&profile.snapshot_path);
+        let profile = self.resolve_profile(selector)?;
+        let snapshot_path = PathBuf::from(&profile.secret_ref);
         let snapshot_bytes = read_file(&snapshot_path)?;
-        if sha256_hex(&snapshot_bytes) != profile.secret_hash {
+        if sha256_hex(&snapshot_bytes) != profile.config_hash {
             return Err(OpenMuxError::Message(format!(
                 "stored Claude profile #{} failed hash verification",
-                profile.number
+                profile.display_number.unwrap_or_default()
             )));
         }
         let snapshot: ProfileSnapshot = serde_json::from_slice(&snapshot_bytes).map_err(|err| {
@@ -584,60 +416,56 @@ impl ClaudePlugin {
             None
         };
 
-        let previous_account_registry = self.load_account_registry()?;
-        let mut next_account_registry = previous_account_registry.clone();
-        next_account_registry.active_account_number = None;
-        if previous_account_registry.active_account_number.is_some() {
-            self.save_account_registry(&next_account_registry)?;
-        }
-
         if let Err(err) = write_file_atomic_private(&settings_path, &next_bytes) {
-            let account_rollback = if previous_account_registry.active_account_number.is_some() {
-                self.save_account_registry(&previous_account_registry)
-            } else {
-                Ok(())
-            };
             return Err(OpenMuxError::Message(format!(
-                "failed to apply Claude profile settings; account rollback: {}; error: {err}",
-                rollback_status(account_rollback)
+                "failed to apply Claude profile settings: {err}"
             )));
         }
-        registry.active_profile_number = Some(profile.number);
-        if let Some(stored) = registry
-            .profiles
-            .iter_mut()
-            .find(|stored| stored.number == profile.number)
-        {
-            stored.last_activated_at_unix = Some(unix_now());
-        }
-        if let Err(err) = self.save_registry(&registry) {
+        if let Err(err) = self.state_store()?.set_active_profile(
+            CLAUDE_STATE_PROVIDER,
+            &profile.local_id,
+            unix_now(),
+        ) {
             let rollback = match current_bytes {
                 Some(bytes) => write_file_atomic_private(&settings_path, &bytes),
                 None => fs::remove_file(&settings_path)
                     .map_err(|remove_err| io_error(&settings_path, remove_err)),
             };
-            let account_rollback = if previous_account_registry.active_account_number.is_some() {
-                self.save_account_registry(&previous_account_registry)
-            } else {
-                Ok(())
-            };
             return match rollback {
                 Ok(()) => Err(OpenMuxError::Message(format!(
-                    "failed to update Claude registry after applying profile; settings were rolled back; account rollback: {}; error: {err}",
-                    rollback_status(account_rollback)
+                    "failed to update state store after applying profile; settings were rolled back: {err}"
                 ))),
                 Err(rollback_err) => Err(OpenMuxError::Message(format!(
-                    "failed to update Claude registry after applying profile and rollback failed: {err}; rollback error: {rollback_err}; account rollback: {}",
-                    rollback_status(account_rollback)
+                    "failed to update state store after applying profile and rollback failed: {err}; rollback error: {rollback_err}"
                 ))),
             };
         }
 
         Ok(ConfigSwitchReport {
             platform: self.info(),
-            profile: self.profile_status(&profile, Some(profile.number)),
+            profile: self.profile_status(&profile, Some(&profile.local_id)),
             config_path: display_path(&settings_path),
             backup_path,
+        })
+    }
+
+    fn remove_profile(&self, selector: &str) -> Result<RemovedConfig> {
+        let store = self.state_store()?;
+        let profile = self.resolve_profile(selector)?;
+        let was_active = store
+            .active_profile(CLAUDE_STATE_PROVIDER)?
+            .is_some_and(|active| active.local_id == profile.local_id);
+        let profile_status =
+            self.profile_status(&profile, was_active.then_some(profile.local_id.as_str()));
+        let mut removed_paths = Vec::new();
+
+        remove_file_if_exists(Path::new(&profile.secret_ref), &mut removed_paths)?;
+        store.archive_profile(&profile.local_id, unix_now())?;
+
+        Ok(RemovedConfig {
+            profile: profile_status,
+            was_active,
+            removed_paths,
         })
     }
 }
@@ -669,11 +497,11 @@ impl PlatformPlugin for ClaudePlugin {
     }
 
     fn pool_summary(&self) -> Result<PlatformPoolSummary> {
-        let profiles = self.list_configs()?;
-        let active_profile = profiles
-            .iter()
-            .find(|profile| profile.active)
-            .map(|profile| profile.name.clone());
+        let store = self.state_store()?;
+        let profiles = store.list_profiles(CLAUDE_STATE_PROVIDER)?;
+        let active_profile = store
+            .active_profile(CLAUDE_STATE_PROVIDER)?
+            .map(|profile| profile.name);
         Ok(PlatformPoolSummary {
             platform: self.info(),
             account_count: 0,
@@ -693,16 +521,13 @@ impl PlatformPlugin for ClaudePlugin {
     }
 
     fn list_configs(&self) -> Result<Vec<ConfigProfile>> {
-        let registry = self.load_registry()?;
-        let active_number = if self.account_active()? {
-            None
-        } else {
-            registry.active_profile_number
-        };
-        Ok(registry
-            .profiles
+        let store = self.state_store()?;
+        let active = store.active_profile(CLAUDE_STATE_PROVIDER)?;
+        let active_id = active.as_ref().map(|profile| profile.local_id.as_str());
+        Ok(store
+            .list_profiles(CLAUDE_STATE_PROVIDER)?
             .iter()
-            .map(|profile| self.profile_status(profile, active_number))
+            .map(|profile| self.profile_status(profile, active_id))
             .collect())
     }
 
@@ -722,6 +547,10 @@ impl PlatformPlugin for ClaudePlugin {
         self.use_profile(selector).map(UseReport::Config)
     }
 
+    fn remove_target(&self, selector: &str) -> Result<RemoveReport> {
+        self.remove_profile(selector).map(RemoveReport::Config)
+    }
+
     fn switch_to(&self, _selector: &str) -> Result<SwitchReport> {
         Err(deferred_account_error())
     }
@@ -733,8 +562,8 @@ impl PlatformPlugin for ClaudePlugin {
     fn doctor(&self) -> Result<DoctorReport> {
         let claude_home = self.claude_home()?;
         let settings_path = self.settings_path()?;
-        let registry_path = self.registry_path()?;
-        let registry = self.load_registry();
+        let state_path = self.state_root()?.join("omx-state.sqlite");
+        let state_store = self.state_store();
         Ok(DoctorReport {
             platform: self.id().to_string(),
             checks: vec![
@@ -749,13 +578,9 @@ impl PlatformPlugin for ClaudePlugin {
                     message: display_path(&settings_path),
                 },
                 DoctorCheck {
-                    name: "registry".to_string(),
-                    ok: registry.is_ok(),
-                    message: if registry_path.exists() {
-                        display_path(&registry_path)
-                    } else {
-                        "not created yet".to_string()
-                    },
+                    name: "state-store".to_string(),
+                    ok: state_store.is_ok(),
+                    message: display_path(&state_path),
                 },
             ],
         })
@@ -888,12 +713,8 @@ impl ClaudeAccountPlugin {
         Ok(self.platform_state_dir()?.join("backups"))
     }
 
-    fn registry_path(&self) -> Result<PathBuf> {
-        Ok(self.platform_state_dir()?.join("account-registry.omx"))
-    }
-
-    fn profile_registry_path(&self) -> Result<PathBuf> {
-        Ok(self.platform_state_dir()?.join("registry.omx"))
+    fn state_store(&self) -> Result<StateStore> {
+        StateStore::open(&self.state_root()?)
     }
 
     fn credentials_path(&self) -> Result<PathBuf> {
@@ -934,128 +755,89 @@ impl ClaudeAccountPlugin {
         Ok(self.claude_home()?.join(SETTINGS_FILE_NAME))
     }
 
-    fn account_snapshot_path(&self, number: u32) -> Result<PathBuf> {
+    fn account_snapshot_path(&self, snapshot_hash: &str) -> Result<PathBuf> {
         Ok(self
             .accounts_dir()?
-            .join(format!("{number}.credentials.snapshot")))
+            .join(format!("{snapshot_hash}.credentials.snapshot")))
     }
 
-    fn oauth_account_path(&self, number: u32) -> Result<PathBuf> {
+    fn oauth_account_path(&self, snapshot_hash: &str) -> Result<PathBuf> {
         Ok(self
             .accounts_dir()?
-            .join(format!("{number}.oauth-account.json")))
+            .join(format!("{snapshot_hash}.oauth-account.json")))
     }
 
-    fn load_registry(&self) -> Result<AccountRegistry> {
-        let path = self.registry_path()?;
-        if !path.exists() {
-            return Ok(AccountRegistry::default());
-        }
-        let text = String::from_utf8(read_file(&path)?)
-            .map_err(|err| OpenMuxError::Message(format!("{}: {err}", display_path(&path))))?;
-        let mut registry = parse_account_registry(&path, &text)?;
-        if registry.schema_version > REGISTRY_SCHEMA_VERSION {
-            return Err(OpenMuxError::Message(format!(
-                "registry schema {} is newer than this OpenMux build supports",
-                registry.schema_version
-            )));
-        }
-        registry.accounts.sort_by_key(|account| account.number);
-        registry.next_account_number = registry.next_account_number.max(
-            registry
-                .accounts
-                .iter()
-                .map(|account| account.number)
-                .max()
-                .unwrap_or(0)
-                + 1,
-        );
-        Ok(registry)
+    fn account_snapshot_hash(account: &AccountRecord) -> Result<String> {
+        Path::new(&account.secret_ref)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".credentials.snapshot"))
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .ok_or_else(|| {
+                OpenMuxError::Message(format!(
+                    "invalid Claude account secret_ref `{}`",
+                    account.secret_ref
+                ))
+            })
     }
 
-    fn save_registry(&self, registry: &AccountRegistry) -> Result<()> {
-        write_file_atomic_private(
-            &self.registry_path()?,
-            encode_account_registry(registry).as_bytes(),
-        )
+    fn oauth_account_path_for_record(&self, account: &AccountRecord) -> Result<PathBuf> {
+        self.oauth_account_path(&Self::account_snapshot_hash(account)?)
     }
 
-    fn load_profile_registry(&self) -> Result<Registry> {
-        let path = self.profile_registry_path()?;
-        if !path.exists() {
-            return Ok(Registry::default());
-        }
-        let text = String::from_utf8(read_file(&path)?)
-            .map_err(|err| OpenMuxError::Message(format!("{}: {err}", display_path(&path))))?;
-        let registry = parse_registry(&path, &text)?;
-        if registry.schema_version > REGISTRY_SCHEMA_VERSION {
-            return Err(OpenMuxError::Message(format!(
-                "registry schema {} is newer than this OpenMux build supports",
-                registry.schema_version
-            )));
-        }
-        Ok(registry)
+    #[cfg(test)]
+    fn account_snapshot_path_for_number(&self, number: u32) -> Result<PathBuf> {
+        let account = self
+            .state_store()?
+            .account_by_selector(CLAUDE_STATE_PROVIDER, &number.to_string())?
+            .ok_or_else(|| OpenMuxError::AccountNotFound {
+                platform: self.id().to_string(),
+                account: number.to_string(),
+            })?;
+        Ok(PathBuf::from(account.secret_ref))
     }
 
-    fn save_profile_registry(&self, registry: &Registry) -> Result<()> {
-        write_file_atomic_private(
-            &self.profile_registry_path()?,
-            encode_registry(registry).as_bytes(),
-        )
+    #[cfg(test)]
+    fn oauth_account_path_for_number(&self, number: u32) -> Result<PathBuf> {
+        let account = self
+            .state_store()?
+            .account_by_selector(CLAUDE_STATE_PROVIDER, &number.to_string())?
+            .ok_or_else(|| OpenMuxError::AccountNotFound {
+                platform: self.id().to_string(),
+                account: number.to_string(),
+            })?;
+        self.oauth_account_path_for_record(&account)
     }
 
-    fn profile_active(&self) -> Result<bool> {
-        Ok(self
-            .load_profile_registry()?
-            .active_profile_number
-            .is_some())
-    }
-
-    fn account_ref(&self, account: &StoredAccount) -> AccountRef {
+    fn account_ref(&self, account: &AccountRecord) -> AccountRef {
         AccountRef {
             platform: self.id().to_string(),
-            number: account.number,
-            alias: Some(account.name.clone()),
+            number: account.display_number,
+            alias: account.alias.clone(),
         }
     }
 
-    fn account_status(&self, account: &StoredAccount, active_number: Option<u32>) -> AccountStatus {
+    fn account_status(
+        &self,
+        account: &AccountRecord,
+        active_local_id: Option<&str>,
+    ) -> AccountStatus {
         AccountStatus {
             account: self.account_ref(account),
-            active: active_number == Some(account.number),
-            account_label: account.email.clone(),
+            active: active_local_id == Some(account.local_id.as_str()),
+            account_label: account.account_label.clone(),
             plan_label: None,
-            auth_type: Some(if account.partial_metadata {
-                "oauth/partial".to_string()
-            } else {
-                "oauth/full".to_string()
-            }),
-            expires_at_unix: Some(account.expires_at_unix),
+            auth_type: account.auth_type.clone(),
+            expires_at_unix: account.expires_at_unix,
             availability: Availability::unknown(),
             usage: None,
         }
     }
 
-    fn resolve_account<'a>(
-        &self,
-        registry: &'a AccountRegistry,
-        selector: &str,
-    ) -> Result<&'a StoredAccount> {
-        if let Ok(number) = selector.parse::<u32>() {
-            return registry
-                .accounts
-                .iter()
-                .find(|account| account.number == number)
-                .ok_or_else(|| OpenMuxError::AccountNotFound {
-                    platform: self.id().to_string(),
-                    account: selector.to_string(),
-                });
-        }
-
-        registry
-            .accounts
-            .iter()
-            .find(|account| account.name == selector)
+    fn resolve_account(&self, selector: &str) -> Result<AccountRecord> {
+        self.state_store()?
+            .account_by_selector(CLAUDE_STATE_PROVIDER, selector)?
             .ok_or_else(|| OpenMuxError::AccountNotFound {
                 platform: self.id().to_string(),
                 account: selector.to_string(),
@@ -1119,26 +901,8 @@ impl ClaudeAccountPlugin {
         let safe = safe_account_metadata(&parsed, &oauth_account);
         let snapshot_hash = sha256_hex(&credentials);
         let duplicate_key = parsed.refresh_token_hash;
-        let mut registry = self.load_registry()?;
-        let existing_index = registry.accounts.iter().position(|account| {
-            account.snapshot_hash == snapshot_hash
-                || account
-                    .account_uuid_hash
-                    .as_ref()
-                    .zip(safe.account_uuid_hash.as_ref())
-                    .is_some_and(|(left, right)| left == right)
-                || account.refresh_token_hash == duplicate_key
-        });
-        let number = if let Some(index) = existing_index {
-            registry.accounts[index].number
-        } else {
-            let number = registry.next_account_number;
-            registry.next_account_number += 1;
-            number
-        };
-
-        let snapshot_path = self.account_snapshot_path(number)?;
-        let oauth_path = self.oauth_account_path(number)?;
+        let snapshot_path = self.account_snapshot_path(&snapshot_hash)?;
+        let oauth_path = self.oauth_account_path(&snapshot_hash)?;
         write_file_atomic_private(&snapshot_path, &credentials)?;
         let oauth_bytes = serde_json::to_vec_pretty(&oauth_account).map_err(|err| {
             OpenMuxError::Message(format!(
@@ -1149,43 +913,46 @@ impl ClaudeAccountPlugin {
 
         let account_name = name
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| {
-                safe.email
-                    .clone()
-                    .unwrap_or_else(|| format!("account-{number}"))
-            });
-        let stored = StoredAccount {
-            number,
-            name: sanitize_profile_name(&account_name),
-            email: safe.email,
-            account_uuid_hash: safe.account_uuid_hash,
-            organization_uuid_hash: safe.organization_uuid_hash,
-            scopes: parsed.scopes,
-            expires_at_unix: parsed.expires_at_unix,
-            refresh_token_hash: duplicate_key.clone(),
-            snapshot_hash,
-            snapshot_path: display_path(&snapshot_path),
-            oauth_account_path: display_path(&oauth_path),
-            partial_metadata: safe.partial_metadata,
+            .or(safe.email.clone())
+            .unwrap_or_else(|| "claude-account".to_string());
+        let account = self.state_store()?.upsert_account(UpsertAccount {
+            provider: CLAUDE_STATE_PROVIDER.to_string(),
+            alias: Some(sanitize_profile_name(&account_name)),
+            account_label: safe.email,
+            plan_label: None,
+            auth_type: Some(if safe.partial_metadata {
+                "oauth/partial".to_string()
+            } else {
+                "oauth/full".to_string()
+            }),
+            expires_at_unix: Some(parsed.expires_at_unix),
+            auth_hash: duplicate_key,
+            secret_ref: display_path(&snapshot_path),
             imported_at_unix: unix_now(),
-            last_activated_at_unix: existing_index
-                .and_then(|index| registry.accounts[index].last_activated_at_unix),
-        };
+        })?;
+        Ok(self.account_ref(&account))
+    }
 
-        if let Some(index) = existing_index {
-            registry.accounts[index] = stored;
-        } else {
-            registry.accounts.push(stored);
-        }
-        registry.accounts.sort_by_key(|account| account.number);
-        let account = registry
-            .accounts
-            .iter()
-            .find(|account| account.number == number)
-            .expect("imported account should exist");
-        let account_ref = self.account_ref(account);
-        self.save_registry(&registry)?;
-        Ok(account_ref)
+    fn remove_account(&self, selector: &str) -> Result<RemovedAccount> {
+        let store = self.state_store()?;
+        let account = self.resolve_account(selector)?;
+        let was_active = store
+            .active_account(CLAUDE_STATE_PROVIDER)?
+            .is_some_and(|active| active.local_id == account.local_id);
+        let mut removed_paths = Vec::new();
+
+        remove_file_if_exists(Path::new(&account.secret_ref), &mut removed_paths)?;
+        remove_file_if_exists(
+            &self.oauth_account_path_for_record(&account)?,
+            &mut removed_paths,
+        )?;
+        store.archive_account(&account.local_id, unix_now())?;
+
+        Ok(RemovedAccount {
+            account: self.account_ref(&account),
+            was_active,
+            removed_paths,
+        })
     }
 }
 
@@ -1218,23 +985,14 @@ impl PlatformPlugin for ClaudeAccountPlugin {
     }
 
     fn pool_summary(&self) -> Result<PlatformPoolSummary> {
-        let registry = self.load_registry()?;
-        let active_number = if self.profile_active()? {
-            None
-        } else {
-            registry.active_account_number
-        };
-        let active = active_number
-            .and_then(|number| {
-                registry
-                    .accounts
-                    .iter()
-                    .find(|account| account.number == number)
-            })
-            .map(|account| self.account_ref(account));
+        let store = self.state_store()?;
+        let accounts = store.list_accounts(CLAUDE_STATE_PROVIDER)?;
+        let active = store
+            .active_account(CLAUDE_STATE_PROVIDER)?
+            .map(|account| self.account_ref(&account));
         Ok(PlatformPoolSummary {
             platform: self.info(),
-            account_count: registry.accounts.len(),
+            account_count: accounts.len(),
             active,
             profile_count: 0,
             active_profile: None,
@@ -1243,30 +1001,20 @@ impl PlatformPlugin for ClaudeAccountPlugin {
     }
 
     fn current(&self) -> Result<Option<AccountStatus>> {
-        if self.profile_active()? {
+        let Some(active) = self.state_store()?.active_account(CLAUDE_STATE_PROVIDER)? else {
             return Ok(None);
-        }
-        let registry = self.load_registry()?;
-        Ok(registry.active_account_number.and_then(|number| {
-            registry
-                .accounts
-                .iter()
-                .find(|account| account.number == number)
-                .map(|account| self.account_status(account, Some(number)))
-        }))
+        };
+        Ok(Some(self.account_status(&active, Some(&active.local_id))))
     }
 
     fn list_accounts(&self) -> Result<Vec<AccountStatus>> {
-        let registry = self.load_registry()?;
-        let active_number = if self.profile_active()? {
-            None
-        } else {
-            registry.active_account_number
-        };
-        Ok(registry
-            .accounts
+        let store = self.state_store()?;
+        let active = store.active_account(CLAUDE_STATE_PROVIDER)?;
+        let active_id = active.as_ref().map(|account| account.local_id.as_str());
+        Ok(store
+            .list_accounts(CLAUDE_STATE_PROVIDER)?
             .iter()
-            .map(|account| self.account_status(account, active_number))
+            .map(|account| self.account_status(account, active_id))
             .collect())
     }
 
@@ -1283,7 +1031,11 @@ impl PlatformPlugin for ClaudeAccountPlugin {
         Ok(ImportedConfig {
             platform: self.info(),
             profile_name: account.alias.unwrap_or_else(|| account.number.to_string()),
-            config_path: display_path(&self.account_snapshot_path(account.number)?),
+            config_path: self
+                .state_store()?
+                .account_by_selector(CLAUDE_STATE_PROVIDER, &account.number.to_string())?
+                .map(|record| record.secret_ref)
+                .unwrap_or_default(),
             provider_id: Some("claude-ai-oauth".to_string()),
             base_url: None,
             model: None,
@@ -1296,18 +1048,22 @@ impl PlatformPlugin for ClaudeAccountPlugin {
         self.switch_to(selector).map(UseReport::Account)
     }
 
+    fn remove_target(&self, selector: &str) -> Result<RemoveReport> {
+        self.remove_account(selector).map(RemoveReport::Account)
+    }
+
     fn switch_to(&self, selector: &str) -> Result<SwitchReport> {
-        let mut registry = self.load_registry()?;
-        let account = self.resolve_account(&registry, selector)?.clone();
-        let snapshot_path = PathBuf::from(&account.snapshot_path);
+        let store = self.state_store()?;
+        let account = self.resolve_account(selector)?;
+        let snapshot_path = PathBuf::from(&account.secret_ref);
         let snapshot = read_file(&snapshot_path)?;
-        if sha256_hex(&snapshot) != account.snapshot_hash {
+        if sha256_hex(&snapshot) != Self::account_snapshot_hash(&account)? {
             return Err(OpenMuxError::Message(format!(
                 "stored Claude account #{} failed hash verification",
-                account.number
+                account.display_number
             )));
         }
-        let oauth_account = read_file(Path::new(&account.oauth_account_path))?;
+        let oauth_account = read_file(&self.oauth_account_path_for_record(&account)?)?;
         let oauth_value: Value = serde_json::from_slice(&oauth_account).map_err(|err| {
             OpenMuxError::Message(format!("invalid stored oauthAccount metadata: {err}"))
         })?;
@@ -1348,22 +1104,9 @@ impl PlatformPlugin for ClaudeAccountPlugin {
             None
         };
 
-        let previous_profile_registry = self.load_profile_registry()?;
-        let mut next_profile_registry = previous_profile_registry.clone();
-        next_profile_registry.active_profile_number = None;
-        if previous_profile_registry.active_profile_number.is_some() {
-            self.save_profile_registry(&next_profile_registry)?;
-        }
-
         if let Err(err) = backend.write(&snapshot) {
-            let profile_rollback = if previous_profile_registry.active_profile_number.is_some() {
-                self.save_profile_registry(&previous_profile_registry)
-            } else {
-                Ok(())
-            };
             return Err(OpenMuxError::Message(format!(
-                "failed to write Claude credential; profile rollback: {}; error: {err}",
-                rollback_status(profile_rollback)
+                "failed to write Claude credential: {err}"
             )));
         }
         let mut settings = current_settings
@@ -1378,60 +1121,31 @@ impl PlatformPlugin for ClaudeAccountPlugin {
         #[cfg(test)]
         if self.fail_settings_write {
             let _ = backend.restore(current_credentials.as_deref());
-            let _ = if previous_profile_registry.active_profile_number.is_some() {
-                self.save_profile_registry(&previous_profile_registry)
-            } else {
-                Ok(())
-            };
             return Err(OpenMuxError::Message(
-                "failed to update Claude oauthAccount metadata; credential and profile rollback attempted: injected settings write failure".to_string(),
+                "failed to update Claude oauthAccount metadata; credential rollback attempted: injected settings write failure".to_string(),
             ));
         }
         if let Err(err) = write_file_atomic_private(&settings_path, &settings_bytes) {
             let credential_rollback = backend.restore(current_credentials.as_deref());
-            let profile_rollback = if previous_profile_registry.active_profile_number.is_some() {
-                self.save_profile_registry(&previous_profile_registry)
-            } else {
-                Ok(())
-            };
             return Err(OpenMuxError::Message(format!(
-                "failed to update Claude oauthAccount metadata; credential rollback: {}; profile rollback: {}; error: {err}",
-                rollback_status(credential_rollback),
-                rollback_status(profile_rollback)
+                "failed to update Claude oauthAccount metadata; credential rollback: {}; error: {err}",
+                rollback_status(credential_rollback)
             )));
         }
 
-        let previous = registry
-            .active_account_number
-            .filter(|number| *number != account.number)
-            .and_then(|number| {
-                registry
-                    .accounts
-                    .iter()
-                    .find(|stored| stored.number == number)
-                    .map(|stored| self.account_ref(stored))
-            });
-        registry.active_account_number = Some(account.number);
-        if let Some(stored) = registry
-            .accounts
-            .iter_mut()
-            .find(|stored| stored.number == account.number)
+        let previous = store
+            .active_account(CLAUDE_STATE_PROVIDER)?
+            .filter(|current| current.local_id != account.local_id)
+            .map(|stored| self.account_ref(&stored));
+        if let Err(err) =
+            store.set_active_account(CLAUDE_STATE_PROVIDER, &account.local_id, unix_now())
         {
-            stored.last_activated_at_unix = Some(unix_now());
-        }
-        if let Err(err) = self.save_registry(&registry) {
             let credential_rollback = backend.restore(current_credentials.as_deref());
             let settings_rollback = rollback_file(&settings_path, current_settings.as_deref());
-            let profile_rollback = if previous_profile_registry.active_profile_number.is_some() {
-                self.save_profile_registry(&previous_profile_registry)
-            } else {
-                Ok(())
-            };
             return Err(OpenMuxError::Message(format!(
-                "failed to update Claude account registry after switching; credential rollback: {}; settings rollback: {}; profile rollback: {}; error: {}; backups: {}, {}",
+                "failed to update state store after switching Claude account; credential rollback: {}; settings rollback: {}; error: {}; backups: {}, {}",
                 rollback_status(credential_rollback),
                 rollback_status(settings_rollback),
-                rollback_status(profile_rollback),
                 err,
                 credential_backup
                     .as_deref()
@@ -1458,8 +1172,8 @@ impl PlatformPlugin for ClaudeAccountPlugin {
 
     fn doctor(&self) -> Result<DoctorReport> {
         let backend = self.credential_backend()?;
-        let registry_path = self.registry_path()?;
-        let registry = self.load_registry();
+        let state_path = self.state_root()?.join("omx-state.sqlite");
+        let state_store = self.state_store();
         Ok(DoctorReport {
             platform: self.id().to_string(),
             checks: vec![
@@ -1469,13 +1183,9 @@ impl PlatformPlugin for ClaudeAccountPlugin {
                     message: display_path(backend.location()),
                 },
                 DoctorCheck {
-                    name: "account-registry".to_string(),
-                    ok: registry.is_ok(),
-                    message: if registry_path.exists() {
-                        display_path(&registry_path)
-                    } else {
-                        "not created yet".to_string()
-                    },
+                    name: "state-store".to_string(),
+                    ok: state_store.is_ok(),
+                    message: display_path(&state_path),
                 },
             ],
         })
@@ -1492,15 +1202,12 @@ fn deferred_account_error() -> OpenMuxError {
 #[derive(Debug, Clone)]
 struct ParsedCredentials {
     expires_at_unix: i64,
-    scopes: Option<String>,
     refresh_token_hash: String,
 }
 
 #[derive(Debug, Clone)]
 struct SafeAccountMetadata {
     email: Option<String>,
-    account_uuid_hash: Option<String>,
-    organization_uuid_hash: Option<String>,
     partial_metadata: bool,
 }
 
@@ -1539,18 +1246,8 @@ fn parse_credentials(bytes: &[u8]) -> Result<ParsedCredentials> {
                 "Claude OAuth account snapshot requires expiresAt; inference-only tokens cannot be imported".into(),
             )
         })?;
-    let scopes = oauth.get("scopes").and_then(|value| {
-        value.as_array().map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-    });
     Ok(ParsedCredentials {
         expires_at_unix,
-        scopes,
         refresh_token_hash: sha256_hex(refresh_token.as_bytes()),
     })
 }
@@ -1565,21 +1262,19 @@ fn safe_account_metadata(
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map(mask_email);
-    let account_uuid_hash = oauth_account
+    let has_account_uuid = oauth_account
         .get("accountUuid")
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
-        .map(short_hash);
-    let organization_uuid_hash = oauth_account
+        .is_some();
+    let has_organization_uuid = oauth_account
         .get("organizationUuid")
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
-        .map(short_hash);
-    let partial_metadata = email.is_none() || account_uuid_hash.is_none();
+        .is_some();
+    let partial_metadata = email.is_none() || !has_account_uuid || !has_organization_uuid;
     SafeAccountMetadata {
         email,
-        account_uuid_hash,
-        organization_uuid_hash,
         partial_metadata,
     }
 }
@@ -1613,16 +1308,20 @@ fn rollback_status(result: Result<()>) -> &'static str {
     if result.is_ok() { "ok" } else { "failed" }
 }
 
+fn remove_file_if_exists(path: &Path, removed_paths: &mut Vec<String>) -> Result<()> {
+    if path.exists() {
+        fs::remove_file(path).map_err(|err| io_error(path, err))?;
+        removed_paths.push(display_path(path));
+    }
+    Ok(())
+}
+
 fn mask_email(value: &str) -> String {
     let Some((name, domain)) = value.split_once('@') else {
         return "redacted".to_string();
     };
     let first = name.chars().next().unwrap_or('*');
     format!("{first}***@{domain}")
-}
-
-fn short_hash(value: &str) -> String {
-    sha256_hex(value.as_bytes()).chars().take(12).collect()
 }
 
 fn json_number_as_i64(value: &Value) -> Option<i64> {

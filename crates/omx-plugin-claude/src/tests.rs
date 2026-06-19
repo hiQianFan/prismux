@@ -22,8 +22,10 @@ fn imports_lists_and_uses_claude_profile_without_leaking_registry_secret() {
 
     assert_eq!(imported.number, Some(1));
     assert_eq!(imported.auth_type.as_deref(), Some("bearer-token"));
-    let registry = fs::read_to_string(plugin.registry_path().unwrap()).unwrap();
-    assert!(!registry.contains("secret"));
+    let state_db = fs::read(state_root.join("omx-state.sqlite")).unwrap();
+    let state_text = String::from_utf8_lossy(&state_db);
+    assert!(!state_text.contains("ANTHROPIC_AUTH_TOKEN=secret"));
+    assert!(!state_text.contains("\"ANTHROPIC_AUTH_TOKEN\":\"secret\""));
 
     let profiles = plugin.list_configs().unwrap();
     assert_eq!(profiles.len(), 1);
@@ -81,6 +83,31 @@ fn duplicate_claude_profile_updates_existing_number() {
 }
 
 #[test]
+fn remove_claude_profile_deletes_snapshot_and_excludes_from_list() {
+    let temp = test_temp_dir("claude-remove-profile");
+    let plugin = ClaudePlugin::with_paths(temp.join("claude-home"), temp.join("openmux-state"));
+    plugin
+        .import_config(ImportConfigOptions {
+            name: Some("api-direct".to_string()),
+            content: "ANTHROPIC_API_KEY=sk-test".to_string(),
+        })
+        .unwrap();
+    plugin.use_target("api-direct").unwrap();
+    let snapshot_path = plugin.profile_snapshot_path_for_number(1).unwrap();
+    assert!(snapshot_path.exists());
+
+    let report = plugin.remove_target("api-direct").unwrap();
+
+    let RemoveReport::Config(report) = report else {
+        panic!("expected profile removal");
+    };
+    assert!(report.was_active);
+    assert_eq!(report.profile.name, "api-direct");
+    assert!(!snapshot_path.exists());
+    assert!(plugin.list_configs().unwrap().is_empty());
+}
+
+#[test]
 fn use_claude_profile_reports_missing_selector() {
     let temp = test_temp_dir("claude-missing-profile");
     let plugin = ClaudePlugin::with_paths(temp.join("claude-home"), temp.join("openmux-state"));
@@ -126,9 +153,10 @@ fn login_runs_official_claude_cli_then_imports_account_snapshot() {
     assert_eq!(plugin.current().unwrap().unwrap().account.number, 1);
     let args_log = fs::read_to_string(fake_claude.with_extension("args")).unwrap();
     assert_eq!(args_log.trim(), "auth login");
-    let registry = fs::read_to_string(plugin.registry_path().unwrap()).unwrap();
-    assert!(!registry.contains("login-access"));
-    assert!(!registry.contains("login-refresh"));
+    let state_db = fs::read(state_root.join("omx-state.sqlite")).unwrap();
+    let state_text = String::from_utf8_lossy(&state_db);
+    assert!(!state_text.contains("login-access"));
+    assert!(!state_text.contains("login-refresh"));
 }
 
 #[test]
@@ -144,7 +172,7 @@ fn claude_profile_uses_explicit_omux_profile_name_without_storing_it_as_env() {
         .unwrap();
 
     assert_eq!(imported.profile_name, "gateway-explicit");
-    let snapshot = fs::read_to_string(plugin.profile_snapshot_path(1).unwrap()).unwrap();
+    let snapshot = fs::read_to_string(plugin.profile_snapshot_path_for_number(1).unwrap()).unwrap();
     assert!(!snapshot.contains("OMUX_PROFILE"));
     assert!(!snapshot.contains("gateway-explicit"));
 }
@@ -175,10 +203,11 @@ fn imports_and_switches_plaintext_claude_account_without_registry_token_leak() {
         .unwrap();
 
     assert_eq!(imported.number, Some(1));
-    let registry = fs::read_to_string(plugin.registry_path().unwrap()).unwrap();
-    assert!(!registry.contains("access-secret"));
-    assert!(!registry.contains("refresh-secret"));
-    assert!(registry.contains("p***@example.com"));
+    let state_db = fs::read(state_root.join("omx-state.sqlite")).unwrap();
+    let state_text = String::from_utf8_lossy(&state_db);
+    assert!(!state_text.contains("access-secret"));
+    assert!(!state_text.contains("refresh-secret"));
+    assert!(state_text.contains("p***@example.com"));
     let accounts = plugin.list_accounts().unwrap();
     assert_eq!(accounts.len(), 1);
     assert_eq!(accounts[0].account.alias.as_deref(), Some("work"));
@@ -216,7 +245,7 @@ fn imports_and_switches_plaintext_claude_account_without_registry_token_leak() {
             .permissions()
             .mode()
             & 0o777;
-        let snapshot_mode = fs::metadata(plugin.account_snapshot_path(1).unwrap())
+        let snapshot_mode = fs::metadata(plugin.account_snapshot_path_for_number(1).unwrap())
             .unwrap()
             .permissions()
             .mode()
@@ -236,6 +265,48 @@ fn imports_and_switches_plaintext_claude_account_without_registry_token_leak() {
             .and_then(Value::as_str),
         Some("person@example.com")
     );
+}
+
+#[test]
+fn remove_claude_account_deletes_snapshots_and_excludes_from_list() {
+    let temp = test_temp_dir("claude-remove-account");
+    let claude_home = temp.join("claude-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&claude_home).unwrap();
+    fs::write(
+            claude_home.join(".credentials.json"),
+            br#"{"claudeAiOauth":{"accessToken":"access-secret","refreshToken":"refresh-secret","expiresAt":1781629000,"scopes":["user:inference"]}}"#,
+        )
+        .unwrap();
+    fs::write(
+            claude_home.join(SETTINGS_FILE_NAME),
+            br#"{"oauthAccount":{"email":"person@example.com","accountUuid":"account-1","organizationUuid":"org-1"}}"#,
+        )
+        .unwrap();
+    let plugin = ClaudeAccountPlugin::with_paths(&claude_home, &state_root);
+    plugin
+        .import_config(ImportConfigOptions {
+            name: Some("work".to_string()),
+            content: String::new(),
+        })
+        .unwrap();
+    plugin.use_target("work").unwrap();
+    let snapshot_path = plugin.account_snapshot_path_for_number(1).unwrap();
+    let oauth_path = plugin.oauth_account_path_for_number(1).unwrap();
+    assert!(snapshot_path.exists());
+    assert!(oauth_path.exists());
+
+    let report = plugin.remove_target("work").unwrap();
+
+    let RemoveReport::Account(report) = report else {
+        panic!("expected account removal");
+    };
+    assert!(report.was_active);
+    assert_eq!(report.account.number, 1);
+    assert!(!snapshot_path.exists());
+    assert!(!oauth_path.exists());
+    assert!(plugin.current().unwrap().is_none());
+    assert!(plugin.list_accounts().unwrap().is_empty());
 }
 
 #[test]
@@ -280,41 +351,6 @@ fn duplicate_claude_account_import_preserves_existing_number() {
     assert_eq!(second.number, Some(1));
     assert_eq!(plugin.list_accounts().unwrap().len(), 1);
     assert_eq!(plugin.current().unwrap().unwrap().account.number, 1);
-}
-
-#[test]
-fn cross_registry_loader_rejects_future_schema() {
-    let temp = test_temp_dir("claude-cross-schema");
-    let claude_home = temp.join("claude-home");
-    let state_root = temp.join("openmux-state");
-    let profile_plugin = ClaudePlugin::with_paths(&claude_home, &state_root);
-    let account_plugin = ClaudeAccountPlugin::with_paths(&claude_home, &state_root);
-    fs::create_dir_all(account_plugin.platform_state_dir().unwrap()).unwrap();
-    fs::write(
-        account_plugin.registry_path().unwrap(),
-        "schema_version\t999\nactive_account_number\t1\nnext_account_number\t2\n",
-    )
-    .unwrap();
-    fs::write(
-        profile_plugin.registry_path().unwrap(),
-        "schema_version\t999\nactive_profile_number\t1\nnext_profile_number\t2\n",
-    )
-    .unwrap();
-
-    assert!(
-        profile_plugin
-            .account_active()
-            .unwrap_err()
-            .to_string()
-            .contains("newer")
-    );
-    assert!(
-        account_plugin
-            .profile_active()
-            .unwrap_err()
-            .to_string()
-            .contains("newer")
-    );
 }
 
 #[test]
@@ -412,10 +448,7 @@ fn claude_account_switch_rolls_back_credential_when_oauth_metadata_write_fails()
 
     let err = plugin.use_target("target").unwrap_err();
 
-    assert!(
-        err.to_string()
-            .contains("credential and profile rollback attempted")
-    );
+    assert!(err.to_string().contains("credential rollback attempted"));
     let restored = fs::read_to_string(&keychain_path).unwrap();
     assert!(restored.contains("current-access"));
     assert!(!restored.contains("target-access"));
@@ -569,7 +602,7 @@ fn claude_account_switch_rejects_tampered_snapshot() {
         })
         .unwrap();
     fs::write(
-            plugin.account_snapshot_path(1).unwrap(),
+            plugin.account_snapshot_path_for_number(1).unwrap(),
             br#"{"claudeAiOauth":{"accessToken":"tampered","refreshToken":"refresh-secret","expiresAt":1781629000}}"#,
         )
         .unwrap();

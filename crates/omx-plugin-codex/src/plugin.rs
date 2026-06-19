@@ -5,23 +5,20 @@ use std::{
 };
 
 use omx_core::{
-    AccountRef, AccountStatus, Availability, AvailabilityState, ConfigProfile, ConfigSwitchReport,
-    DoctorCheck, DoctorReport, ImportConfigOptions, ImportedConfig, LoginOptions, OpenMuxError,
-    PlatformCapabilities, PlatformInfo, PlatformInstall, PlatformPlugin, PlatformPoolSummary,
-    Result, SaveOptions, SwitchReport, UsageDiagnostic, UsageLimit, UsageLimitKind,
-    UsageLimitScope, UsageSnapshot, UsageSource, UseReport, platform_info,
+    AccountRecord, AccountRef, AccountStatus, Availability, AvailabilityState, ConfigProfile,
+    ConfigSwitchReport, DoctorCheck, DoctorReport, ImportConfigOptions, ImportedConfig,
+    LoginOptions, OpenMuxError, PlatformCapabilities, PlatformInfo, PlatformInstall,
+    PlatformPlugin, PlatformPoolSummary, ProfileRecord, RemoveReport, RemovedAccount,
+    RemovedConfig, Result, SaveOptions, StateStore, SwitchReport, UpsertAccount, UpsertProfile,
+    UsageDiagnostic, UsageLimit, UsageLimitKind, UsageLimitScope, UsageSnapshot, UsageSource,
+    UseReport, platform_info,
     storage::{
         create_dir_private, data_local_dir, display_path, home_dir, io_error, read_file,
         set_private_file_permissions, sha256_hex, unix_now, unix_now_nanos,
         write_file_atomic_private,
     },
 };
-use registry_io::{encode_registry, parse_registry};
 
-#[path = "registry_io.rs"]
-mod registry_io;
-
-const REGISTRY_SCHEMA_VERSION: u32 = 1;
 const AUTH_FILE_NAME: &str = "auth.json";
 
 #[derive(Debug, Clone)]
@@ -29,29 +26,6 @@ pub struct CodexPlugin {
     codex_home: Option<PathBuf>,
     state_root: Option<PathBuf>,
     codex_executable: PathBuf,
-    #[cfg(test)]
-    fail_registry_save: bool,
-}
-
-#[derive(Debug, Clone)]
-struct Registry {
-    schema_version: u32,
-    active_number: Option<u32>,
-    previous_active_number: Option<u32>,
-    next_number: u32,
-    accounts: Vec<StoredAccount>,
-}
-
-#[derive(Debug, Clone)]
-struct StoredAccount {
-    number: u32,
-    alias: Option<String>,
-    account_label: Option<String>,
-    plan_label: Option<String>,
-    auth_hash: String,
-    snapshot_path: String,
-    imported_at_unix: u64,
-    last_activated_at_unix: Option<u64>,
 }
 
 struct TempDirCleanup {
@@ -79,20 +53,6 @@ impl Default for CodexPlugin {
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("codex")),
-            #[cfg(test)]
-            fail_registry_save: false,
-        }
-    }
-}
-
-impl Default for Registry {
-    fn default() -> Self {
-        Self {
-            schema_version: REGISTRY_SCHEMA_VERSION,
-            active_number: None,
-            previous_active_number: None,
-            next_number: 1,
-            accounts: Vec::new(),
         }
     }
 }
@@ -119,21 +79,6 @@ impl CodexPlugin {
             codex_home: Some(codex_home.into()),
             state_root: Some(state_root.into()),
             codex_executable: codex_executable.into(),
-            #[cfg(test)]
-            fail_registry_save: false,
-        }
-    }
-
-    #[cfg(test)]
-    fn with_paths_and_registry_save_failure(
-        codex_home: impl Into<PathBuf>,
-        state_root: impl Into<PathBuf>,
-    ) -> Self {
-        Self {
-            codex_home: Some(codex_home.into()),
-            state_root: Some(state_root.into()),
-            fail_registry_save: true,
-            ..Self::default()
         }
     }
 
@@ -191,8 +136,8 @@ impl CodexPlugin {
         Ok(self.platform_state_dir()?.join("login"))
     }
 
-    fn registry_path(&self) -> Result<PathBuf> {
-        Ok(self.platform_state_dir()?.join("registry.omx"))
+    fn state_store(&self) -> Result<StateStore> {
+        StateStore::open(&self.state_root()?)
     }
 
     fn active_auth_path(&self) -> Result<PathBuf> {
@@ -213,63 +158,40 @@ impl CodexPlugin {
             .join(format!("{profile_name}.config.toml")))
     }
 
-    fn account_snapshot_path(&self, number: u32) -> Result<PathBuf> {
-        Ok(self.accounts_dir()?.join(format!("{number}.auth.json")))
+    fn account_snapshot_path(&self, auth_hash: &str) -> Result<PathBuf> {
+        Ok(self.accounts_dir()?.join(format!("{auth_hash}.auth.json")))
     }
 
-    fn load_registry(&self) -> Result<Registry> {
-        let path = self.registry_path()?;
-        if !path.exists() {
-            return Ok(Registry::default());
-        }
-
-        let text = String::from_utf8(read_file(&path)?)
-            .map_err(|err| OpenMuxError::Message(format!("{}: {err}", display_path(&path))))?;
-        let mut registry = parse_registry(&path, &text)?;
-        if registry.schema_version > REGISTRY_SCHEMA_VERSION {
-            return Err(OpenMuxError::Message(format!(
-                "registry schema {} is newer than this OpenMux build supports",
-                registry.schema_version
-            )));
-        }
-        registry.accounts.sort_by_key(|account| account.number);
-        registry.next_number = registry.next_number.max(
-            registry
-                .accounts
-                .iter()
-                .map(|account| account.number)
-                .max()
-                .unwrap_or(0)
-                + 1,
-        );
-        Ok(registry)
+    #[cfg(test)]
+    fn account_snapshot_path_for_number(&self, number: u32) -> Result<PathBuf> {
+        let account = self
+            .state_store()?
+            .account_by_selector(self.id(), &number.to_string())?
+            .ok_or_else(|| OpenMuxError::AccountNotFound {
+                platform: self.id().to_string(),
+                account: number.to_string(),
+            })?;
+        Ok(PathBuf::from(account.secret_ref))
     }
 
-    fn save_registry(&self, registry: &Registry) -> Result<()> {
-        #[cfg(test)]
-        if self.fail_registry_save {
-            return Err(OpenMuxError::Message(
-                "injected Codex registry save failure".to_string(),
-            ));
-        }
-        let path = self.registry_path()?;
-        write_file_atomic_private(&path, encode_registry(registry).as_bytes())
-    }
-
-    fn account_ref(&self, account: &StoredAccount) -> AccountRef {
+    fn account_ref(&self, account: &AccountRecord) -> AccountRef {
         AccountRef {
             platform: self.id().to_string(),
-            number: account.number,
+            number: account.display_number,
             alias: account.alias.clone(),
         }
     }
 
-    fn account_status(&self, account: &StoredAccount, active_number: Option<u32>) -> AccountStatus {
+    fn account_status(
+        &self,
+        account: &AccountRecord,
+        active_local_id: Option<&str>,
+    ) -> AccountStatus {
         let metadata = self.metadata_from_snapshot(account);
         let usage = self.usage_from_snapshot(account);
         let availability = usage.summary.clone();
         AccountStatus {
-            active: active_number == Some(account.number),
+            active: active_local_id == Some(account.local_id.as_str()),
             account: self.account_ref(account),
             account_label: account.account_label.clone().or(metadata.account_label),
             plan_label: account.plan_label.clone().or(metadata.plan_label),
@@ -280,20 +202,20 @@ impl CodexPlugin {
         }
     }
 
-    fn metadata_from_snapshot(&self, account: &StoredAccount) -> CodexAccountMetadata {
-        read_file(Path::new(&account.snapshot_path))
+    fn metadata_from_snapshot(&self, account: &AccountRecord) -> CodexAccountMetadata {
+        read_file(Path::new(&account.secret_ref))
             .ok()
             .map(|bytes| extract_codex_account_metadata(&bytes))
             .unwrap_or_default()
     }
 
-    fn usage_from_snapshot(&self, account: &StoredAccount) -> UsageSnapshot {
-        let Some(auth) = read_file(Path::new(&account.snapshot_path))
+    fn usage_from_snapshot(&self, account: &AccountRecord) -> UsageSnapshot {
+        let Some(auth) = read_file(Path::new(&account.secret_ref))
             .ok()
             .and_then(|bytes| parse_codex_usage_auth(&bytes))
         else {
-            return UsageSnapshot::unknown(
-                UsageSource::RemoteApi,
+            return self.usage_with_cached_fallback(
+                account,
                 UsageDiagnostic {
                     code: "auth".to_string(),
                     message: "stored auth snapshot is missing ChatGPT access token or account id"
@@ -305,19 +227,60 @@ impl CodexPlugin {
         let payload = match self.fetch_codex_usage(&auth) {
             Ok(payload) => payload,
             Err(diagnostic) => {
-                return UsageSnapshot::unknown(UsageSource::RemoteApi, diagnostic);
+                return self.usage_with_cached_fallback(account, diagnostic);
             }
         };
 
-        parse_codex_usage_snapshot(&payload, unix_now() as i64).unwrap_or_else(|| {
-            UsageSnapshot::unknown(
-                UsageSource::RemoteApi,
+        match parse_codex_usage_snapshot(&payload, unix_now() as i64) {
+            Some(usage) => {
+                if let Ok(store) = self.state_store() {
+                    let _ = store.record_refresh_attempt(
+                        &account.local_id,
+                        self.id(),
+                        "success",
+                        None,
+                        unix_now(),
+                    );
+                    let _ = store.save_quota_snapshot(&account.local_id, self.id(), &usage);
+                }
+                usage
+            }
+            None => self.usage_with_cached_fallback(
+                account,
                 UsageDiagnostic {
                     code: "schema".to_string(),
                     message: "Codex usage response did not include known quota fields".to_string(),
                 },
-            )
-        })
+            ),
+        }
+    }
+
+    fn usage_with_cached_fallback(
+        &self,
+        account: &AccountRecord,
+        diagnostic: UsageDiagnostic,
+    ) -> UsageSnapshot {
+        if let Ok(store) = self.state_store() {
+            let _ = store.record_refresh_attempt(
+                &account.local_id,
+                self.id(),
+                "error",
+                Some(&diagnostic),
+                unix_now(),
+            );
+        }
+        if let Some(mut cached) = self.state_store().ok().and_then(|store| {
+            store
+                .latest_quota_snapshot(&account.local_id)
+                .ok()
+                .flatten()
+        }) {
+            cached.source = UsageSource::StoredSnapshot;
+            cached.diagnostics = vec![diagnostic];
+            return cached;
+        }
+
+        UsageSnapshot::unknown(UsageSource::RemoteApi, diagnostic)
     }
 
     fn fetch_codex_usage(
@@ -389,26 +352,9 @@ impl CodexPlugin {
         })
     }
 
-    fn resolve_account<'a>(
-        &self,
-        registry: &'a Registry,
-        selector: &str,
-    ) -> Result<&'a StoredAccount> {
-        if let Ok(number) = selector.parse::<u32>() {
-            return registry
-                .accounts
-                .iter()
-                .find(|account| account.number == number)
-                .ok_or_else(|| OpenMuxError::AccountNotFound {
-                    platform: self.id().to_string(),
-                    account: selector.to_string(),
-                });
-        }
-
-        registry
-            .accounts
-            .iter()
-            .find(|account| account.alias.as_deref() == Some(selector))
+    fn resolve_account(&self, selector: &str) -> Result<AccountRecord> {
+        self.state_store()?
+            .account_by_selector(self.id(), selector)?
             .ok_or_else(|| OpenMuxError::AccountNotFound {
                 platform: self.id().to_string(),
                 account: selector.to_string(),
@@ -430,74 +376,41 @@ impl CodexPlugin {
 
         let auth_hash = sha256_hex(auth_bytes);
         let metadata = extract_codex_account_metadata(auth_bytes);
-        let mut registry = self.load_registry()?;
         let now = unix_now();
-        let account_ref;
-
-        let existing_index = registry
-            .accounts
-            .iter()
-            .position(|account| account.auth_hash == auth_hash);
-        let existing_number = existing_index.map(|index| registry.accounts[index].number);
-        ensure_alias_available(&registry, alias.as_deref(), existing_number)?;
-
-        if let Some(index) = existing_index {
-            let number = registry.accounts[index].number;
-            let snapshot_path = self.account_snapshot_path(number)?;
-            write_file_atomic_private(&snapshot_path, auth_bytes)?;
-
-            {
-                let account = &mut registry.accounts[index];
-                if alias.is_some() {
-                    account.alias = alias;
-                }
-                account.account_label = metadata
-                    .account_label
-                    .or_else(|| account.account_label.clone());
-                account.plan_label = metadata.plan_label.or_else(|| account.plan_label.clone());
-                account.snapshot_path = display_path(&snapshot_path);
-                account.imported_at_unix = now;
+        let snapshot_path = self.account_snapshot_path(&auth_hash)?;
+        write_file_atomic_private(&snapshot_path, auth_bytes)?;
+        let store = self.state_store()?;
+        if let Some(alias) = alias.as_deref() {
+            let existing = store
+                .account_by_selector(self.id(), alias)?
+                .map(|account| account.local_id);
+            let same_auth = store
+                .list_accounts(self.id())?
+                .into_iter()
+                .find(|account| account.auth_hash == auth_hash)
+                .map(|account| account.local_id);
+            if existing.is_some() && existing != same_auth {
+                return Err(OpenMuxError::Message(format!(
+                    "alias `{alias}` is already used by another account"
+                )));
             }
-            account_ref = self.account_ref(&registry.accounts[index]);
-        } else {
-            let number = registry.next_number;
-            registry.next_number += 1;
-            let snapshot_path = self.account_snapshot_path(number)?;
-            write_file_atomic_private(&snapshot_path, auth_bytes)?;
-            registry.accounts.push(StoredAccount {
-                number,
-                alias,
-                account_label: metadata.account_label,
-                plan_label: metadata.plan_label,
-                auth_hash,
-                snapshot_path: display_path(&snapshot_path),
-                imported_at_unix: now,
-                last_activated_at_unix: None,
-            });
-            registry.accounts.sort_by_key(|account| account.number);
-            let account = registry
-                .accounts
-                .iter()
-                .find(|account| account.number == number)
-                .expect("new account should exist");
-            account_ref = self.account_ref(account);
         }
+        let account = store.upsert_account(UpsertAccount {
+            provider: self.id().to_string(),
+            alias,
+            account_label: metadata.account_label,
+            plan_label: metadata.plan_label,
+            auth_type: None,
+            expires_at_unix: None,
+            auth_hash,
+            secret_ref: display_path(&snapshot_path),
+            imported_at_unix: now,
+        })?;
+        let account_ref = self.account_ref(&account);
 
         if mark_active {
-            if registry.active_number != Some(account_ref.number) {
-                registry.previous_active_number = registry.active_number;
-            }
-            registry.active_number = Some(account_ref.number);
-            if let Some(account) = registry
-                .accounts
-                .iter_mut()
-                .find(|account| account.number == account_ref.number)
-            {
-                account.last_activated_at_unix = Some(now);
-            }
+            store.set_active_account(self.id(), &account.local_id, now)?;
         }
-
-        self.save_registry(&registry)?;
         Ok(account_ref)
     }
 
@@ -512,6 +425,19 @@ impl CodexPlugin {
         let imported = parse_codex_import_config(raw_content, options.name.as_deref())?;
         let profile_path = self.profile_config_path(&imported.profile_name)?;
         write_file_atomic_private(&profile_path, imported.config_toml.as_bytes())?;
+        let profile = self.state_store()?.upsert_profile(UpsertProfile {
+            provider: self.id().to_string(),
+            name: imported.profile_name.clone(),
+            label: None,
+            profile_kind: "config".to_string(),
+            provider_id: imported.provider_id.clone(),
+            base_url: imported.base_url.clone(),
+            model: imported.model.clone(),
+            auth_type: imported.auth_type.clone(),
+            config_hash: sha256_hex(imported.config_toml.as_bytes()),
+            secret_ref: display_path(&profile_path),
+            imported_at_unix: unix_now(),
+        })?;
 
         Ok(ImportedConfig {
             platform: self.info(),
@@ -520,105 +446,38 @@ impl CodexPlugin {
             provider_id: imported.provider_id,
             base_url: imported.base_url,
             model: imported.model,
-            number: None,
+            number: profile.display_number,
             auth_type: imported.auth_type,
         })
     }
 
     fn list_codex_profiles(&self) -> Result<Vec<ConfigProfile>> {
-        let codex_home = self.codex_home()?;
-        if !codex_home.exists() {
-            return Ok(Vec::new());
-        }
-        let account_active = self.load_registry()?.active_number.is_some();
-        let active_config = self
-            .config_path()
-            .ok()
-            .and_then(|path| read_file(&path).ok());
-
-        let mut profiles = Vec::new();
-        for entry in fs::read_dir(&codex_home).map_err(|err| io_error(&codex_home, err))? {
-            let entry = entry.map_err(|err| io_error(&codex_home, err))?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
-                continue;
-            };
-            let Some(profile_name) = file_name.strip_suffix(".config.toml") else {
-                continue;
-            };
-            if profile_name.is_empty() || profile_name == "config" {
-                continue;
-            }
-
-            let text = String::from_utf8(read_file(&path)?)
-                .map_err(|err| OpenMuxError::Message(format!("{}: {err}", display_path(&path))))?;
-            let profile_bytes = text.as_bytes();
-            let parsed = parse_codex_profile_file(profile_name, &text);
-            profiles.push(ConfigProfile {
-                platform: self.info(),
-                name: profile_name.to_string(),
-                active: !account_active
-                    && active_config
-                        .as_ref()
-                        .is_some_and(|active| active.as_slice() == profile_bytes),
-                config_path: display_path(&path),
-                provider_id: parsed.provider_id,
-                base_url: parsed.base_url,
-                model: parsed.model,
-                number: None,
-                auth_type: parsed.auth_type,
-            });
-        }
-
-        profiles.sort_by(|left, right| left.name.cmp(&right.name));
-        Ok(profiles)
+        let store = self.state_store()?;
+        let active = store.active_profile(self.id())?;
+        Ok(store
+            .list_profiles(self.id())?
+            .into_iter()
+            .map(|profile| {
+                let is_active = active
+                    .as_ref()
+                    .is_some_and(|active| active.local_id == profile.local_id);
+                profile.to_config_profile(self.info(), is_active)
+            })
+            .collect())
     }
 
-    fn config_profile_by_name(&self, selector: &str) -> Result<Option<ConfigProfile>> {
-        if selector == "default" {
-            let path = self.default_config_snapshot_path()?;
-            if path.exists() {
-                let text = String::from_utf8(read_file(&path)?).map_err(|err| {
-                    OpenMuxError::Message(format!("{}: {err}", display_path(&path)))
-                })?;
-                let parsed = parse_codex_profile_file("default", &text);
-                let active = self.load_registry()?.active_number.is_none()
-                    && self
-                        .config_path()
-                        .ok()
-                        .and_then(|path| read_file(&path).ok())
-                        .is_some_and(|active| active == text.as_bytes());
-                return Ok(Some(ConfigProfile {
-                    platform: self.info(),
-                    name: "default".to_string(),
-                    active,
-                    config_path: display_path(&path),
-                    provider_id: parsed.provider_id,
-                    base_url: parsed.base_url,
-                    model: parsed.model,
-                    number: None,
-                    auth_type: parsed.auth_type,
-                }));
-            }
-        }
-
-        Ok(self
-            .list_codex_profiles()?
-            .into_iter()
-            .find(|profile| profile.name == selector))
+    fn config_profile_by_selector(&self, selector: &str) -> Result<Option<ProfileRecord>> {
+        self.state_store()?.profile_by_selector(self.id(), selector)
     }
 
     fn switch_to_config_profile(&self, selector: &str) -> Result<ConfigSwitchReport> {
-        let profile = self.config_profile_by_name(selector)?.ok_or_else(|| {
+        let profile = self.config_profile_by_selector(selector)?.ok_or_else(|| {
             OpenMuxError::AccountNotFound {
                 platform: self.id().to_string(),
                 account: selector.to_string(),
             }
         })?;
-        let source_path = PathBuf::from(&profile.config_path);
+        let source_path = PathBuf::from(&profile.secret_ref);
         if !source_path.exists() {
             return Err(OpenMuxError::Message(format!(
                 "stored config profile `{}` is missing at {}",
@@ -653,11 +512,10 @@ impl CodexPlugin {
         }
 
         write_file_atomic_private(&config_path, &next_bytes)?;
-        let mut registry = self.load_registry()?;
-        let previous_active_number = registry.active_number;
-        registry.previous_active_number = previous_active_number;
-        registry.active_number = None;
-        if let Err(err) = self.save_registry(&registry) {
+        if let Err(err) =
+            self.state_store()?
+                .set_active_profile(self.id(), &profile.local_id, unix_now())
+        {
             let rollback = match current_bytes {
                 Some(bytes) => write_file_atomic_private(&config_path, &bytes),
                 None => fs::remove_file(&config_path)
@@ -665,21 +523,60 @@ impl CodexPlugin {
             };
             return match rollback {
                 Ok(()) => Err(OpenMuxError::Message(format!(
-                    "failed to update registry after switching profile; config was rolled back: {err}"
+                    "failed to update state store after switching profile; config was rolled back: {err}"
                 ))),
                 Err(rollback_err) => Err(OpenMuxError::Message(format!(
-                    "failed to update registry after switching profile and rollback failed: {err}; rollback error: {rollback_err}; backup: {}",
+                    "failed to update state store after switching profile and rollback failed: {err}; rollback error: {rollback_err}; backup: {}",
                     backup_path.as_deref().unwrap_or("none")
                 ))),
             };
         }
-        let mut active_profile = profile;
-        active_profile.active = true;
+        let active_profile = profile.to_config_profile(self.info(), true);
         Ok(ConfigSwitchReport {
             platform: self.info(),
             profile: active_profile,
             config_path: display_path(&config_path),
             backup_path,
+        })
+    }
+
+    fn remove_account(&self, selector: &str) -> Result<RemovedAccount> {
+        let store = self.state_store()?;
+        let account = self.resolve_account(selector)?;
+        let was_active = store
+            .active_account(self.id())?
+            .is_some_and(|active| active.local_id == account.local_id);
+        let mut removed_paths = Vec::new();
+
+        remove_file_if_exists(Path::new(&account.secret_ref), &mut removed_paths)?;
+        store.archive_account(&account.local_id, unix_now())?;
+
+        Ok(RemovedAccount {
+            account: self.account_ref(&account),
+            was_active,
+            removed_paths,
+        })
+    }
+
+    fn remove_config_profile(&self, selector: &str) -> Result<RemovedConfig> {
+        let store = self.state_store()?;
+        let profile = self.config_profile_by_selector(selector)?.ok_or_else(|| {
+            OpenMuxError::AccountNotFound {
+                platform: self.id().to_string(),
+                account: selector.to_string(),
+            }
+        })?;
+        let was_active = store
+            .active_profile(self.id())?
+            .is_some_and(|active| active.local_id == profile.local_id);
+        let mut removed_paths = Vec::new();
+        remove_file_if_exists(Path::new(&profile.secret_ref), &mut removed_paths)?;
+        store.archive_profile(&profile.local_id, unix_now())?;
+
+        Ok(RemovedConfig {
+            was_active,
+            profile: profile.to_config_profile(self.info(), was_active),
+            removed_paths,
         })
     }
 }
@@ -706,19 +603,13 @@ impl PlatformPlugin for CodexPlugin {
     }
 
     fn pool_summary(&self) -> Result<PlatformPoolSummary> {
-        let registry = self.load_registry()?;
-        let active = registry
-            .active_number
-            .and_then(|number| {
-                registry
-                    .accounts
-                    .iter()
-                    .find(|account| account.number == number)
-            })
-            .map(|account| self.account_ref(account));
+        let store = self.state_store()?;
+        let accounts = store.list_accounts(self.id())?;
+        let active = store
+            .active_account(self.id())?
+            .map(|account| self.account_ref(&account));
         let availability = summarize_usage_availability(
-            registry
-                .accounts
+            accounts
                 .iter()
                 .map(|account| self.usage_from_snapshot(account))
                 .collect(),
@@ -726,40 +617,29 @@ impl PlatformPlugin for CodexPlugin {
 
         Ok(PlatformPoolSummary {
             platform: self.info(),
-            account_count: registry.accounts.len(),
+            account_count: accounts.len(),
             active,
-            profile_count: self
-                .list_codex_profiles()
-                .map(|profiles| profiles.len())
-                .unwrap_or(0),
-            active_profile: self
-                .list_codex_profiles()
-                .ok()
-                .and_then(|profiles| profiles.into_iter().find(|profile| profile.active))
-                .map(|profile| profile.name),
+            profile_count: store.list_profiles(self.id())?.len(),
+            active_profile: store.active_profile(self.id())?.map(|profile| profile.name),
             availability,
         })
     }
 
     fn current(&self) -> Result<Option<AccountStatus>> {
-        let registry = self.load_registry()?;
-        let Some(active_number) = registry.active_number else {
+        let Some(active) = self.state_store()?.active_account(self.id())? else {
             return Ok(None);
         };
-
-        Ok(registry
-            .accounts
-            .iter()
-            .find(|account| account.number == active_number)
-            .map(|account| self.account_status(account, Some(active_number))))
+        Ok(Some(self.account_status(&active, Some(&active.local_id))))
     }
 
     fn list_accounts(&self) -> Result<Vec<AccountStatus>> {
-        let registry = self.load_registry()?;
-        Ok(registry
-            .accounts
+        let store = self.state_store()?;
+        let active = store.active_account(self.id())?;
+        let active_id = active.as_ref().map(|account| account.local_id.as_str());
+        Ok(store
+            .list_accounts(self.id())?
             .iter()
-            .map(|account| self.account_status(account, registry.active_number))
+            .map(|account| self.account_status(account, active_id))
             .collect())
     }
 
@@ -838,14 +718,13 @@ impl PlatformPlugin for CodexPlugin {
     }
 
     fn use_target(&self, selector: &str) -> Result<UseReport> {
-        let registry = self.load_registry()?;
-        let account_match = self.resolve_account(&registry, selector).ok().cloned();
-        let profile_match = self.config_profile_by_name(selector)?;
+        let account_match = self.resolve_account(selector).ok();
+        let profile_match = self.config_profile_by_selector(selector)?;
 
         match (account_match, profile_match) {
             (Some(account), Some(profile)) => Err(OpenMuxError::Message(format!(
                 "`{selector}` matches both account #{} and profile `{}`; use a unique alias or profile name",
-                account.number, profile.name
+                account.display_number, profile.name
             ))),
             (Some(_), None) => self.switch_to(selector).map(UseReport::Account),
             (None, Some(_)) => self
@@ -858,14 +737,34 @@ impl PlatformPlugin for CodexPlugin {
         }
     }
 
+    fn remove_target(&self, selector: &str) -> Result<RemoveReport> {
+        let account_match = self.resolve_account(selector).ok();
+        let profile_match = self.config_profile_by_selector(selector)?;
+
+        match (account_match, profile_match) {
+            (Some(account), Some(profile)) => Err(OpenMuxError::Message(format!(
+                "`{selector}` matches both account #{} and profile `{}`; use a unique alias or profile name",
+                account.display_number, profile.name
+            ))),
+            (Some(_), None) => self.remove_account(selector).map(RemoveReport::Account),
+            (None, Some(_)) => self
+                .remove_config_profile(selector)
+                .map(RemoveReport::Config),
+            (None, None) => Err(OpenMuxError::AccountNotFound {
+                platform: self.id().to_string(),
+                account: selector.to_string(),
+            }),
+        }
+    }
+
     fn switch_to(&self, selector: &str) -> Result<SwitchReport> {
-        let mut registry = self.load_registry()?;
-        let account = self.resolve_account(&registry, selector)?.clone();
-        let snapshot_path = PathBuf::from(&account.snapshot_path);
+        let store = self.state_store()?;
+        let account = self.resolve_account(selector)?;
+        let snapshot_path = PathBuf::from(&account.secret_ref);
         if !snapshot_path.exists() {
             return Err(OpenMuxError::Message(format!(
                 "stored auth snapshot for account #{} is missing at {}",
-                account.number,
+                account.display_number,
                 display_path(&snapshot_path)
             )));
         }
@@ -876,7 +775,7 @@ impl PlatformPlugin for CodexPlugin {
         if next_hash != account.auth_hash {
             return Err(OpenMuxError::Message(format!(
                 "stored auth snapshot for account #{} failed hash verification",
-                account.number
+                account.display_number
             )));
         }
 
@@ -938,26 +837,11 @@ impl PlatformPlugin for CodexPlugin {
             _ => {}
         }
 
-        let previous = registry
-            .active_number
-            .filter(|current| *current != account.number)
-            .and_then(|current| {
-                registry
-                    .accounts
-                    .iter()
-                    .find(|stored| stored.number == current)
-                    .map(|stored| self.account_ref(stored))
-            });
-        registry.previous_active_number = previous.as_ref().map(|account| account.number);
-        registry.active_number = Some(account.number);
-        if let Some(stored) = registry
-            .accounts
-            .iter_mut()
-            .find(|stored| stored.number == account.number)
-        {
-            stored.last_activated_at_unix = Some(unix_now());
-        }
-        if let Err(err) = self.save_registry(&registry) {
+        let previous = store
+            .active_account(self.id())?
+            .filter(|current| current.local_id != account.local_id)
+            .map(|stored| self.account_ref(&stored));
+        if let Err(err) = store.set_active_account(self.id(), &account.local_id, unix_now()) {
             let auth_rollback = match current_bytes {
                 Some(bytes) => write_file_atomic_private(&auth_path, &bytes),
                 None => fs::remove_file(&auth_path)
@@ -971,11 +855,11 @@ impl PlatformPlugin for CodexPlugin {
             };
             if auth_rollback.is_ok() && config_rollback.is_ok() {
                 return Err(OpenMuxError::Message(format!(
-                    "failed to update registry after switching auth; active auth and config were rolled back: {err}"
+                    "failed to update state store after switching auth; active auth and config were rolled back: {err}"
                 )));
             }
             return Err(OpenMuxError::Message(format!(
-                "failed to update registry after switching auth and rollback was incomplete: {err}; auth rollback: {}; config rollback: {}; backup: {}",
+                "failed to update state store after switching auth and rollback was incomplete: {err}; auth rollback: {}; config rollback: {}; backup: {}",
                 rollback_status(auth_rollback),
                 rollback_status(config_rollback),
                 backup_path
@@ -994,29 +878,27 @@ impl PlatformPlugin for CodexPlugin {
     fn set_alias(&self, selector: &str, alias: &str) -> Result<AccountRef> {
         validate_alias(alias)?;
 
-        let mut registry = self.load_registry()?;
-        let number = self.resolve_account(&registry, selector)?.number;
-        ensure_alias_available(&registry, Some(alias), Some(number))?;
-
-        let account_ref = {
-            let account = registry
-                .accounts
-                .iter_mut()
-                .find(|account| account.number == number)
-                .expect("resolved account should exist");
-            account.alias = Some(alias.to_string());
-            self.account_ref(account)
-        };
-        self.save_registry(&registry)?;
-        Ok(account_ref)
+        let store = self.state_store()?;
+        let account = self.resolve_account(selector)?;
+        ensure_alias_available(
+            &store.list_accounts(self.id())?,
+            alias,
+            Some(&account.local_id),
+        )?;
+        store.set_account_alias(&account.local_id, alias, unix_now())?;
+        Ok(self.account_ref(
+            &store
+                .account_by_selector(self.id(), alias)?
+                .expect("updated alias should resolve"),
+        ))
     }
 
     fn doctor(&self) -> Result<DoctorReport> {
         let codex_home = self.codex_home()?;
         let state_dir = self.platform_state_dir()?;
         let auth_path = self.active_auth_path()?;
-        let registry_path = self.registry_path()?;
-        let registry = self.load_registry();
+        let state_path = self.state_root()?.join("omx-state.sqlite");
+        let state_store = self.state_store();
 
         Ok(DoctorReport {
             platform: self.id().to_string(),
@@ -1037,13 +919,9 @@ impl PlatformPlugin for CodexPlugin {
                     message: display_path(&state_dir),
                 },
                 DoctorCheck {
-                    name: "registry".to_string(),
-                    ok: registry.is_ok(),
-                    message: if registry_path.exists() {
-                        display_path(&registry_path)
-                    } else {
-                        "not created yet".to_string()
-                    },
+                    name: "state-store".to_string(),
+                    ok: state_store.is_ok(),
+                    message: display_path(&state_path),
                 },
             ],
         })
@@ -1083,20 +961,17 @@ fn validate_alias(alias: &str) -> Result<()> {
 }
 
 fn ensure_alias_available(
-    registry: &Registry,
-    alias: Option<&str>,
-    allowed_number: Option<u32>,
+    accounts: &[AccountRecord],
+    alias: &str,
+    allowed_local_id: Option<&str>,
 ) -> Result<()> {
-    let Some(alias) = alias else {
-        return Ok(());
-    };
-
-    if let Some(existing) = registry.accounts.iter().find(|account| {
-        account.alias.as_deref() == Some(alias) && Some(account.number) != allowed_number
+    if let Some(existing) = accounts.iter().find(|account| {
+        account.alias.as_deref() == Some(alias)
+            && Some(account.local_id.as_str()) != allowed_local_id
     }) {
         return Err(OpenMuxError::Message(format!(
             "alias `{alias}` is already used by account #{}",
-            existing.number
+            existing.display_number
         )));
     }
 
@@ -1108,6 +983,14 @@ fn rollback_status(result: Result<()>) -> &'static str {
         Ok(()) => "ok",
         Err(_) => "failed",
     }
+}
+
+fn remove_file_if_exists(path: &Path, removed_paths: &mut Vec<String>) -> Result<()> {
+    if path.exists() {
+        fs::remove_file(path).map_err(|err| io_error(path, err))?;
+        removed_paths.push(display_path(path));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -1125,7 +1008,6 @@ struct CodexProfileMetadata {
     provider_id: Option<String>,
     base_url: Option<String>,
     model: Option<String>,
-    auth_type: Option<String>,
 }
 
 fn parse_codex_import_config(
@@ -1236,17 +1118,6 @@ fn parse_codex_kv_import(
     })
 }
 
-fn parse_codex_profile_file(_profile_name: &str, content: &str) -> CodexProfileMetadata {
-    toml::from_str(content)
-        .map(|value| codex_profile_metadata(&value))
-        .unwrap_or(CodexProfileMetadata {
-            provider_id: None,
-            base_url: None,
-            model: None,
-            auth_type: None,
-        })
-}
-
 fn codex_profile_metadata(value: &toml::Value) -> CodexProfileMetadata {
     let provider_id = value
         .get("model_provider")
@@ -1271,7 +1142,6 @@ fn codex_profile_metadata(value: &toml::Value) -> CodexProfileMetadata {
         provider_id,
         base_url,
         model,
-        auth_type: codex_profile_auth_type(value),
     }
 }
 

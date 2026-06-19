@@ -1,4 +1,6 @@
-use crate::{AccountRef, Availability, ConfigSwitchReport, PlatformInfo, SwitchReport};
+use crate::{
+    AccountRef, Availability, ConfigProfile, ConfigSwitchReport, PlatformInfo, SwitchReport,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -15,6 +17,26 @@ pub struct PlatformPoolSummary {
 pub enum UseReport {
     Account(SwitchReport),
     Config(ConfigSwitchReport),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RemoveReport {
+    Account(RemovedAccount),
+    Config(RemovedConfig),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemovedAccount {
+    pub account: AccountRef,
+    pub was_active: bool,
+    pub removed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemovedConfig {
+    pub profile: ConfigProfile,
+    pub was_active: bool,
+    pub removed_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

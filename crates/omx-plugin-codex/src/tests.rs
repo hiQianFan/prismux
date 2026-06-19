@@ -65,6 +65,36 @@ fn duplicate_save_updates_existing_account_instead_of_appending() {
     assert_eq!(second.alias.as_deref(), Some("same"));
 }
 
+#[test]
+fn remove_account_deletes_snapshot_and_excludes_from_list() {
+    let temp = test_temp_dir("remove-account");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    fs::write(codex_home.join(AUTH_FILE_NAME), br#"{"account":"work"}"#).unwrap();
+
+    let plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("work".to_string()),
+        })
+        .unwrap();
+    plugin.switch_to("work").unwrap();
+    let snapshot_path = plugin.account_snapshot_path_for_number(1).unwrap();
+    assert!(snapshot_path.exists());
+
+    let report = plugin.remove_target("work").unwrap();
+
+    let RemoveReport::Account(report) = report else {
+        panic!("expected account removal");
+    };
+    assert!(report.was_active);
+    assert_eq!(report.account.number, 1);
+    assert!(!snapshot_path.exists());
+    assert!(plugin.current().unwrap().is_none());
+    assert!(plugin.list_accounts().unwrap().is_empty());
+}
+
 #[cfg(unix)]
 #[test]
 fn duplicate_login_updates_existing_account_instead_of_appending() {
@@ -148,44 +178,6 @@ fn login_assigns_numbers_supports_alias_device_auth_and_use() {
 }
 
 #[test]
-fn switch_rolls_back_auth_when_registry_save_fails() {
-    let temp = test_temp_dir("switch-registry-rollback");
-    let codex_home = temp.join("codex-home");
-    let state_root = temp.join("openmux-state");
-    fs::create_dir_all(&codex_home).unwrap();
-    fs::write(codex_home.join(AUTH_FILE_NAME), br#"{"account":"work"}"#).unwrap();
-    let setup = CodexPlugin::with_paths(&codex_home, &state_root);
-    setup
-        .save_current(SaveOptions {
-            alias: Some("work".to_string()),
-        })
-        .unwrap();
-    fs::write(
-        codex_home.join(AUTH_FILE_NAME),
-        br#"{"account":"personal"}"#,
-    )
-    .unwrap();
-    setup
-        .save_current(SaveOptions {
-            alias: Some("personal".to_string()),
-        })
-        .unwrap();
-    assert_eq!(
-        fs::read(codex_home.join(AUTH_FILE_NAME)).unwrap(),
-        br#"{"account":"personal"}"#
-    );
-
-    let plugin = CodexPlugin::with_paths_and_registry_save_failure(&codex_home, &state_root);
-    let err = plugin.switch_to("work").unwrap_err();
-
-    assert!(err.to_string().contains("rolled back"));
-    assert_eq!(
-        fs::read(codex_home.join(AUTH_FILE_NAME)).unwrap(),
-        br#"{"account":"personal"}"#
-    );
-}
-
-#[test]
 fn alias_set_rejects_all_digit_aliases() {
     let temp = test_temp_dir("alias");
     let codex_home = temp.join("codex-home");
@@ -246,7 +238,7 @@ fn switch_rejects_tampered_auth_snapshot() {
     plugin.save_current(SaveOptions::default()).unwrap();
 
     fs::write(
-        plugin.account_snapshot_path(1).unwrap(),
+        plugin.account_snapshot_path_for_number(1).unwrap(),
         br#"{"account":"tampered"}"#,
     )
     .unwrap();
@@ -389,6 +381,33 @@ goals = true
 }
 
 #[test]
+fn remove_profile_deletes_codex_profile_file() {
+    let temp = test_temp_dir("remove-profile");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    let plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+    plugin
+        .import_config(ImportConfigOptions {
+            name: Some("gateway".to_string()),
+            content: "OPENAI_BASE_URL=https://gateway.example.com OPENAI_API_KEY=sk-test"
+                .to_string(),
+        })
+        .unwrap();
+    let profile_path = codex_home.join("gateway.config.toml");
+    assert!(profile_path.exists());
+
+    let report = plugin.remove_target("gateway").unwrap();
+
+    let RemoveReport::Config(report) = report else {
+        panic!("expected profile removal");
+    };
+    assert_eq!(report.profile.name, "gateway");
+    assert!(!profile_path.exists());
+    assert!(plugin.list_configs().unwrap().is_empty());
+}
+
+#[test]
 fn imports_openai_compatible_kv_without_storing_raw_api_key() {
     let temp = test_temp_dir("import-codex-kv-config");
     let codex_home = temp.join("codex-home");
@@ -480,30 +499,6 @@ fn parses_curl_http_output_error_status() {
 }
 
 #[test]
-fn parses_legacy_registry_account_lines_without_identity_metadata() {
-    let text = concat!(
-        "schema_version\t1\n",
-        "active_number\t1\n",
-        "next_number\t2\n",
-        "account\t1\t\tabc123\t/tmp/1.auth.json\t1781516517\t1781516517\n",
-    );
-
-    let registry = parse_registry(Path::new("/tmp/registry.omx"), text).unwrap();
-    assert_eq!(registry.accounts.len(), 1);
-    assert_eq!(registry.accounts[0].number, 1);
-    assert_eq!(registry.accounts[0].alias, None);
-    assert_eq!(registry.accounts[0].account_label, None);
-    assert_eq!(registry.accounts[0].plan_label, None);
-    assert_eq!(registry.accounts[0].auth_hash, "abc123");
-    assert_eq!(registry.accounts[0].snapshot_path, "/tmp/1.auth.json");
-    assert_eq!(registry.accounts[0].imported_at_unix, 1781516517);
-    assert_eq!(
-        registry.accounts[0].last_activated_at_unix,
-        Some(1781516517)
-    );
-}
-
-#[test]
 fn parses_codex_usage_windows_as_structured_limits() {
     let payload = serde_json::json!({
         "rate_limit": {
@@ -529,6 +524,59 @@ fn parses_codex_usage_windows_as_structured_limits() {
     assert_eq!(usage.limits[0].reset_at_unix, Some(1_725_000_000));
     assert_eq!(usage.limits[1].label, "weekly");
     assert_eq!(usage.limits[1].remaining_percent_x100, Some(1_900));
+}
+
+#[test]
+fn list_accounts_keeps_last_usage_snapshot_when_refresh_fails() {
+    let temp = test_temp_dir("usage-refresh-fallback");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    fs::write(codex_home.join(AUTH_FILE_NAME), br#"{"account":"work"}"#).unwrap();
+
+    let plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("work".to_string()),
+        })
+        .unwrap();
+    let store = plugin.state_store().unwrap();
+    let account = store.list_accounts(plugin.id()).unwrap().remove(0);
+    store
+        .save_quota_snapshot(
+            &account.local_id,
+            plugin.id(),
+            &UsageSnapshot {
+                source: UsageSource::RemoteApi,
+                refreshed_at_unix: Some(1_785_000_000),
+                summary: Availability {
+                    state: AvailabilityState::Available,
+                    display: "72%".to_string(),
+                },
+                limits: vec![UsageLimit {
+                    id: "five-hour".to_string(),
+                    label: "5h".to_string(),
+                    scope: UsageLimitScope::Account,
+                    kind: UsageLimitKind::RollingWindow,
+                    window_seconds: Some(18_000),
+                    used_percent_x100: Some(2_800),
+                    remaining_percent_x100: Some(7_200),
+                    reset_at_unix: Some(1_785_018_000),
+                    exhausted: Some(false),
+                    raw_provider_key: None,
+                }],
+                diagnostics: Vec::new(),
+            },
+        )
+        .unwrap();
+
+    let status = plugin.list_accounts().unwrap().remove(0);
+    let usage = status.usage.unwrap();
+
+    assert_eq!(usage.source, UsageSource::StoredSnapshot);
+    assert_eq!(usage.refreshed_at_unix, Some(1_785_000_000));
+    assert_eq!(usage.limits[0].remaining_percent_x100, Some(7_200));
+    assert_eq!(usage.diagnostics[0].code, "auth");
 }
 
 #[test]

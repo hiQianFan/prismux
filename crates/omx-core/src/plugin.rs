@@ -1,7 +1,7 @@
 use crate::{
     AccountRef, AccountStatus, ConfigProfile, DoctorReport, ImportConfigOptions, ImportedConfig,
-    LoginOptions, PlatformCapabilities, PlatformInstall, PlatformPoolSummary, Result, SaveOptions,
-    SwitchReport, UseReport,
+    LoginOptions, OpenMuxError, PlatformCapabilities, PlatformInstall, PlatformPoolSummary,
+    RemoveReport, Result, SaveOptions, SwitchReport, UseReport,
 };
 
 pub trait PlatformPlugin {
@@ -24,6 +24,12 @@ pub trait PlatformPlugin {
     fn import_config(&self, options: ImportConfigOptions) -> Result<ImportedConfig>;
     fn use_target(&self, selector: &str) -> Result<UseReport> {
         self.switch_to(selector).map(UseReport::Account)
+    }
+    fn remove_target(&self, _selector: &str) -> Result<RemoveReport> {
+        Err(OpenMuxError::Message(format!(
+            "{} does not support removing managed targets yet",
+            self.name()
+        )))
     }
     fn switch_to(&self, selector: &str) -> Result<SwitchReport>;
     fn set_alias(&self, selector: &str, alias: &str) -> Result<AccountRef>;

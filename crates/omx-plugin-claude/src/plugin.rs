@@ -5,8 +5,8 @@ use omx_core::{
     ProfileRecord, RemoveReport, RemovedAccount, RemovedConfig, Result, SaveOptions, StateStore,
     SwitchReport, UpsertAccount, UpsertProfile, UseReport, platform_info,
     storage::{
-        create_dir_private, data_local_dir, display_path, home_dir, io_error, read_file,
-        sha256_hex, unix_now, unix_now_nanos, write_file_atomic_private,
+        create_dir_private, display_path, home_dir, io_error, read_file, sha256_hex,
+        state_root as default_state_root, unix_now, unix_now_nanos, write_file_atomic_private,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -262,15 +262,7 @@ impl ClaudePlugin {
             return Ok(path.clone());
         }
 
-        if let Some(path) = env::var_os("OMUX_STATE_ROOT").filter(|value| !value.is_empty()) {
-            return Ok(PathBuf::from(path));
-        }
-
-        data_local_dir()
-            .map(|path| path.join("openmux"))
-            .ok_or_else(|| {
-                OpenMuxError::Message("could not resolve the OpenMux data directory".into())
-            })
+        default_state_root()
     }
 
     fn platform_state_dir(&self) -> Result<PathBuf> {
@@ -460,7 +452,7 @@ impl ClaudePlugin {
         let mut removed_paths = Vec::new();
 
         remove_file_if_exists(Path::new(&profile.secret_ref), &mut removed_paths)?;
-        store.archive_profile(&profile.local_id, unix_now())?;
+        store.remove_profile(&profile.local_id)?;
 
         Ok(RemovedConfig {
             profile: profile_status,
@@ -690,15 +682,7 @@ impl ClaudeAccountPlugin {
             return Ok(path.clone());
         }
 
-        if let Some(path) = env::var_os("OMUX_STATE_ROOT").filter(|value| !value.is_empty()) {
-            return Ok(PathBuf::from(path));
-        }
-
-        data_local_dir()
-            .map(|path| path.join("openmux"))
-            .ok_or_else(|| {
-                OpenMuxError::Message("could not resolve the OpenMux data directory".into())
-            })
+        default_state_root()
     }
 
     fn platform_state_dir(&self) -> Result<PathBuf> {
@@ -918,6 +902,9 @@ impl ClaudeAccountPlugin {
         let account = self.state_store()?.upsert_account(UpsertAccount {
             provider: CLAUDE_STATE_PROVIDER.to_string(),
             alias: Some(sanitize_profile_name(&account_name)),
+            provider_subject_kind: None,
+            provider_subject_hash: None,
+            provider_subject_label: None,
             account_label: safe.email,
             plan_label: None,
             auth_type: Some(if safe.partial_metadata {
@@ -946,7 +933,7 @@ impl ClaudeAccountPlugin {
             &self.oauth_account_path_for_record(&account)?,
             &mut removed_paths,
         )?;
-        store.archive_account(&account.local_id, unix_now())?;
+        store.remove_account(&account.local_id)?;
 
         Ok(RemovedAccount {
             account: self.account_ref(&account),

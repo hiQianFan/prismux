@@ -66,6 +66,64 @@ fn duplicate_save_updates_existing_account_instead_of_appending() {
 }
 
 #[test]
+fn duplicate_codex_subject_updates_existing_account_even_when_auth_hash_changes() {
+    let temp = test_temp_dir("duplicate-subject");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    let plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+
+    fs::write(
+        codex_home.join(AUTH_FILE_NAME),
+        codex_auth_with_claims("profile@example.com", "plus", "user-123", "account-456", 1),
+    )
+    .unwrap();
+    let first = plugin.save_current(SaveOptions::default()).unwrap();
+
+    fs::write(
+        codex_home.join(AUTH_FILE_NAME),
+        codex_auth_with_claims("profile@example.com", "plus", "user-123", "account-456", 2),
+    )
+    .unwrap();
+    let second = plugin
+        .save_current(SaveOptions {
+            alias: Some("work".to_string()),
+        })
+        .unwrap();
+
+    let accounts = plugin.list_accounts().unwrap();
+    assert_eq!(first.number, second.number);
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0].account.alias.as_deref(), Some("work"));
+}
+
+#[test]
+fn same_email_with_different_codex_account_subjects_stays_separate() {
+    let temp = test_temp_dir("same-email-different-subject");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    let plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+
+    fs::write(
+        codex_home.join(AUTH_FILE_NAME),
+        codex_auth_with_claims("profile@example.com", "plus", "user-123", "account-456", 1),
+    )
+    .unwrap();
+    let first = plugin.save_current(SaveOptions::default()).unwrap();
+
+    fs::write(
+        codex_home.join(AUTH_FILE_NAME),
+        codex_auth_with_claims("profile@example.com", "team", "user-123", "account-789", 2),
+    )
+    .unwrap();
+    let second = plugin.save_current(SaveOptions::default()).unwrap();
+
+    assert_ne!(first.number, second.number);
+    assert_eq!(plugin.list_accounts().unwrap().len(), 2);
+}
+
+#[test]
 fn remove_account_deletes_snapshot_and_excludes_from_list() {
     let temp = test_temp_dir("remove-account");
     let codex_home = temp.join("codex-home");
@@ -189,6 +247,43 @@ fn alias_set_rejects_all_digit_aliases() {
     plugin.save_current(SaveOptions::default()).unwrap();
     let err = plugin.set_alias("1", "123").unwrap_err();
     assert!(err.to_string().contains("all digits"));
+}
+
+#[test]
+fn clear_alias_removes_alias_without_removing_account() {
+    let temp = test_temp_dir("clear-alias");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    fs::write(codex_home.join(AUTH_FILE_NAME), br#"{"account":"work"}"#).unwrap();
+
+    let plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("work".to_string()),
+        })
+        .unwrap();
+
+    let store = plugin.state_store().unwrap();
+    let cleared = store
+        .clear_account_alias_by_selector(plugin.id(), "work", unix_now())
+        .unwrap();
+
+    assert_eq!(cleared.number, 1);
+    assert_eq!(cleared.alias, None);
+    assert!(plugin.switch_to("1").is_ok());
+    assert!(
+        store
+            .account_by_selector(plugin.id(), "work")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .account_by_selector(plugin.id(), "1")
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]
@@ -456,6 +551,13 @@ fn extracts_account_and_plan_from_codex_id_token_like_official_codex() {
         Some("profile@example.com")
     );
     assert_eq!(metadata.plan_label.as_deref(), Some("Pro"));
+    assert_eq!(
+        metadata
+            .provider_subject
+            .as_ref()
+            .map(|subject| subject.kind.as_str()),
+        Some("codex_chatgpt_account")
+    );
 }
 
 #[test]
@@ -464,6 +566,13 @@ fn extracts_account_from_account_id_when_jwt_has_no_account_claims() {
     let metadata = extract_codex_account_metadata(auth);
     assert_eq!(metadata.account_label.as_deref(), Some("account-456"));
     assert_eq!(metadata.plan_label, None);
+    assert_eq!(
+        metadata
+            .provider_subject
+            .as_ref()
+            .map(|subject| subject.kind.as_str()),
+        Some("codex_account_id")
+    );
 }
 
 #[test]
@@ -647,6 +756,22 @@ fn fake_jwt(header: &str, payload: &str) -> String {
         base64_url_encode(header.as_bytes()),
         base64_url_encode(payload.as_bytes())
     )
+}
+
+fn codex_auth_with_claims(
+    email: &str,
+    plan: &str,
+    user_id: &str,
+    account_id: &str,
+    nonce: u32,
+) -> String {
+    let token = fake_jwt(
+        r#"{"alg":"none"}"#,
+        &format!(
+            r#"{{"iss":"https://auth.openai.com","sub":"{user_id}","https://api.openai.com/profile":{{"email":"{email}"}},"https://api.openai.com/auth":{{"chatgpt_plan_type":"{plan}","chatgpt_user_id":"{user_id}","chatgpt_account_id":"{account_id}"}},"nonce":{nonce}}}"#
+        ),
+    );
+    format!(r#"{{"tokens":{{"id_token":"{token}","account_id":"{account_id}"}}}}"#)
 }
 
 fn base64_url_encode(bytes: &[u8]) -> String {

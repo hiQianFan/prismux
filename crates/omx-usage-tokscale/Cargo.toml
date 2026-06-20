@@ -1,0 +1,13 @@
+[package]
+name = "omx-usage-tokscale"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omx-core = { path = "../omx-core" }
+tokscale-core = { path = "../../vendor/tokscale-core" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

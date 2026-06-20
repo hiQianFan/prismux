@@ -11,8 +11,9 @@ use comfy_table::{
 use inquire::Select;
 use omx_core::{
     AccountRef, AccountStatus, ConfigProfile, ImportConfigOptions, LoginOptions, PlatformPlugin,
-    RemoveReport, SaveOptions, TargetCatalog, TargetKind, TargetResolution, UsageLimit,
+    RemoveReport, SaveOptions, StateStore, TargetCatalog, TargetKind, TargetResolution, UsageLimit,
     UsageSnapshot, UseReport,
+    storage::{state_root, unix_now},
 };
 use omx_plugin_claude::{ClaudeAccountPlugin, ClaudePlugin};
 use omx_plugin_codex::CodexPlugin;
@@ -100,6 +101,13 @@ enum Command {
         selector: String,
         /// New alias.
         alias: String,
+    },
+    /// Clear a local alias for an account.
+    Unalias {
+        /// Platform id, for example: codex.
+        platform: String,
+        /// Account number or existing alias.
+        selector: String,
     },
     /// Run platform diagnostics.
     Doctor {
@@ -450,6 +458,17 @@ pub fn run() -> Result<()> {
                 "Updated {} account {}",
                 plugin.name(),
                 account_label(&account)
+            ));
+        }
+        Command::Unalias { platform, selector } => {
+            let plugin = find_plugin(&plugins, &platform)?;
+            let store = StateStore::open(&state_root()?)?;
+            let account =
+                store.clear_account_alias_by_selector(plugin.id(), &selector, unix_now())?;
+            print_success(format!(
+                "Cleared alias for {} account #{}",
+                plugin.name(),
+                account.number
             ));
         }
         Command::Doctor { platform } => {
@@ -1321,6 +1340,8 @@ mod tests {
 
         assert!(help.contains("remove"));
         assert!(help.contains("Remove a managed account or profile"));
+        assert!(help.contains("unalias"));
+        assert!(help.contains("Clear a local alias for an account"));
     }
 
     #[test]

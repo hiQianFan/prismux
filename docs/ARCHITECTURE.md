@@ -19,7 +19,7 @@ CLI 只负责命令解析和输出展示。跨平台共享概念放在 `omx-core
 ## Crates
 
 - `omx-core`：共享领域对象、错误、报告、账号池 summary、账号状态、登录/保存 options、SQLite `StateStore` 和 `PlatformPlugin` trait。
-- `omx-plugin-codex`：Codex 专属实现，包括 Codex home 解析、临时 `CODEX_HOME` 登录、auth snapshot、hash 去重、account/plan metadata 解析、SQLite account/profile 状态和 active auth 切换。
+- `omx-plugin-codex`：Codex 专属实现，包括 Codex home 解析、临时 `CODEX_HOME` 登录、auth snapshot、provider subject 去重、account/plan metadata 解析、SQLite account/profile 状态和 active auth 切换。
 - `omx-plugin-claude`：Claude Code 专属实现，包括 profile import、settings env patch、macOS Keychain/plaintext `.credentials.json` account snapshot、`oauthAccount` metadata 备份/恢复，以及共享 SQLite account/profile 状态。
 - `omx-cli`：`omx` 命令行前端，消费 core/plugin API，不拥有业务状态。
 
@@ -111,9 +111,11 @@ OpenMux state 位于用户平台数据目录下。SQLite 是 account/profile/act
     backups/credentials.snapshot.bak.<timestamp>
 ```
 
-`omx-state.sqlite` 包含 `accounts`、`profiles`、`active_targets`、`quota_snapshots` 和 `refresh_attempts`。SQLite 只保存非敏感 metadata、hash、`secret_ref`、display number、timestamps、active/archived 状态和 quota/refresh 历史；raw auth payload、access token、refresh token、API key 和完整 provider 原始响应不进入 SQLite。
+`omx-state.sqlite` 包含 `accounts`、`profiles`、`active_targets`、`quota_snapshots` 和 `refresh_attempts`。SQLite 只保存非敏感 metadata、hash、`secret_ref`、display number、timestamps、active target 状态和 quota/refresh 历史；raw auth payload、access token、refresh token、API key 和完整 provider 原始响应不进入 SQLite。
 
-账号或 profile remove 使用 archive 语义：删除 OpenMux 管理的 secret/config snapshot，设置 `archived_at_unix`，并清除 active target。历史 quota snapshot 和 refresh attempt 继续绑定原 `local_id`。
+账号或 profile remove 使用 hard delete 语义：删除 OpenMux 管理的 secret/config snapshot，清除 active target，并删除对应 `accounts`/`profiles` 行。account remove 同时删除该账号的 `quota_snapshots` 和 `refresh_attempts`；本地 token usage event 不在当前版本绑定 account lifecycle，因此不随 account remove 清理。
+
+账号唯一身份优先使用 provider subject，而不是整份 auth 文件 hash。Codex 从 `id_token` 和 `tokens.account_id` 中按优先级提取 `chatgpt_account_id`、`iss+sub`、`chatgpt_user_id/user_id`、`account_id`，SQLite 只保存 `provider_subject_hash` 和 kind/label。`auth_hash` 继续作为 snapshot 文件名、凭证指纹和切换时的篡改校验；当 auth 中没有可用 subject 时才作为去重 fallback。email 只作为展示 metadata，不能作为自动合并依据。
 
 ## Codex Path Resolution
 

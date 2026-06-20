@@ -123,6 +123,16 @@ pub fn data_local_dir() -> Option<PathBuf> {
     }
 }
 
+pub fn state_root() -> Result<PathBuf> {
+    if let Some(path) = env::var_os("OMUX_STATE_ROOT").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
+
+    data_local_dir()
+        .map(|path| path.join("openmux"))
+        .ok_or_else(|| OpenMuxError::Message("could not resolve the OpenMux data directory".into()))
+}
+
 pub fn io_error(path: &Path, err: io::Error) -> OpenMuxError {
     OpenMuxError::Message(format!("{}: {err}", display_path(path)))
 }

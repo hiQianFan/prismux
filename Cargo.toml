@@ -4,7 +4,11 @@ members = [
   "crates/omx-core",
   "crates/omx-plugin-codex",
   "crates/omx-plugin-claude",
+  "crates/omx-usage-tokscale",
   "crates/omx-cli",
+]
+exclude = [
+  "vendor/tokscale-core",
 ]
 
 [workspace.package]

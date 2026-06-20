@@ -13,9 +13,9 @@ use omx_core::{
     UsageDiagnostic, UsageLimit, UsageLimitKind, UsageLimitScope, UsageSnapshot, UsageSource,
     UseReport, platform_info,
     storage::{
-        create_dir_private, data_local_dir, display_path, home_dir, io_error, read_file,
-        set_private_file_permissions, sha256_hex, unix_now, unix_now_nanos,
-        write_file_atomic_private,
+        create_dir_private, display_path, home_dir, io_error, read_file,
+        set_private_file_permissions, sha256_hex, state_root as default_state_root, unix_now,
+        unix_now_nanos, write_file_atomic_private,
     },
 };
 
@@ -105,15 +105,7 @@ impl CodexPlugin {
             return Ok(path.clone());
         }
 
-        if let Some(path) = env::var_os("OMUX_STATE_ROOT").filter(|value| !value.is_empty()) {
-            return Ok(PathBuf::from(path));
-        }
-
-        data_local_dir()
-            .map(|path| path.join("openmux"))
-            .ok_or_else(|| {
-                OpenMuxError::Message("could not resolve the OpenMux data directory".into())
-            })
+        default_state_root()
     }
 
     fn platform_state_dir(&self) -> Result<PathBuf> {
@@ -376,6 +368,18 @@ impl CodexPlugin {
 
         let auth_hash = sha256_hex(auth_bytes);
         let metadata = extract_codex_account_metadata(auth_bytes);
+        let provider_subject_kind = metadata
+            .provider_subject
+            .as_ref()
+            .map(|subject| subject.kind.clone());
+        let provider_subject_hash = metadata
+            .provider_subject
+            .as_ref()
+            .map(|subject| provider_subject_hash(self.id(), subject));
+        let provider_subject_label = metadata
+            .provider_subject
+            .as_ref()
+            .map(|subject| subject.label.clone());
         let now = unix_now();
         let snapshot_path = self.account_snapshot_path(&auth_hash)?;
         write_file_atomic_private(&snapshot_path, auth_bytes)?;
@@ -387,7 +391,12 @@ impl CodexPlugin {
             let same_auth = store
                 .list_accounts(self.id())?
                 .into_iter()
-                .find(|account| account.auth_hash == auth_hash)
+                .find(|account| {
+                    account.auth_hash == auth_hash
+                        || (provider_subject_kind.is_some()
+                            && account.provider_subject_kind == provider_subject_kind
+                            && account.provider_subject_hash == provider_subject_hash)
+                })
                 .map(|account| account.local_id);
             if existing.is_some() && existing != same_auth {
                 return Err(OpenMuxError::Message(format!(
@@ -398,6 +407,9 @@ impl CodexPlugin {
         let account = store.upsert_account(UpsertAccount {
             provider: self.id().to_string(),
             alias,
+            provider_subject_kind,
+            provider_subject_hash,
+            provider_subject_label,
             account_label: metadata.account_label,
             plan_label: metadata.plan_label,
             auth_type: None,
@@ -549,7 +561,7 @@ impl CodexPlugin {
         let mut removed_paths = Vec::new();
 
         remove_file_if_exists(Path::new(&account.secret_ref), &mut removed_paths)?;
-        store.archive_account(&account.local_id, unix_now())?;
+        store.remove_account(&account.local_id)?;
 
         Ok(RemovedAccount {
             account: self.account_ref(&account),
@@ -571,7 +583,7 @@ impl CodexPlugin {
             .is_some_and(|active| active.local_id == profile.local_id);
         let mut removed_paths = Vec::new();
         remove_file_if_exists(Path::new(&profile.secret_ref), &mut removed_paths)?;
-        store.archive_profile(&profile.local_id, unix_now())?;
+        store.remove_profile(&profile.local_id)?;
 
         Ok(RemovedConfig {
             was_active,
@@ -1304,6 +1316,14 @@ fn escape_toml_string(value: &str) -> String {
 struct CodexAccountMetadata {
     account_label: Option<String>,
     plan_label: Option<String>,
+    provider_subject: Option<CodexAccountSubject>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodexAccountSubject {
+    kind: String,
+    value: String,
+    label: String,
 }
 
 fn extract_codex_account_metadata(auth_bytes: &[u8]) -> CodexAccountMetadata {
@@ -1317,14 +1337,26 @@ fn extract_codex_account_metadata(auth_bytes: &[u8]) -> CodexAccountMetadata {
         .unwrap_or_default();
 
     if metadata.account_label.is_none() {
-        metadata.account_label = auth
+        let account_id = auth
             .pointer("/tokens/account_id")
             .and_then(serde_json::Value::as_str)
             .filter(|value| !value.trim().is_empty())
             .map(ToString::to_string);
+        metadata.account_label = account_id.clone();
+        if metadata.provider_subject.is_none() {
+            metadata.provider_subject = account_id.map(|value| CodexAccountSubject {
+                kind: "codex_account_id".to_string(),
+                label: "account_id".to_string(),
+                value,
+            });
+        }
     }
 
     metadata
+}
+
+fn provider_subject_hash(provider: &str, subject: &CodexAccountSubject) -> String {
+    sha256_hex(format!("{provider}:{}:{}", subject.kind, subject.value).as_bytes())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1641,9 +1673,53 @@ fn metadata_from_jwt(token: &str) -> Option<CodexAccountMetadata> {
         })
     });
 
+    let provider_subject = auth
+        .and_then(|auth| {
+            auth.get("chatgpt_account_id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| CodexAccountSubject {
+                    kind: "codex_chatgpt_account".to_string(),
+                    label: "chatgpt_account_id".to_string(),
+                    value: value.to_string(),
+                })
+        })
+        .or_else(|| {
+            let issuer = claims
+                .get("iss")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty())?;
+            let subject = claims
+                .get("sub")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty())?;
+            Some(CodexAccountSubject {
+                kind: "oidc_subject".to_string(),
+                label: "iss_sub".to_string(),
+                value: format!("{issuer}\n{subject}"),
+            })
+        })
+        .or_else(|| {
+            auth.and_then(|auth| {
+                ["chatgpt_user_id", "user_id"]
+                    .into_iter()
+                    .find_map(|field| {
+                        auth.get(field)
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|value| !value.trim().is_empty())
+                            .map(|value| CodexAccountSubject {
+                                kind: "codex_chatgpt_user".to_string(),
+                                label: field.to_string(),
+                                value: value.to_string(),
+                            })
+                    })
+            })
+        });
+
     Some(CodexAccountMetadata {
         account_label,
         plan_label: plan,
+        provider_subject,
     })
 }
 

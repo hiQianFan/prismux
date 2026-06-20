@@ -3,7 +3,7 @@
 - [x] 0.1 对比 TokenBar 的 SQLite usage event/watermark 模型和 ClaudeBar 的 account/snapshot/refresh kind 模型。
 - [x] 0.2 明确 OpenMux 统一数据口径：accounts/profiles、quota_snapshots、refresh_attempts、usage_events、scan_watermarks。
 - [x] 0.3 明确 SQLite 是 usage/quota/refresh 的正式存储，不保留旧 JSON usage snapshot 迁移或双写。
-- [x] 0.4 明确 remove/archive 默认语义：删除 secret snapshot，保留非敏感历史归属。
+- [x] 0.4 明确 remove 默认语义：删除 OpenMux 管理对象、secret/config snapshot 和账号级 quota/refresh 记录。
 
 ## 1. SQLite Fallback 实现
 
@@ -35,7 +35,11 @@
 - [x] 4.2 为 Codex account import 生成并持久化 `local_id`，重复导入同一 auth 时复用原 `local_id`。
 - [x] 4.3 为 Claude account/profile 生成并持久化 `local_id`，profile 与 account 不复用 identity。
 - [x] 4.4 将 usage snapshot identity 从 `<number>` 改为 SQLite `local_id` 外键，停止写入新的 usage JSON 文件。
-- [ ] 4.5 增加新增/删除/重排账号后 SQLite quota snapshot 仍绑定原账号的回归测试。
+- [x] 4.5 为 account 增加 `provider_subject_kind`、`provider_subject_hash`、`provider_subject_label`，并建立 subject 唯一索引。
+- [x] 4.6 Codex import/login/save 优先使用 `chatgpt_account_id`、`iss+sub`、`chatgpt_user_id`、`tokens.account_id` 去重，`auth_hash` 仅作为 fallback。
+- [x] 4.7 增加同一 Codex subject 不同 token hash 不新增账号的回归测试。
+- [x] 4.8 增加同一 email 不同 Codex account subject 必须保留两个账号的回归测试。
+- [ ] 4.9 增加新增/删除/重排账号后 SQLite quota snapshot 仍绑定原账号的回归测试。
 
 ## 5. SQLite 本地状态库
 
@@ -58,12 +62,12 @@
 ## 7. Account/Profile Remove
 
 - [x] 7.1 增加 `omx remove <platform> <selector>` CLI 入口，复用现有 account/profile target resolver。
-- [x] 7.2 通过 SQLite archive 实现 account remove：删除 OpenMux 管理的 auth-bearing snapshot，清理 active target，并设置 `archived_at_unix`。
-- [x] 7.3 通过 SQLite archive 实现 profile remove：删除 OpenMux 管理的 profile/config snapshot，清理 active target，并设置 `archived_at_unix`。
-- [x] 7.4 默认 `list/use/refresh` 不再包含 archived account/profile。
+- [x] 7.2 通过 SQLite hard delete 实现 account remove：删除 OpenMux 管理的 auth-bearing snapshot，清理 active target，删除 account row、`quota_snapshots`、`refresh_attempts`。
+- [x] 7.3 通过 SQLite hard delete 实现 profile remove：删除 OpenMux 管理的 profile/config snapshot，清理 active target，并删除 profile row。
+- [x] 7.4 默认 `list/use/refresh` 不再包含已删除 account/profile。
 - [x] 7.5 增加 CLI help、Codex account/profile remove、Claude account/profile remove 回归测试。
-- [x] 7.6 SQLite 状态库落地后，将 hard remove 升级为 `archived_at_unix` 语义。
-- [ ] 7.7 SQLite 状态库落地后，增加 remove 后历史 quota snapshot、refresh attempt 仍可通过 archived identity 关联的测试。
+- [x] 7.6 不引入 `purge`/archive 双命令；当前 `remove` 即完整删除 OpenMux 管理状态。
+- [x] 7.7 增加 remove 后 active target、account/profile row、账号级 quota snapshot、refresh attempt 被清理的状态库测试。
 
 ## 8. Menubar 与 `tokscale-core` Roadmap
 

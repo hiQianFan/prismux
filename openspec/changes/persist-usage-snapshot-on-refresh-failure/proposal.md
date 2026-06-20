@@ -18,7 +18,7 @@
 - 统一数据口径：`accounts`/`profiles` 管 OpenMux 管理对象，`quota_snapshots` 管 provider 返回的额度视图，`refresh_attempts` 管每一次刷新请求，`usage_events` 管后续 `tokscale-core` 解析出的本地 token 消耗。
 - 为未来 menubar 定义刷新语义：区分 `interactive` refresh 和 `background` refresh，后台刷新必须有 provider floor、TTL、失败退避和 no-activity 降频策略。
 - 为后续接入 `tokscale-core` 预留 usage event 模型：TokenBar 类本地日志解析结果可落到 `usage_events`，用于按账号、provider、project、session、model 聚合 token/cost。
-- 新增 remove/archive 语义：账号或 profile 被移除时删除 OpenMux 管理的 secret/config snapshot，停止参与 `list/use/refresh`，但在 SQLite 中保留 archived 记录和历史 quota snapshot、refresh attempt、usage event 的可追溯归属；真正删除所有历史以后再单独设计 purge。
+- 新增 remove 语义：账号或 profile 被移除时删除 OpenMux 管理的 secret/config snapshot，停止参与 `list/use/refresh`，并从 SQLite 删除对应管理对象；account remove 同时删除账号级 quota snapshot 和 refresh attempt。
 - 不新增自动 doctor 修复、私有 endpoint 调用，也不在本变更中实现第三方 API key 的余额/额度查询。
 
 ## Capabilities
@@ -27,7 +27,7 @@
 
 - `usage-refresh-fallback`: 账号额度刷新失败时复用 SQLite 中最后一次成功 quota snapshot，并在展示层标注刷新时间与当前失败诊断。
 - `local-usage-state-store`: 为账号 usage、refresh 记录、menubar 和 token usage history 设计 SQLite 本地状态库边界。
-- `managed-target-removal`: 为账号和 profile 定义 remove/archive 语义，避免过时账号继续参与切换和刷新。
+- `managed-target-removal`: 为账号和 profile 定义 remove 语义，避免过时账号继续参与切换和刷新。
 
 ### Modified Capabilities
 
@@ -39,6 +39,6 @@
 - `crates/omx-cli`: 账号明细表增加 `Refresh` 列，继续通过 `Status` 展示当前诊断。
 - `crates/omx-core`: 复用既有 `UsageSnapshot.refreshed_at_unix`、`UsageSource::StoredSnapshot` 和 `UsageDiagnostic`，并补充稳定账号 ID、refresh kind、refresh attempt、usage event 的领域模型。
 - `crates/omx-storage` 或 `omx-core::storage`: 增加本地 SQLite 状态库封装，避免 plugin/CLI 直接拼 SQL。
-- `crates/omx-plugin-codex` / `crates/omx-plugin-claude`: 后续 remove/archive 账号或 profile 时更新 SQLite active/archived 状态，并处理对应 auth/profile 文件。
+- `crates/omx-plugin-codex` / `crates/omx-plugin-claude`: remove 账号或 profile 时更新 SQLite active 状态，删除对应管理对象，并处理对应 auth/profile 文件。
 - 后续 `omx-menubar`: 读取同一状态库，使用 refresh attempts 和 quota snapshots 展示 stale/error/fresh 状态。
 - 测试：增加 Codex 降级读取 SQLite quota snapshot、记录 refresh attempt、账号/profile remove 后不再参与 list/use/refresh 的回归测试，更新 CLI 表头测试；不保留旧 JSON snapshot 迁移路径。

@@ -28,6 +28,39 @@ pub fn write_file_atomic_private(path: &Path, bytes: &[u8]) -> Result<()> {
     set_private_file_permissions(path)
 }
 
+pub fn prune_backup_files(dir: &Path, prefix: &str, keep_latest: usize) -> Result<()> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(io_error(dir, err)),
+    };
+    let mut backups = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|err| io_error(dir, err))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|err| io_error(&entry.path(), err))?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        let Some(timestamp) = file_name
+            .strip_prefix(prefix)
+            .and_then(|suffix| suffix.parse::<u128>().ok())
+        else {
+            continue;
+        };
+        backups.push((timestamp, entry.path()));
+    }
+
+    backups.sort_by_key(|backup| std::cmp::Reverse(backup.0));
+    for (_timestamp, path) in backups.into_iter().skip(keep_latest) {
+        fs::remove_file(&path).map_err(|err| io_error(&path, err))?;
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::{io::Write, os::unix::fs::OpenOptionsExt};
@@ -270,6 +303,42 @@ mod tests {
                 & 0o777;
             assert_eq!(mode, 0o600);
         }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prune_backup_files_keeps_latest_matching_files() {
+        let root = env::temp_dir().join(format!(
+            "openmux-storage-prune-test-{}-{}",
+            std::process::id(),
+            unix_now_nanos()
+        ));
+        create_dir_private(&root).unwrap();
+        for timestamp in [10, 30, 20, 40] {
+            write_file_atomic_private(
+                &root.join(format!("auth.json.bak.{timestamp}")),
+                timestamp.to_string().as_bytes(),
+            )
+            .unwrap();
+        }
+        write_file_atomic_private(&root.join("config.toml.bak.50"), b"keep").unwrap();
+
+        prune_backup_files(&root, "auth.json.bak.", 2).unwrap();
+
+        let mut files = fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        files.sort();
+        assert_eq!(
+            files,
+            vec![
+                "auth.json.bak.30".to_string(),
+                "auth.json.bak.40".to_string(),
+                "config.toml.bak.50".to_string(),
+            ]
+        );
 
         let _ = fs::remove_dir_all(root);
     }

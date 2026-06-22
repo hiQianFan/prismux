@@ -245,7 +245,14 @@ pub fn run() -> Result<()> {
                 "Imported {display_name} account {}",
                 account_label(&account)
             ));
-            if use_account || platform == "claude" {
+            let account_is_active = if platform == "claude" {
+                true
+            } else {
+                StateStore::open(&state_root()?)?
+                    .active_account(plugin.id())?
+                    .is_some_and(|active| active.local_id == account.local_id)
+            };
+            if account_is_active {
                 print_success(format!(
                     "Using {display_name} account {}",
                     account_label(&account)
@@ -254,6 +261,8 @@ pub fn run() -> Result<()> {
                     "Restart {} if it is already running.",
                     display_name
                 ));
+            } else {
+                print_hint(login_use_hint(&platform, &account));
             }
         }
         Command::Status => {
@@ -361,17 +370,11 @@ pub fn run() -> Result<()> {
         Command::Use { platform, selector } => {
             let plugin = find_plugin(&plugins, &platform)?;
             let account_plugin = aggregated_account_plugin(plugin, &plugins)?;
-            let uses_target_catalog = account_plugin.is_some()
-                || (plugin.capabilities().accounts && plugin.capabilities().profiles);
             let selector = match selector {
                 Some(selector) => selector,
-                None => choose_target(plugin, account_plugin, uses_target_catalog)?,
+                None => choose_target(plugin, account_plugin, true)?,
             };
-            let report = if uses_target_catalog {
-                use_resolved_target(plugin, account_plugin, &selector)?
-            } else {
-                plugin.use_target(&selector)?
-            };
+            let report = use_resolved_target(plugin, account_plugin, &selector)?;
             match report {
                 UseReport::Account(report) => {
                     print_success(format!(
@@ -404,17 +407,11 @@ pub fn run() -> Result<()> {
         Command::Remove { platform, selector } => {
             let plugin = find_plugin(&plugins, &platform)?;
             let account_plugin = aggregated_account_plugin(plugin, &plugins)?;
-            let uses_target_catalog = account_plugin.is_some()
-                || (plugin.capabilities().accounts && plugin.capabilities().profiles);
             let selector = match selector {
                 Some(selector) => selector,
-                None => choose_target(plugin, account_plugin, uses_target_catalog)?,
+                None => choose_target(plugin, account_plugin, true)?,
             };
-            let report = if uses_target_catalog {
-                remove_resolved_target(plugin, account_plugin, &selector)?
-            } else {
-                plugin.remove_target(&selector)?
-            };
+            let report = remove_resolved_target(plugin, account_plugin, &selector)?;
             match report {
                 RemoveReport::Account(report) => {
                     print_success(format!(
@@ -453,21 +450,36 @@ pub fn run() -> Result<()> {
             alias,
         } => {
             let plugin = find_plugin(&plugins, &platform)?;
-            let account = plugin.set_alias(&selector, &alias)?;
+            let account_plugin = aggregated_account_plugin(plugin, &plugins)?;
+            let target = resolve_target(plugin, account_plugin, &selector)?;
+            if target.kind != TargetKind::Account {
+                bail!("`{selector}` matched a profile; aliases can only be set on accounts");
+            }
+            let account_plugin = account_plugin.unwrap_or(plugin);
+            let account = account_plugin.set_alias(&target.target_id, &alias)?;
             print_success(format!(
                 "Updated {} account {}",
-                plugin.name(),
+                account_plugin.name(),
                 account_label(&account)
             ));
         }
         Command::Unalias { platform, selector } => {
             let plugin = find_plugin(&plugins, &platform)?;
+            let account_plugin = aggregated_account_plugin(plugin, &plugins)?;
+            let target = resolve_target(plugin, account_plugin, &selector)?;
+            if target.kind != TargetKind::Account {
+                bail!("`{selector}` matched a profile; aliases can only be cleared on accounts");
+            }
+            let account_plugin = account_plugin.unwrap_or(plugin);
             let store = StateStore::open(&state_root()?)?;
-            let account =
-                store.clear_account_alias_by_selector(plugin.id(), &selector, unix_now())?;
+            let account = store.clear_account_alias_by_selector(
+                account_plugin.id(),
+                &target.target_id,
+                unix_now(),
+            )?;
             print_success(format!(
                 "Cleared alias for {} account #{}",
-                plugin.name(),
+                account_plugin.name(),
                 account.number
             ));
         }
@@ -543,8 +555,8 @@ fn use_resolved_target(
     let target = resolve_target(profile_plugin, account_plugin, selector)?;
     let account_plugin = account_plugin.unwrap_or(profile_plugin);
     match target.kind {
-        TargetKind::Account => Ok(account_plugin.use_target(&target.selector)?),
-        TargetKind::Profile => Ok(profile_plugin.use_target(&target.selector)?),
+        TargetKind::Account => Ok(account_plugin.use_target_by_id(target.kind, &target.target_id)?),
+        TargetKind::Profile => Ok(profile_plugin.use_target_by_id(target.kind, &target.target_id)?),
     }
 }
 
@@ -556,8 +568,12 @@ fn remove_resolved_target(
     let target = resolve_target(profile_plugin, account_plugin, selector)?;
     let account_plugin = account_plugin.unwrap_or(profile_plugin);
     match target.kind {
-        TargetKind::Account => Ok(account_plugin.remove_target(&target.selector)?),
-        TargetKind::Profile => Ok(profile_plugin.remove_target(&target.selector)?),
+        TargetKind::Account => {
+            Ok(account_plugin.remove_target_by_id(target.kind, &target.target_id)?)
+        }
+        TargetKind::Profile => {
+            Ok(profile_plugin.remove_target_by_id(target.kind, &target.target_id)?)
+        }
     }
 }
 
@@ -1078,6 +1094,14 @@ fn account_label(account: &AccountRef) -> String {
     }
 }
 
+fn login_use_hint(platform: &str, account: &AccountRef) -> String {
+    let selector = account
+        .alias
+        .clone()
+        .unwrap_or_else(|| account.number.to_string());
+    format!("Account imported but not active. Use it with: omx use {platform} {selector}")
+}
+
 fn active_account_label(platform: &str, account: &AccountRef) -> String {
     format!("{:<10} {}", platform, green(account_label(account)))
 }
@@ -1217,6 +1241,26 @@ mod tests {
     use omx_core::{Availability, AvailabilityState, UsageLimitKind, UsageLimitScope, UsageSource};
 
     #[test]
+    fn login_use_hint_prefers_alias_and_falls_back_to_number() {
+        let mut account = AccountRef {
+            platform: "codex".to_string(),
+            local_id: "codex-account-2".to_string(),
+            number: 2,
+            alias: Some("work".to_string()),
+        };
+        assert_eq!(
+            login_use_hint("codex", &account),
+            "Account imported but not active. Use it with: omx use codex work"
+        );
+
+        account.alias = None;
+        assert_eq!(
+            login_use_hint("codex", &account),
+            "Account imported but not active. Use it with: omx use codex 2"
+        );
+    }
+
+    #[test]
     fn usage_limit_display_includes_reset_without_year() {
         let limit = UsageLimit {
             id: "five-hour".to_string(),
@@ -1244,6 +1288,7 @@ mod tests {
         let status = AccountStatus {
             account: AccountRef {
                 platform: "codex".to_string(),
+                local_id: "codex-account-2".to_string(),
                 number: 2,
                 alias: Some("work".to_string()),
             },
@@ -1377,21 +1422,21 @@ mod tests {
             resolve_target(&profile_plugin, Some(&account_plugin), "1").unwrap(),
             TargetResolution {
                 kind: TargetKind::Account,
-                selector: "1".to_string()
+                target_id: "claude-account-1".to_string()
             }
         );
         assert_eq!(
             resolve_target(&profile_plugin, Some(&account_plugin), "3").unwrap(),
             TargetResolution {
                 kind: TargetKind::Profile,
-                selector: "1".to_string()
+                target_id: "claude-profile-gateway".to_string()
             }
         );
         assert_eq!(
             resolve_target(&profile_plugin, Some(&account_plugin), "gateway").unwrap(),
             TargetResolution {
                 kind: TargetKind::Profile,
-                selector: "1".to_string()
+                target_id: "claude-profile-gateway".to_string()
             }
         );
         let err = resolve_target(&profile_plugin, Some(&account_plugin), "work").unwrap_err();
@@ -1415,7 +1460,7 @@ mod tests {
             resolve_target(&plugin, None, "4").unwrap(),
             TargetResolution {
                 kind: TargetKind::Profile,
-                selector: "api-apikey-fun".to_string()
+                target_id: "codex-profile-api-apikey-fun".to_string()
             }
         );
     }
@@ -1428,6 +1473,7 @@ mod tests {
         AccountStatus {
             account: AccountRef {
                 platform: "codex".to_string(),
+                local_id: format!("codex-account-{number}"),
                 number,
                 alias: None,
             },
@@ -1482,6 +1528,7 @@ mod tests {
         AccountStatus {
             account: AccountRef {
                 platform: "claude-account".to_string(),
+                local_id: format!("claude-account-{number}"),
                 number,
                 alias: alias.map(str::to_string),
             },
@@ -1501,6 +1548,7 @@ mod tests {
     fn config_profile(number: u32, name: &str) -> ConfigProfile {
         ConfigProfile {
             platform: omx_core::platform_info("claude", "Claude"),
+            local_id: format!("claude-profile-{name}"),
             name: name.to_string(),
             active: false,
             config_path: format!("{name}.profile.json"),
@@ -1515,6 +1563,7 @@ mod tests {
     fn config_profile_without_number(name: &str) -> ConfigProfile {
         ConfigProfile {
             platform: omx_core::platform_info("codex", "Codex"),
+            local_id: format!("codex-profile-{name}"),
             name: name.to_string(),
             active: false,
             config_path: format!("{name}.config.toml"),

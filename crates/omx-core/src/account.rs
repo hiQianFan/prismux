@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AccountRef {
     pub platform: String,
+    pub local_id: String,
     pub number: u32,
     pub alias: Option<String>,
 }

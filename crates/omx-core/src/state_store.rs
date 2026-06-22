@@ -49,6 +49,17 @@ pub struct UpsertAccount {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountSubjectUpdate<'a> {
+    pub local_id: &'a str,
+    pub subject_kind: &'a str,
+    pub subject_hash: &'a str,
+    pub subject_label: &'a str,
+    pub account_label: Option<&'a str>,
+    pub plan_label: Option<&'a str>,
+    pub updated_at_unix: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileRecord {
     pub local_id: String,
     pub provider: String,
@@ -316,6 +327,9 @@ impl StateStore {
         self.add_column_if_missing(path, "accounts", "provider_subject_hash", "TEXT")?;
         self.add_column_if_missing(path, "accounts", "provider_subject_label", "TEXT")?;
         self.add_column_if_missing(path, "usage_events", "source_record_hash", "TEXT")?;
+        if self.delete_archived_targets()? {
+            self.compact_display_numbers()?;
+        }
         self.conn
             .execute(
                 r#"
@@ -343,7 +357,7 @@ impl StateStore {
             (Some(subject_account), Some(auth_account))
                 if subject_account.local_id != auth_account.local_id =>
             {
-                self.archive_duplicate_auth_account(&auth_account, input.imported_at_unix)?;
+                self.delete_duplicate_auth_account(&auth_account)?;
                 Some(subject_account)
             }
             (Some(subject_account), _) => Some(subject_account),
@@ -393,7 +407,8 @@ impl StateStore {
         }
 
         let display_number = self.next_account_number(&input.provider)?;
-        let local_id = format!("{}_account_{}", input.provider, display_number);
+        let local_id =
+            self.next_local_id("accounts", &input.provider, "account", display_number)?;
         self.conn
             .execute(
                 r#"
@@ -448,6 +463,11 @@ impl StateStore {
         provider: &str,
         selector: &str,
     ) -> Result<Option<AccountRecord>> {
+        if let Some(account) = self.account_by_local_id(selector)?
+            && account.provider == provider
+        {
+            return Ok(Some(account));
+        }
         if let Ok(number) = selector.parse::<u32>() {
             return self.account_by_number(provider, number);
         }
@@ -484,6 +504,9 @@ impl StateStore {
     }
 
     pub fn remove_account(&self, local_id: &str) -> Result<()> {
+        let provider = self
+            .account_by_local_id(local_id)?
+            .map(|account| account.provider);
         self.clear_active_local_id(local_id)?;
         self.conn
             .execute(
@@ -503,16 +526,219 @@ impl StateStore {
                 params![local_id],
             )
             .map_err(db_error_no_path)?;
+        if let Some(provider) = provider {
+            self.compact_table_display_numbers_for_provider("accounts", &provider)?;
+        }
         Ok(())
     }
 
     pub fn set_account_alias(&self, local_id: &str, alias: &str, now: u64) -> Result<()> {
-        self.conn
+        let updated = self
+            .conn
             .execute(
                 "UPDATE accounts SET alias = ?1, updated_at_unix = ?2 WHERE local_id = ?3",
                 params![alias, now, local_id],
             )
             .map_err(db_error_no_path)?;
+        if updated != 1 {
+            return Err(OpenMuxError::AccountNotFound {
+                platform: "unknown".to_string(),
+                account: local_id.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn set_account_subject(&self, input: AccountSubjectUpdate<'_>) -> Result<()> {
+        let updated = self
+            .conn
+            .execute(
+                r#"
+                UPDATE accounts
+                SET provider_subject_kind = ?1,
+                    provider_subject_hash = ?2,
+                    provider_subject_label = ?3,
+                    account_label = COALESCE(?4, account_label),
+                    plan_label = COALESCE(?5, plan_label),
+                    updated_at_unix = ?6
+                WHERE local_id = ?7
+                "#,
+                params![
+                    input.subject_kind,
+                    input.subject_hash,
+                    input.subject_label,
+                    input.account_label,
+                    input.plan_label,
+                    input.updated_at_unix,
+                    input.local_id,
+                ],
+            )
+            .map_err(db_error_no_path)?;
+        if updated != 1 {
+            return Err(OpenMuxError::AccountNotFound {
+                platform: "unknown".to_string(),
+                account: input.local_id.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn update_account_auth(
+        &self,
+        provider: &str,
+        local_id: &str,
+        auth_hash: &str,
+        secret_ref: &str,
+        now: u64,
+    ) -> Result<AccountRecord> {
+        let updated = self
+            .conn
+            .execute(
+                r#"
+                UPDATE accounts
+                SET auth_hash = ?1,
+                    secret_ref = ?2,
+                    imported_at_unix = ?3,
+                    updated_at_unix = ?3
+                WHERE local_id = ?4
+                  AND provider = ?5
+                  AND archived_at_unix IS NULL
+                "#,
+                params![auth_hash, secret_ref, now, local_id, provider],
+            )
+            .map_err(db_error_no_path)?;
+        if updated != 1 {
+            return Err(OpenMuxError::AccountNotFound {
+                platform: provider.to_string(),
+                account: local_id.to_string(),
+            });
+        }
+        self.account_by_local_id(local_id)?
+            .ok_or_else(|| OpenMuxError::AccountNotFound {
+                platform: provider.to_string(),
+                account: local_id.to_string(),
+            })
+    }
+
+    pub fn merge_account_into(&self, keep_local_id: &str, remove_local_id: &str) -> Result<()> {
+        let transaction = self
+            .conn
+            .unchecked_transaction()
+            .map_err(db_error_no_path)?;
+        let account_details = |local_id: &str| {
+            transaction
+                .query_row(
+                    r#"
+                    SELECT provider, auth_hash, secret_ref, imported_at_unix,
+                           EXISTS(
+                               SELECT 1 FROM active_targets
+                               WHERE active_targets.provider = accounts.provider
+                                 AND active_targets.target_kind = 'account'
+                                 AND active_targets.local_id = accounts.local_id
+                           )
+                    FROM accounts
+                    WHERE local_id = ?1
+                    "#,
+                    params![local_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, u64>(3)?,
+                            row.get::<_, bool>(4)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(db_error_no_path)
+        };
+        let keep =
+            account_details(keep_local_id)?.ok_or_else(|| OpenMuxError::AccountNotFound {
+                platform: "unknown".to_string(),
+                account: keep_local_id.to_string(),
+            })?;
+        let remove =
+            account_details(remove_local_id)?.ok_or_else(|| OpenMuxError::AccountNotFound {
+                platform: keep.0.clone(),
+                account: remove_local_id.to_string(),
+            })?;
+        if keep.0 != remove.0 {
+            return Err(OpenMuxError::Message(format!(
+                "cannot merge accounts from different providers: `{}` and `{}`",
+                keep.0, remove.0
+            )));
+        }
+        if keep_local_id == remove_local_id {
+            return Ok(());
+        }
+        let keep_provider = keep.0.clone();
+        let removed_credentials_win =
+            (remove.4 && !keep.4) || (remove.4 == keep.4 && remove.3 > keep.3);
+        let (auth_hash, secret_ref, auth_updated_at) = if removed_credentials_win {
+            (remove.1, remove.2, remove.3)
+        } else {
+            (keep.1, keep.2, keep.3)
+        };
+
+        transaction
+            .execute(
+                "UPDATE active_targets SET local_id = ?1 WHERE local_id = ?2",
+                params![keep_local_id, remove_local_id],
+            )
+            .map_err(db_error_no_path)?;
+        transaction
+            .execute(
+                "UPDATE active_targets SET previous_local_id = ?1 WHERE previous_local_id = ?2",
+                params![keep_local_id, remove_local_id],
+            )
+            .map_err(db_error_no_path)?;
+        transaction
+            .execute(
+                "UPDATE quota_snapshots SET local_id = ?1 WHERE local_id = ?2",
+                params![keep_local_id, remove_local_id],
+            )
+            .map_err(db_error_no_path)?;
+        transaction
+            .execute(
+                "UPDATE refresh_attempts SET local_id = ?1 WHERE local_id = ?2",
+                params![keep_local_id, remove_local_id],
+            )
+            .map_err(db_error_no_path)?;
+        transaction
+            .execute(
+                "DELETE FROM accounts WHERE local_id = ?1",
+                params![remove_local_id],
+            )
+            .map_err(db_error_no_path)?;
+        transaction
+            .execute(
+                "UPDATE accounts SET auth_hash = ?1, secret_ref = ?2, imported_at_unix = ?3, updated_at_unix = MAX(updated_at_unix, ?3) WHERE local_id = ?4",
+                params![auth_hash, secret_ref, auth_updated_at, keep_local_id],
+            )
+            .map_err(db_error_no_path)?;
+
+        let local_ids = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT local_id FROM accounts WHERE provider = ?1 AND display_number IS NOT NULL ORDER BY display_number ASC, imported_at_unix ASC, local_id ASC",
+                )
+                .map_err(db_error_no_path)?;
+            statement
+                .query_map(params![keep_provider], |row| row.get::<_, String>(0))
+                .map_err(db_error_no_path)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(db_error_no_path)?
+        };
+        for (index, local_id) in local_ids.into_iter().enumerate() {
+            transaction
+                .execute(
+                    "UPDATE accounts SET display_number = ?1 WHERE local_id = ?2",
+                    params![(index as u32) + 1, local_id],
+                )
+                .map_err(db_error_no_path)?;
+        }
+        transaction.commit().map_err(db_error_no_path)?;
         Ok(())
     }
 
@@ -541,6 +767,7 @@ impl StateStore {
         self.clear_account_alias(&account.local_id, now)?;
         Ok(AccountRef {
             platform: provider.to_string(),
+            local_id: account.local_id,
             number: account.display_number,
             alias: None,
         })
@@ -577,7 +804,8 @@ impl StateStore {
         }
 
         let display_number = self.next_profile_number(&input.provider)?;
-        let local_id = format!("{}_profile_{}", input.provider, display_number);
+        let local_id =
+            self.next_local_id("profiles", &input.provider, "profile", display_number)?;
         self.conn
             .execute(
                 r#"
@@ -636,6 +864,11 @@ impl StateStore {
         provider: &str,
         selector: &str,
     ) -> Result<Option<ProfileRecord>> {
+        if let Some(profile) = self.profile_by_local_id(selector)?
+            && profile.provider == provider
+        {
+            return Ok(Some(profile));
+        }
         if let Ok(number) = selector.parse::<u32>() {
             return self.profile_by_number(provider, number);
         }
@@ -662,6 +895,9 @@ impl StateStore {
     }
 
     pub fn remove_profile(&self, local_id: &str) -> Result<()> {
+        let provider = self
+            .profile_by_local_id(local_id)?
+            .map(|profile| profile.provider);
         self.clear_active_local_id(local_id)?;
         self.conn
             .execute(
@@ -669,6 +905,9 @@ impl StateStore {
                 params![local_id],
             )
             .map_err(db_error_no_path)?;
+        if let Some(provider) = provider {
+            self.compact_table_display_numbers_for_provider("profiles", &provider)?;
+        }
         Ok(())
     }
 
@@ -1150,21 +1389,8 @@ impl StateStore {
             .map_err(db_error_no_path)
     }
 
-    fn archive_duplicate_auth_account(&self, account: &AccountRecord, now: u64) -> Result<()> {
-        let archived_hash = format!("archived:{}:{}", account.local_id, account.auth_hash);
-        self.conn
-            .execute(
-                r#"
-                UPDATE accounts
-                SET auth_hash = ?1,
-                    archived_at_unix = ?2,
-                    updated_at_unix = ?2
-                WHERE local_id = ?3
-                "#,
-                params![archived_hash, now, account.local_id],
-            )
-            .map_err(db_error_no_path)?;
-        self.clear_active_local_id(&account.local_id)
+    fn delete_duplicate_auth_account(&self, account: &AccountRecord) -> Result<()> {
+        self.remove_account(&account.local_id)
     }
 
     pub fn account_by_local_id(&self, local_id: &str) -> Result<Option<AccountRecord>> {
@@ -1196,20 +1422,13 @@ impl StateStore {
     }
 
     fn next_account_number(&self, provider: &str) -> Result<u32> {
-        let value: Option<u32> = self
-            .conn
-            .query_row(
-                "SELECT COALESCE(MAX(display_number), 0) + 1 FROM accounts WHERE provider = ?1",
-                params![provider],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(db_error_no_path)?
-            .flatten();
-        Ok(value.unwrap_or(1))
+        self.next_available_display_number(
+            "SELECT display_number FROM accounts WHERE provider = ?1 ORDER BY display_number ASC",
+            provider,
+        )
     }
 
-    fn profile_by_local_id(&self, local_id: &str) -> Result<Option<ProfileRecord>> {
+    pub fn profile_by_local_id(&self, local_id: &str) -> Result<Option<ProfileRecord>> {
         let sql = profile_select("local_id = ?1 AND archived_at_unix IS NULL");
         self.conn
             .query_row(&sql, params![local_id], profile_from_row)
@@ -1243,17 +1462,174 @@ impl StateStore {
     }
 
     fn next_profile_number(&self, provider: &str) -> Result<u32> {
-        let value: Option<u32> = self
-            .conn
+        self.next_available_display_number(
+            "SELECT display_number FROM profiles WHERE provider = ?1 AND display_number IS NOT NULL ORDER BY display_number ASC",
+            provider,
+        )
+    }
+
+    fn next_available_display_number(&self, sql: &str, provider: &str) -> Result<u32> {
+        let mut stmt = self.conn.prepare(sql).map_err(db_error_no_path)?;
+        let rows = stmt
+            .query_map(params![provider], |row| row.get::<_, u32>(0))
+            .map_err(db_error_no_path)?;
+        let mut expected = 1;
+        for number in rows {
+            let number = number.map_err(db_error_no_path)?;
+            if number == expected {
+                expected += 1;
+            } else if number > expected {
+                break;
+            }
+        }
+        Ok(expected)
+    }
+
+    fn next_local_id(
+        &self,
+        table: &str,
+        provider: &str,
+        target_kind: &str,
+        display_number: u32,
+    ) -> Result<String> {
+        let base = format!("{provider}_{target_kind}_{display_number}");
+        if !self.local_id_exists(table, &base)? {
+            return Ok(base);
+        }
+
+        let mut suffix = 2;
+        loop {
+            let candidate = format!("{base}_{suffix}");
+            if !self.local_id_exists(table, &candidate)? {
+                return Ok(candidate);
+            }
+            suffix += 1;
+        }
+    }
+
+    fn local_id_exists(&self, table: &str, local_id: &str) -> Result<bool> {
+        self.conn
             .query_row(
-                "SELECT COALESCE(MAX(display_number), 0) + 1 FROM profiles WHERE provider = ?1",
-                params![provider],
-                |row| row.get(0),
+                &format!("SELECT 1 FROM {table} WHERE local_id = ?1 LIMIT 1"),
+                params![local_id],
+                |_| Ok(()),
             )
             .optional()
+            .map(|value| value.is_some())
+            .map_err(db_error_no_path)
+    }
+
+    fn delete_archived_targets(&self) -> Result<bool> {
+        let archived_count = self.archived_target_count()?;
+        self.conn
+            .execute(
+                r#"
+                DELETE FROM active_targets
+                WHERE local_id IN (
+                    SELECT local_id FROM accounts WHERE archived_at_unix IS NOT NULL
+                    UNION
+                    SELECT local_id FROM profiles WHERE archived_at_unix IS NOT NULL
+                )
+                OR previous_local_id IN (
+                    SELECT local_id FROM accounts WHERE archived_at_unix IS NOT NULL
+                    UNION
+                    SELECT local_id FROM profiles WHERE archived_at_unix IS NOT NULL
+                )
+                "#,
+                [],
+            )
+            .map_err(db_error_no_path)?;
+        self.conn
+            .execute(
+                "DELETE FROM quota_snapshots WHERE local_id IN (SELECT local_id FROM accounts WHERE archived_at_unix IS NOT NULL)",
+                [],
+            )
+            .map_err(db_error_no_path)?;
+        self.conn
+            .execute(
+                "DELETE FROM refresh_attempts WHERE local_id IN (SELECT local_id FROM accounts WHERE archived_at_unix IS NOT NULL)",
+                [],
+            )
+            .map_err(db_error_no_path)?;
+        self.conn
+            .execute(
+                "DELETE FROM accounts WHERE archived_at_unix IS NOT NULL",
+                [],
+            )
+            .map_err(db_error_no_path)?;
+        self.conn
+            .execute(
+                "DELETE FROM profiles WHERE archived_at_unix IS NOT NULL",
+                [],
+            )
+            .map_err(db_error_no_path)?;
+        Ok(archived_count > 0)
+    }
+
+    fn archived_target_count(&self) -> Result<u64> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT
+                    (SELECT COUNT(*) FROM accounts WHERE archived_at_unix IS NOT NULL) +
+                    (SELECT COUNT(*) FROM profiles WHERE archived_at_unix IS NOT NULL)
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .map_err(db_error_no_path)
+    }
+
+    fn compact_display_numbers(&self) -> Result<()> {
+        self.compact_table_display_numbers("accounts")?;
+        self.compact_table_display_numbers("profiles")
+    }
+
+    fn compact_table_display_numbers(&self, table: &str) -> Result<()> {
+        let mut providers_stmt = self
+            .conn
+            .prepare(&format!("SELECT DISTINCT provider FROM {table}"))
+            .map_err(db_error_no_path)?;
+        let providers = providers_stmt
+            .query_map([], |row| row.get::<_, String>(0))
             .map_err(db_error_no_path)?
-            .flatten();
-        Ok(value.unwrap_or(1))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db_error_no_path)?;
+        drop(providers_stmt);
+
+        for provider in providers {
+            self.compact_table_display_numbers_for_provider(table, &provider)?;
+        }
+        Ok(())
+    }
+
+    fn compact_table_display_numbers_for_provider(
+        &self,
+        table: &str,
+        provider: &str,
+    ) -> Result<()> {
+        let mut rows_stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT local_id FROM {table} WHERE provider = ?1 AND display_number IS NOT NULL ORDER BY display_number ASC, imported_at_unix ASC, local_id ASC"
+            ))
+            .map_err(db_error_no_path)?;
+        let local_ids = rows_stmt
+            .query_map(params![provider], |row| row.get::<_, String>(0))
+            .map_err(db_error_no_path)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db_error_no_path)?;
+        drop(rows_stmt);
+
+        for (index, local_id) in local_ids.into_iter().enumerate() {
+            self.conn
+                .execute(
+                    &format!("UPDATE {table} SET display_number = ?1 WHERE local_id = ?2"),
+                    params![(index as u32) + 1, local_id],
+                )
+                .map_err(db_error_no_path)?;
+        }
+        Ok(())
     }
 
     fn set_active_target(
@@ -1345,6 +1721,7 @@ impl ProfileRecord {
     pub fn to_config_profile(&self, platform: PlatformInfo, active: bool) -> ConfigProfile {
         ConfigProfile {
             platform,
+            local_id: self.local_id.clone(),
             name: self.name.clone(),
             active,
             config_path: self.secret_ref.clone(),
@@ -1562,8 +1939,303 @@ mod tests {
         path::{Path, PathBuf},
     };
 
+    fn insert_test_account(
+        store: &StateStore,
+        provider: &str,
+        auth_hash: &str,
+        imported_at_unix: u64,
+    ) -> AccountRecord {
+        store
+            .upsert_account(UpsertAccount {
+                provider: provider.to_string(),
+                alias: None,
+                provider_subject_kind: None,
+                provider_subject_hash: None,
+                provider_subject_label: None,
+                account_label: None,
+                plan_label: None,
+                auth_type: None,
+                expires_at_unix: None,
+                auth_hash: auth_hash.to_string(),
+                secret_ref: format!("/tmp/{auth_hash}.json"),
+                imported_at_unix,
+            })
+            .unwrap()
+    }
+
     #[test]
-    fn subject_upsert_archives_duplicate_auth_hash_account() {
+    fn merge_account_into_validates_accounts_and_provider() {
+        let state_root = env::temp_dir().join(format!(
+            "openmux-state-store-merge-validation-{}",
+            unix_now_nanos()
+        ));
+        let store = StateStore::open(&state_root).unwrap();
+        let codex = insert_test_account(&store, "codex", "codex-auth", 1);
+        let claude = insert_test_account(&store, "claude", "claude-auth", 1);
+
+        let missing = store
+            .merge_account_into(&codex.local_id, "missing")
+            .unwrap_err();
+        assert!(missing.to_string().contains("missing"));
+
+        let mismatch = store
+            .merge_account_into(&codex.local_id, &claude.local_id)
+            .unwrap_err();
+        assert!(mismatch.to_string().contains("different providers"));
+        assert!(
+            store
+                .account_by_local_id(&codex.local_id)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            store
+                .account_by_local_id(&claude.local_id)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn merge_account_into_uses_newer_removed_credentials() {
+        let state_root = env::temp_dir().join(format!(
+            "openmux-state-store-merge-newer-credentials-{}",
+            unix_now_nanos()
+        ));
+        let store = StateStore::open(&state_root).unwrap();
+        let keep = insert_test_account(&store, "codex", "older-keep-auth", 10);
+        let remove = insert_test_account(&store, "codex", "newer-remove-auth", 20);
+        let keep_number = keep.display_number;
+
+        store
+            .merge_account_into(&keep.local_id, &remove.local_id)
+            .unwrap();
+
+        let merged = store.account_by_local_id(&keep.local_id).unwrap().unwrap();
+        assert_eq!(merged.local_id, keep.local_id);
+        assert_eq!(merged.display_number, keep_number);
+        assert_eq!(merged.auth_hash, remove.auth_hash);
+        assert_eq!(merged.secret_ref, remove.secret_ref);
+        assert!(
+            store
+                .account_by_local_id(&remove.local_id)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn sequential_merges_keep_the_newest_credentials() {
+        let state_root = env::temp_dir().join(format!(
+            "openmux-state-store-merge-sequence-{}",
+            unix_now_nanos()
+        ));
+        let store = StateStore::open(&state_root).unwrap();
+        let keep = insert_test_account(&store, "codex", "auth-1", 1);
+        let newest = insert_test_account(&store, "codex", "auth-3", 3);
+        let middle = insert_test_account(&store, "codex", "auth-2", 2);
+
+        store
+            .merge_account_into(&keep.local_id, &newest.local_id)
+            .unwrap();
+        store
+            .merge_account_into(&keep.local_id, &middle.local_id)
+            .unwrap();
+
+        let merged = store.account_by_local_id(&keep.local_id).unwrap().unwrap();
+        assert_eq!(merged.auth_hash, newest.auth_hash);
+        assert_eq!(merged.secret_ref, newest.secret_ref);
+        assert_eq!(merged.imported_at_unix, 3);
+    }
+
+    #[test]
+    fn merge_account_into_uses_active_removed_credentials_even_when_older() {
+        let state_root = env::temp_dir().join(format!(
+            "openmux-state-store-merge-active-credentials-{}",
+            unix_now_nanos()
+        ));
+        let store = StateStore::open(&state_root).unwrap();
+        let keep = insert_test_account(&store, "codex", "newer-keep-auth", 20);
+        let remove = insert_test_account(&store, "codex", "older-active-auth", 10);
+        let keep_number = keep.display_number;
+        store
+            .set_active_account("codex", &remove.local_id, 30)
+            .unwrap();
+
+        store
+            .merge_account_into(&keep.local_id, &remove.local_id)
+            .unwrap();
+
+        let merged = store.account_by_local_id(&keep.local_id).unwrap().unwrap();
+        assert_eq!(merged.local_id, keep.local_id);
+        assert_eq!(merged.display_number, keep_number);
+        assert_eq!(merged.auth_hash, remove.auth_hash);
+        assert_eq!(merged.secret_ref, remove.secret_ref);
+        assert_eq!(
+            store.active_account("codex").unwrap().unwrap().local_id,
+            keep.local_id
+        );
+    }
+
+    #[test]
+    fn merge_account_into_preserves_colliding_child_rows() {
+        let state_root = env::temp_dir().join(format!(
+            "openmux-state-store-merge-children-{}",
+            unix_now_nanos()
+        ));
+        let store = StateStore::open(&state_root).unwrap();
+        let keep = insert_test_account(&store, "codex", "keep-auth", 1);
+        let remove = insert_test_account(&store, "codex", "remove-auth", 2);
+
+        for local_id in [&keep.local_id, &remove.local_id] {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO quota_snapshots (local_id, provider, captured_at_unix, source, snapshot_json) VALUES (?1, 'codex', 10, 'remote_api', '{}')",
+                    params![local_id],
+                )
+                .unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO refresh_attempts (local_id, provider, refresh_kind, trigger, attempted_at_unix, status) VALUES (?1, 'codex', 'manual', 'test', 10, 'success')",
+                    params![local_id],
+                )
+                .unwrap();
+        }
+
+        store
+            .merge_account_into(&keep.local_id, &remove.local_id)
+            .unwrap();
+
+        for table in ["quota_snapshots", "refresh_attempts"] {
+            let count: u32 = store
+                .conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE local_id = ?1"),
+                    params![keep.local_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 2, "all {table} rows should be preserved");
+        }
+        assert!(
+            store
+                .account_by_local_id(&remove.local_id)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn merge_account_into_rolls_back_every_change_on_late_failure() {
+        let state_root = env::temp_dir().join(format!(
+            "openmux-state-store-merge-rollback-{}",
+            unix_now_nanos()
+        ));
+        let store = StateStore::open(&state_root).unwrap();
+        let keep = insert_test_account(&store, "codex", "keep-auth", 1);
+        let remove = insert_test_account(&store, "codex", "remove-auth", 2);
+        store
+            .set_active_account("codex", &remove.local_id, 3)
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO quota_snapshots (local_id, provider, captured_at_unix, source, snapshot_json) VALUES (?1, 'codex', 10, 'remote_api', '{}')",
+                params![remove.local_id],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER fail_account_merge BEFORE DELETE ON accounts BEGIN SELECT RAISE(ABORT, 'forced merge failure'); END;",
+            )
+            .unwrap();
+
+        assert!(
+            store
+                .merge_account_into(&keep.local_id, &remove.local_id)
+                .is_err()
+        );
+
+        assert!(
+            store
+                .account_by_local_id(&remove.local_id)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            store.active_account("codex").unwrap().unwrap().local_id,
+            remove.local_id
+        );
+        let remove_rows: u32 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM quota_snapshots WHERE local_id = ?1",
+                params![remove.local_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remove_rows, 1);
+    }
+
+    #[test]
+    fn update_account_auth_is_scoped_to_provider_and_local_id() {
+        let state_root = env::temp_dir().join(format!(
+            "openmux-state-store-update-auth-{}",
+            unix_now_nanos()
+        ));
+        fs::create_dir_all(&state_root).unwrap();
+        let store = StateStore::open(&state_root).unwrap();
+        let account = store
+            .upsert_account(UpsertAccount {
+                provider: "codex".to_string(),
+                alias: None,
+                provider_subject_kind: None,
+                provider_subject_hash: None,
+                provider_subject_label: None,
+                account_label: None,
+                plan_label: None,
+                auth_type: None,
+                expires_at_unix: None,
+                auth_hash: "old-hash".to_string(),
+                secret_ref: "/tmp/old.auth.json".to_string(),
+                imported_at_unix: 1,
+            })
+            .unwrap();
+
+        let updated = store
+            .update_account_auth(
+                "codex",
+                &account.local_id,
+                "new-hash",
+                "/tmp/new.auth.json",
+                2,
+            )
+            .unwrap();
+        assert_eq!(updated.auth_hash, "new-hash");
+        assert_eq!(updated.secret_ref, "/tmp/new.auth.json");
+
+        let err = store
+            .update_account_auth(
+                "claude",
+                &account.local_id,
+                "wrong-hash",
+                "/tmp/wrong.auth.json",
+                3,
+            )
+            .unwrap_err();
+        assert!(matches!(err, OpenMuxError::AccountNotFound { .. }));
+        let unchanged = store
+            .account_by_local_id(&account.local_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged.auth_hash, "new-hash");
+    }
+
+    #[test]
+    fn subject_upsert_deletes_duplicate_auth_hash_account() {
         let state_root =
             env::temp_dir().join(format!("openmux-state-store-subject-{}", unix_now_nanos()));
         fs::create_dir_all(&state_root).unwrap();
@@ -1628,6 +2300,137 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn remove_account_compacts_display_numbers_before_next_import() {
+        let state_root = env::temp_dir().join(format!(
+            "openmux-state-store-reuse-gap-{}",
+            unix_now_nanos()
+        ));
+        fs::create_dir_all(&state_root).unwrap();
+        let store = StateStore::open(&state_root).unwrap();
+
+        for number in 1..=3 {
+            store
+                .upsert_account(UpsertAccount {
+                    provider: "codex".to_string(),
+                    alias: None,
+                    provider_subject_kind: None,
+                    provider_subject_hash: None,
+                    provider_subject_label: None,
+                    account_label: Some(format!("account-{number}")),
+                    plan_label: None,
+                    auth_type: None,
+                    expires_at_unix: None,
+                    auth_hash: format!("auth-{number}"),
+                    secret_ref: format!("/tmp/auth-{number}.json"),
+                    imported_at_unix: number,
+                })
+                .unwrap();
+        }
+
+        let second = store.account_by_selector("codex", "2").unwrap().unwrap();
+        store.remove_account(&second.local_id).unwrap();
+        assert_eq!(
+            store
+                .list_accounts("codex")
+                .unwrap()
+                .into_iter()
+                .map(|account| (account.display_number, account.account_label))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, Some("account-1".to_string())),
+                (2, Some("account-3".to_string()))
+            ]
+        );
+
+        let replacement = store
+            .upsert_account(UpsertAccount {
+                provider: "codex".to_string(),
+                alias: None,
+                provider_subject_kind: None,
+                provider_subject_hash: None,
+                provider_subject_label: None,
+                account_label: Some("replacement".to_string()),
+                plan_label: None,
+                auth_type: None,
+                expires_at_unix: None,
+                auth_hash: "auth-replacement".to_string(),
+                secret_ref: "/tmp/auth-replacement.json".to_string(),
+                imported_at_unix: 4,
+            })
+            .unwrap();
+
+        assert_eq!(replacement.display_number, 3);
+        assert_eq!(
+            store
+                .list_accounts("codex")
+                .unwrap()
+                .into_iter()
+                .map(|account| account.display_number)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn migration_deletes_legacy_archived_accounts_before_number_assignment() {
+        let state_root = env::temp_dir().join(format!(
+            "openmux-state-store-legacy-archived-{}",
+            unix_now_nanos()
+        ));
+        fs::create_dir_all(&state_root).unwrap();
+        let store = StateStore::open(&state_root).unwrap();
+
+        for number in 1..=3 {
+            store
+                .upsert_account(UpsertAccount {
+                    provider: "codex".to_string(),
+                    alias: None,
+                    provider_subject_kind: None,
+                    provider_subject_hash: None,
+                    provider_subject_label: None,
+                    account_label: Some(format!("account-{number}")),
+                    plan_label: None,
+                    auth_type: None,
+                    expires_at_unix: None,
+                    auth_hash: format!("auth-{number}"),
+                    secret_ref: format!("/tmp/auth-{number}.json"),
+                    imported_at_unix: number,
+                })
+                .unwrap();
+        }
+        let second = store.account_by_selector("codex", "2").unwrap().unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE accounts SET archived_at_unix = 10 WHERE local_id = ?1",
+                params![second.local_id],
+            )
+            .unwrap();
+        drop(store);
+
+        let reopened = StateStore::open(&state_root).unwrap();
+        let replacement = reopened
+            .upsert_account(UpsertAccount {
+                provider: "codex".to_string(),
+                alias: None,
+                provider_subject_kind: None,
+                provider_subject_hash: None,
+                provider_subject_label: None,
+                account_label: Some("replacement".to_string()),
+                plan_label: None,
+                auth_type: None,
+                expires_at_unix: None,
+                auth_hash: "auth-replacement".to_string(),
+                secret_ref: "/tmp/auth-replacement.json".to_string(),
+                imported_at_unix: 4,
+            })
+            .unwrap();
+
+        assert_eq!(replacement.display_number, 3);
+        assert_eq!(reopened.list_accounts("codex").unwrap().len(), 3);
     }
 
     #[test]

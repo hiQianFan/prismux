@@ -10,6 +10,7 @@ pub struct ImportConfigOptions {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProfileRef {
     pub platform: String,
+    pub local_id: String,
     pub number: Option<u32>,
     pub name: String,
 }
@@ -29,6 +30,7 @@ pub struct ImportedConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConfigProfile {
     pub platform: PlatformInfo,
+    pub local_id: String,
     pub name: String,
     pub active: bool,
     pub config_path: String,

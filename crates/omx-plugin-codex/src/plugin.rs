@@ -1,35 +1,51 @@
 use std::{
+    collections::{BTreeMap, BTreeSet},
     env, fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
 use omx_core::{
-    AccountRecord, AccountRef, AccountStatus, Availability, AvailabilityState, ConfigProfile,
-    ConfigSwitchReport, DoctorCheck, DoctorReport, ImportConfigOptions, ImportedConfig,
-    LoginOptions, OpenMuxError, PlatformCapabilities, PlatformInfo, PlatformInstall,
-    PlatformPlugin, PlatformPoolSummary, ProfileRecord, RemoveReport, RemovedAccount,
-    RemovedConfig, Result, SaveOptions, StateStore, SwitchReport, UpsertAccount, UpsertProfile,
-    UsageDiagnostic, UsageLimit, UsageLimitKind, UsageLimitScope, UsageSnapshot, UsageSource,
-    UseReport, platform_info,
+    AccountRecord, AccountRef, AccountStatus, AccountSubjectUpdate, Availability,
+    AvailabilityState, ConfigProfile, ConfigSwitchReport, DoctorCheck, DoctorReport,
+    ImportConfigOptions, ImportedConfig, LoginOptions, OpenMuxError, PlatformCapabilities,
+    PlatformInfo, PlatformInstall, PlatformPlugin, PlatformPoolSummary, ProfileRecord,
+    RemoveReport, RemovedAccount, RemovedConfig, Result, SaveOptions, StateStore, SwitchReport,
+    UpsertAccount, UpsertProfile, UsageDiagnostic, UsageLimit, UsageLimitKind, UsageLimitScope,
+    UsageSnapshot, UsageSource, UseReport, platform_info,
     storage::{
-        create_dir_private, display_path, home_dir, io_error, read_file,
+        create_dir_private, display_path, home_dir, io_error, prune_backup_files, read_file,
         set_private_file_permissions, sha256_hex, state_root as default_state_root, unix_now,
         unix_now_nanos, write_file_atomic_private,
     },
 };
 
 const AUTH_FILE_NAME: &str = "auth.json";
+const BACKUP_RETENTION_PER_KIND: usize = 3;
 
 #[derive(Debug, Clone)]
 pub struct CodexPlugin {
     codex_home: Option<PathBuf>,
     state_root: Option<PathBuf>,
     codex_executable: PathBuf,
+    #[cfg(test)]
+    before_auth_replace: Option<fn(&Path)>,
+    #[cfg(test)]
+    fail_snapshot_write: bool,
 }
 
 struct TempDirCleanup {
     path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct CodexAccountIdentityCandidate {
+    local_id: String,
+    display_number: u32,
+    secret_ref: String,
+    subject_kind: String,
+    subject_hash: String,
+    subject_label: String,
 }
 
 impl TempDirCleanup {
@@ -53,6 +69,10 @@ impl Default for CodexPlugin {
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("codex")),
+            #[cfg(test)]
+            before_auth_replace: None,
+            #[cfg(test)]
+            fail_snapshot_write: false,
         }
     }
 }
@@ -79,6 +99,27 @@ impl CodexPlugin {
             codex_home: Some(codex_home.into()),
             state_root: Some(state_root.into()),
             codex_executable: codex_executable.into(),
+            #[cfg(test)]
+            before_auth_replace: None,
+            #[cfg(test)]
+            fail_snapshot_write: false,
+        }
+    }
+
+    #[cfg(test)]
+    fn set_before_auth_replace(&mut self, hook: fn(&Path)) {
+        self.before_auth_replace = Some(hook);
+    }
+
+    #[cfg(test)]
+    fn fail_snapshot_write(&mut self) {
+        self.fail_snapshot_write = true;
+    }
+
+    fn run_before_auth_replace_hook(&self, _auth_path: &Path) {
+        #[cfg(test)]
+        if let Some(hook) = self.before_auth_replace {
+            hook(_auth_path);
         }
     }
 
@@ -169,6 +210,7 @@ impl CodexPlugin {
     fn account_ref(&self, account: &AccountRecord) -> AccountRef {
         AccountRef {
             platform: self.id().to_string(),
+            local_id: account.local_id.clone(),
             number: account.display_number,
             alias: account.alias.clone(),
         }
@@ -344,13 +386,216 @@ impl CodexPlugin {
         })
     }
 
+    fn reconcile_account_subjects(&self, store: &StateStore) -> Result<()> {
+        let mut by_subject: BTreeMap<(String, String), Vec<CodexAccountIdentityCandidate>> =
+            BTreeMap::new();
+        for account in store.list_accounts(self.id())? {
+            let Ok(auth_bytes) = read_file(Path::new(&account.secret_ref)) else {
+                continue;
+            };
+            if sha256_hex(&auth_bytes) != account.auth_hash {
+                continue;
+            }
+            let metadata = extract_codex_account_metadata(&auth_bytes);
+            let Some(subject) = metadata.provider_subject else {
+                continue;
+            };
+            let subject_hash = provider_subject_hash(self.id(), &subject);
+            by_subject
+                .entry((subject.kind.clone(), subject_hash.clone()))
+                .or_default()
+                .push(CodexAccountIdentityCandidate {
+                    local_id: account.local_id,
+                    display_number: account.display_number,
+                    secret_ref: account.secret_ref,
+                    subject_kind: subject.kind,
+                    subject_hash,
+                    subject_label: subject.label,
+                });
+        }
+
+        for (_subject, mut candidates) in by_subject {
+            candidates.sort_by_key(|candidate| candidate.display_number);
+            let Some(keep) = candidates.first().cloned() else {
+                continue;
+            };
+            for duplicate in candidates.iter().skip(1) {
+                store.merge_account_into(&keep.local_id, &duplicate.local_id)?;
+            }
+
+            let keep = store.account_by_local_id(&keep.local_id)?.ok_or_else(|| {
+                OpenMuxError::AccountNotFound {
+                    platform: self.id().to_string(),
+                    account: keep.local_id.clone(),
+                }
+            })?;
+            let metadata = read_file(Path::new(&keep.secret_ref))
+                .ok()
+                .map(|bytes| extract_codex_account_metadata(&bytes))
+                .unwrap_or_default();
+            let (subject_kind, subject_hash, subject_label) = metadata
+                .provider_subject
+                .as_ref()
+                .map(|subject| {
+                    (
+                        subject.kind.clone(),
+                        provider_subject_hash(self.id(), subject),
+                        subject.label.clone(),
+                    )
+                })
+                .unwrap_or_else(|| {
+                    (
+                        candidates[0].subject_kind.clone(),
+                        candidates[0].subject_hash.clone(),
+                        candidates[0].subject_label.clone(),
+                    )
+                });
+            store.set_account_subject(AccountSubjectUpdate {
+                local_id: &keep.local_id,
+                subject_kind: &subject_kind,
+                subject_hash: &subject_hash,
+                subject_label: &subject_label,
+                account_label: metadata.account_label.as_deref(),
+                plan_label: metadata.plan_label.as_deref(),
+                updated_at_unix: unix_now(),
+            })?;
+
+            let referenced_paths = store
+                .list_accounts(self.id())?
+                .into_iter()
+                .map(|account| account.secret_ref)
+                .collect::<BTreeSet<_>>();
+            let accounts_dir = self.accounts_dir()?;
+            for obsolete_path in candidates
+                .iter()
+                .map(|candidate| PathBuf::from(&candidate.secret_ref))
+                .collect::<BTreeSet<_>>()
+            {
+                if obsolete_path != Path::new(&keep.secret_ref)
+                    && obsolete_path.starts_with(&accounts_dir)
+                    && !referenced_paths.contains(&display_path(&obsolete_path))
+                {
+                    let _ = fs::remove_file(obsolete_path);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn resolve_account(&self, selector: &str) -> Result<AccountRecord> {
-        self.state_store()?
+        let store = self.state_store()?;
+        if let Some(account) = store.account_by_local_id(selector)?
+            && account.provider == self.id()
+        {
+            return Ok(account);
+        }
+        store
             .account_by_selector(self.id(), selector)?
             .ok_or_else(|| OpenMuxError::AccountNotFound {
                 platform: self.id().to_string(),
                 account: selector.to_string(),
             })
+    }
+
+    fn remove_managed_snapshot_if_unreferenced(&self, store: &StateStore, path: &Path) {
+        let Ok(accounts_dir) = self.accounts_dir() else {
+            return;
+        };
+        if !path.starts_with(accounts_dir) {
+            return;
+        }
+        let Ok(accounts) = store.list_accounts(self.id()) else {
+            return;
+        };
+        if accounts
+            .iter()
+            .any(|account| Path::new(&account.secret_ref) == path)
+        {
+            return;
+        }
+        let _ = fs::remove_file(path);
+    }
+
+    fn sync_active_auth_snapshot(
+        &self,
+        store: &StateStore,
+        auth_path: &Path,
+    ) -> Result<Option<Vec<u8>>> {
+        if !auth_path.exists() {
+            return Ok(None);
+        }
+
+        let auth_bytes = read_file(auth_path)?;
+        let Some(active) = store.active_account(self.id())? else {
+            return Ok(Some(auth_bytes));
+        };
+        let auth_hash = sha256_hex(&auth_bytes);
+        if auth_hash == active.auth_hash {
+            return Ok(Some(auth_bytes));
+        }
+
+        let current_subject = extract_codex_account_metadata(&auth_bytes)
+            .provider_subject
+            .map(|subject| {
+                let hash = provider_subject_hash(self.id(), &subject);
+                (subject.kind, hash)
+            });
+        let stored_subject = match (
+            active.provider_subject_kind.clone(),
+            active.provider_subject_hash.clone(),
+        ) {
+            (Some(kind), Some(hash)) => Some((kind, hash)),
+            _ => read_file(Path::new(&active.secret_ref))
+                .ok()
+                .and_then(|bytes| extract_codex_account_metadata(&bytes).provider_subject)
+                .map(|subject| {
+                    let hash = provider_subject_hash(self.id(), &subject);
+                    (subject.kind, hash)
+                }),
+        };
+
+        let (Some(current_subject), Some(stored_subject)) = (current_subject, stored_subject)
+        else {
+            return Err(OpenMuxError::Message(format!(
+                "active Codex auth changed, but its account identity cannot be verified against account #{}; run `omx save codex` or log in again before switching",
+                active.display_number
+            )));
+        };
+        if current_subject != stored_subject {
+            return Err(OpenMuxError::Message(format!(
+                "active Codex auth does not belong to OpenMux account #{}; refusing to overwrite its stored snapshot",
+                active.display_number
+            )));
+        }
+
+        let snapshot_path = self.account_snapshot_path(&auth_hash)?;
+        let snapshot_existed = snapshot_path.exists();
+        #[cfg(test)]
+        if self.fail_snapshot_write {
+            return Err(OpenMuxError::Message(
+                "injected account snapshot write failure".into(),
+            ));
+        }
+        write_file_atomic_private(&snapshot_path, &auth_bytes)?;
+        if let Err(err) = store.update_account_auth(
+            self.id(),
+            &active.local_id,
+            &auth_hash,
+            &display_path(&snapshot_path),
+            unix_now(),
+        ) {
+            if !snapshot_existed {
+                let _ = fs::remove_file(&snapshot_path);
+            }
+            return Err(err);
+        }
+
+        let previous_path = PathBuf::from(&active.secret_ref);
+        if previous_path != snapshot_path {
+            self.remove_managed_snapshot_if_unreferenced(store, &previous_path);
+        }
+        Ok(Some(auth_bytes))
     }
 
     fn import_auth_bytes(
@@ -384,6 +629,7 @@ impl CodexPlugin {
         let snapshot_path = self.account_snapshot_path(&auth_hash)?;
         write_file_atomic_private(&snapshot_path, auth_bytes)?;
         let store = self.state_store()?;
+        self.reconcile_account_subjects(&store)?;
         if let Some(alias) = alias.as_deref() {
             let existing = store
                 .account_by_selector(self.id(), alias)?
@@ -479,7 +725,13 @@ impl CodexPlugin {
     }
 
     fn config_profile_by_selector(&self, selector: &str) -> Result<Option<ProfileRecord>> {
-        self.state_store()?.profile_by_selector(self.id(), selector)
+        let store = self.state_store()?;
+        if let Some(profile) = store.profile_by_local_id(selector)?
+            && profile.provider == self.id()
+        {
+            return Ok(Some(profile));
+        }
+        store.profile_by_selector(self.id(), selector)
     }
 
     fn switch_to_config_profile(&self, selector: &str) -> Result<ConfigSwitchReport> {
@@ -519,6 +771,11 @@ impl CodexPlugin {
                 }
                 fs::copy(&config_path, &path).map_err(|err| io_error(&path, err))?;
                 set_private_file_permissions(&path)?;
+                prune_backup_files(
+                    &self.backups_dir()?,
+                    "config.toml.bak.",
+                    BACKUP_RETENTION_PER_KIND,
+                )?;
                 backup_path = Some(display_path(&path));
             }
         }
@@ -700,8 +957,89 @@ impl PlatformPlugin for CodexPlugin {
 
         let auth_path = login_home.join(AUTH_FILE_NAME);
         let auth_bytes = read_file(&auth_path)?;
+        let store = self.state_store()?;
+        let active_auth_path = self.active_auth_path()?;
+        let synced_active_auth = self.sync_active_auth_snapshot(&store, &active_auth_path)?;
+        let active_before_login = store.active_account(self.id())?;
+        let imported_hash = sha256_hex(&auth_bytes);
+        let imported_snapshot_path = self.account_snapshot_path(&imported_hash)?;
+        let imported_snapshot_existed = imported_snapshot_path.exists();
         let account = self.import_auth_bytes(&auth_bytes, options.alias, false)?;
-        let account = if options.activate {
+        let same_active_account = active_before_login
+            .as_ref()
+            .is_some_and(|active| active.local_id == account.local_id);
+        if same_active_account {
+            let active_before_login = active_before_login
+                .as_ref()
+                .expect("same active account requires an active record");
+            let activation_result = (|| {
+                self.run_before_auth_replace_hook(&active_auth_path);
+                let current_bytes = active_auth_path
+                    .exists()
+                    .then(|| read_file(&active_auth_path))
+                    .transpose()?;
+                if current_bytes != synced_active_auth {
+                    return Err(OpenMuxError::Message(
+                        "active Codex auth changed during login activation; retry after closing running Codex instances"
+                            .into(),
+                    ));
+                }
+                if current_bytes.as_deref() != Some(auth_bytes.as_slice()) {
+                    if let Some(baseline_bytes) = synced_active_auth.as_ref() {
+                        let backup_path = self
+                            .backups_dir()?
+                            .join(format!("auth.json.bak.{}", unix_now_nanos()));
+                        if let Some(parent) = backup_path.parent() {
+                            create_dir_private(parent)?;
+                        }
+                        write_file_atomic_private(&backup_path, baseline_bytes)?;
+                        prune_backup_files(
+                            &self.backups_dir()?,
+                            "auth.json.bak.",
+                            BACKUP_RETENTION_PER_KIND,
+                        )?;
+                    }
+                    let latest_bytes = active_auth_path
+                        .exists()
+                        .then(|| read_file(&active_auth_path))
+                        .transpose()?;
+                    if latest_bytes != synced_active_auth {
+                        return Err(OpenMuxError::Message(
+                            "active Codex auth changed during login activation; retry after closing running Codex instances"
+                                .into(),
+                        ));
+                    }
+                    write_file_atomic_private(&active_auth_path, &auth_bytes)?;
+                }
+                Ok(())
+            })();
+            if let Err(err) = activation_result {
+                let rollback = store.update_account_auth(
+                    self.id(),
+                    &active_before_login.local_id,
+                    &active_before_login.auth_hash,
+                    &active_before_login.secret_ref,
+                    unix_now(),
+                );
+                if rollback.is_ok() && !imported_snapshot_existed {
+                    self.remove_managed_snapshot_if_unreferenced(&store, &imported_snapshot_path);
+                }
+                return match rollback {
+                    Ok(_) => Err(OpenMuxError::Message(format!(
+                        "failed to activate refreshed Codex credentials; account snapshot metadata was rolled back: {err}"
+                    ))),
+                    Err(rollback_err) => Err(OpenMuxError::Message(format!(
+                        "failed to activate refreshed Codex credentials and account snapshot rollback failed: {err}; rollback error: {rollback_err}"
+                    ))),
+                };
+            }
+
+            let previous_path = PathBuf::from(&active_before_login.secret_ref);
+            if previous_path != imported_snapshot_path {
+                self.remove_managed_snapshot_if_unreferenced(&store, &previous_path);
+            }
+        }
+        let account = if options.activate || same_active_account {
             self.switch_to(&account.number.to_string())?.current
         } else {
             account
@@ -771,6 +1109,8 @@ impl PlatformPlugin for CodexPlugin {
 
     fn switch_to(&self, selector: &str) -> Result<SwitchReport> {
         let store = self.state_store()?;
+        let auth_path = self.active_auth_path()?;
+        let current_bytes = self.sync_active_auth_snapshot(&store, &auth_path)?;
         let account = self.resolve_account(selector)?;
         let snapshot_path = PathBuf::from(&account.secret_ref);
         if !snapshot_path.exists() {
@@ -781,7 +1121,6 @@ impl PlatformPlugin for CodexPlugin {
             )));
         }
 
-        let auth_path = self.active_auth_path()?;
         let next_bytes = read_file(&snapshot_path)?;
         let next_hash = sha256_hex(&next_bytes);
         if next_hash != account.auth_hash {
@@ -791,11 +1130,6 @@ impl PlatformPlugin for CodexPlugin {
             )));
         }
 
-        let current_bytes = if auth_path.exists() {
-            Some(read_file(&auth_path)?)
-        } else {
-            None
-        };
         let changed = current_bytes
             .as_ref()
             .is_some_and(|current| current != &next_bytes);
@@ -816,22 +1150,57 @@ impl PlatformPlugin for CodexPlugin {
             if let Some(parent) = backup_path.parent() {
                 create_dir_private(parent)?;
             }
-            fs::copy(&auth_path, &backup_path).map_err(|err| io_error(&backup_path, err))?;
-            set_private_file_permissions(&backup_path)?;
+            write_file_atomic_private(
+                &backup_path,
+                current_bytes
+                    .as_deref()
+                    .expect("changed active auth requires baseline bytes"),
+            )?;
+            prune_backup_files(
+                &self.backups_dir()?,
+                "auth.json.bak.",
+                BACKUP_RETENTION_PER_KIND,
+            )?;
             Some(backup_path)
         } else {
             None
         };
 
+        self.run_before_auth_replace_hook(&auth_path);
+        let latest_current_bytes = if auth_path.exists() {
+            Some(read_file(&auth_path)?)
+        } else {
+            None
+        };
+        if latest_current_bytes != current_bytes {
+            return Err(OpenMuxError::Message(
+                "active Codex auth changed during account switching; retry after closing running Codex instances"
+                    .into(),
+            ));
+        }
+        let latest_target = store
+            .account_by_local_id(&account.local_id)?
+            .ok_or_else(|| OpenMuxError::AccountNotFound {
+                platform: self.id().to_string(),
+                account: account.local_id.clone(),
+            })?;
+        if latest_target.auth_hash != account.auth_hash
+            || latest_target.secret_ref != account.secret_ref
+        {
+            return Err(OpenMuxError::Message(
+                "target Codex account changed during account switching; retry the command".into(),
+            ));
+        }
+
         write_file_atomic_private(&auth_path, &next_bytes)?;
         match default_config_bytes.as_ref() {
             Some(default_bytes) if current_config_bytes.as_ref() != Some(default_bytes) => {
                 if let Err(err) = write_file_atomic_private(&config_path, default_bytes) {
-                    let rollback = match current_bytes.as_ref() {
-                        Some(bytes) => write_file_atomic_private(&auth_path, bytes),
-                        None => fs::remove_file(&auth_path)
-                            .map_err(|remove_err| io_error(&auth_path, remove_err)),
-                    };
+                    let rollback = rollback_auth_if_unchanged(
+                        &auth_path,
+                        &next_bytes,
+                        current_bytes.as_deref(),
+                    );
                     return match rollback {
                         Ok(()) => Err(OpenMuxError::Message(format!(
                             "failed to restore default Codex config after switching account; active auth was rolled back: {err}"
@@ -854,11 +1223,8 @@ impl PlatformPlugin for CodexPlugin {
             .filter(|current| current.local_id != account.local_id)
             .map(|stored| self.account_ref(&stored));
         if let Err(err) = store.set_active_account(self.id(), &account.local_id, unix_now()) {
-            let auth_rollback = match current_bytes {
-                Some(bytes) => write_file_atomic_private(&auth_path, &bytes),
-                None => fs::remove_file(&auth_path)
-                    .map_err(|remove_err| io_error(&auth_path, remove_err)),
-            };
+            let auth_rollback =
+                rollback_auth_if_unchanged(&auth_path, &next_bytes, current_bytes.as_deref());
             let config_rollback = match current_config_bytes {
                 Some(bytes) => write_file_atomic_private(&config_path, &bytes),
                 None if default_config_bytes.is_some() => fs::remove_file(&config_path)
@@ -994,6 +1360,27 @@ fn rollback_status(result: Result<()>) -> &'static str {
     match result {
         Ok(()) => "ok",
         Err(_) => "failed",
+    }
+}
+
+fn rollback_auth_if_unchanged(
+    auth_path: &Path,
+    expected_current: &[u8],
+    previous: Option<&[u8]>,
+) -> Result<()> {
+    let current = auth_path
+        .exists()
+        .then(|| read_file(auth_path))
+        .transpose()?;
+    if current.as_deref() != Some(expected_current) {
+        return Err(OpenMuxError::Message(
+            "active Codex auth changed after replacement; refusing to overwrite newer credentials during rollback"
+                .into(),
+        ));
+    }
+    match previous {
+        Some(bytes) => write_file_atomic_private(auth_path, bytes),
+        None => fs::remove_file(auth_path).map_err(|err| io_error(auth_path, err)),
     }
 }
 

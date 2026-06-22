@@ -5,8 +5,9 @@ use omx_core::{
     ProfileRecord, RemoveReport, RemovedAccount, RemovedConfig, Result, SaveOptions, StateStore,
     SwitchReport, UpsertAccount, UpsertProfile, UseReport, platform_info,
     storage::{
-        create_dir_private, display_path, home_dir, io_error, read_file, sha256_hex,
-        state_root as default_state_root, unix_now, unix_now_nanos, write_file_atomic_private,
+        create_dir_private, display_path, home_dir, io_error, prune_backup_files, read_file,
+        sha256_hex, state_root as default_state_root, unix_now, unix_now_nanos,
+        write_file_atomic_private,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,7 @@ use std::{
 
 const CLAUDE_STATE_PROVIDER: &str = "claude";
 const SETTINGS_FILE_NAME: &str = "settings.json";
+const BACKUP_RETENTION_PER_KIND: usize = 3;
 const MANAGED_ENV_KEYS: &[&str] = &[
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_AUTH_TOKEN",
@@ -304,7 +306,13 @@ impl ClaudePlugin {
     }
 
     fn resolve_profile(&self, selector: &str) -> Result<ProfileRecord> {
-        self.state_store()?
+        let store = self.state_store()?;
+        if let Some(profile) = store.profile_by_local_id(selector)?
+            && profile.provider == CLAUDE_STATE_PROVIDER
+        {
+            return Ok(profile);
+        }
+        store
             .profile_by_selector(CLAUDE_STATE_PROVIDER, selector)?
             .ok_or_else(|| OpenMuxError::AccountNotFound {
                 platform: self.id().to_string(),
@@ -400,6 +408,11 @@ impl ClaudePlugin {
                     create_dir_private(parent)?;
                 }
                 write_file_atomic_private(&path, current)?;
+                prune_backup_files(
+                    &self.backups_dir()?,
+                    "settings.json.bak.",
+                    BACKUP_RETENTION_PER_KIND,
+                )?;
                 Some(display_path(&path))
             } else {
                 None
@@ -797,6 +810,7 @@ impl ClaudeAccountPlugin {
     fn account_ref(&self, account: &AccountRecord) -> AccountRef {
         AccountRef {
             platform: self.id().to_string(),
+            local_id: account.local_id.clone(),
             number: account.display_number,
             alias: account.alias.clone(),
         }
@@ -820,7 +834,13 @@ impl ClaudeAccountPlugin {
     }
 
     fn resolve_account(&self, selector: &str) -> Result<AccountRecord> {
-        self.state_store()?
+        let store = self.state_store()?;
+        if let Some(account) = store.account_by_local_id(selector)?
+            && account.provider == CLAUDE_STATE_PROVIDER
+        {
+            return Ok(account);
+        }
+        store
             .account_by_selector(CLAUDE_STATE_PROVIDER, selector)?
             .ok_or_else(|| OpenMuxError::AccountNotFound {
                 platform: self.id().to_string(),
@@ -1074,6 +1094,11 @@ impl PlatformPlugin for ClaudeAccountPlugin {
                 create_dir_private(parent)?;
             }
             write_file_atomic_private(&path, current)?;
+            prune_backup_files(
+                &self.backups_dir()?,
+                "credentials.snapshot.bak.",
+                BACKUP_RETENTION_PER_KIND,
+            )?;
             Some(path)
         } else {
             None
@@ -1086,6 +1111,11 @@ impl PlatformPlugin for ClaudeAccountPlugin {
                 create_dir_private(parent)?;
             }
             write_file_atomic_private(&path, current)?;
+            prune_backup_files(
+                &self.backups_dir()?,
+                "settings.json.bak.",
+                BACKUP_RETENTION_PER_KIND,
+            )?;
             Some(path)
         } else {
             None

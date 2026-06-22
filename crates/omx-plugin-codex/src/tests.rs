@@ -124,6 +124,310 @@ fn same_email_with_different_codex_account_subjects_stays_separate() {
 }
 
 #[test]
+fn switching_persists_rotated_active_auth_before_replacing_it() {
+    let temp = test_temp_dir("rotated-active-auth");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    let plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+    let auth_path = codex_home.join(AUTH_FILE_NAME);
+
+    let first_auth = codex_auth_with_claims(
+        "first@example.com",
+        "plus",
+        "user-first",
+        "account-first",
+        1,
+    );
+    fs::write(&auth_path, &first_auth).unwrap();
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("first".to_string()),
+        })
+        .unwrap();
+
+    let second_auth = codex_auth_with_claims(
+        "second@example.com",
+        "plus",
+        "user-second",
+        "account-second",
+        1,
+    );
+    fs::write(&auth_path, &second_auth).unwrap();
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("second".to_string()),
+        })
+        .unwrap();
+    plugin.switch_to("first").unwrap();
+
+    let rotated_first_auth = codex_auth_with_claims(
+        "first@example.com",
+        "plus",
+        "user-first",
+        "account-first",
+        2,
+    );
+    fs::write(&auth_path, &rotated_first_auth).unwrap();
+    let old_snapshot = plugin.account_snapshot_path_for_number(1).unwrap();
+
+    plugin.switch_to("second").unwrap();
+
+    let refreshed_snapshot = plugin.account_snapshot_path_for_number(1).unwrap();
+    assert_ne!(old_snapshot, refreshed_snapshot);
+    assert!(!old_snapshot.exists());
+    assert_eq!(
+        fs::read(&refreshed_snapshot).unwrap(),
+        rotated_first_auth.as_bytes()
+    );
+
+    plugin.switch_to("first").unwrap();
+    assert_eq!(fs::read(auth_path).unwrap(), rotated_first_auth.as_bytes());
+}
+
+#[test]
+fn snapshot_write_failure_keeps_active_auth_and_metadata_unchanged() {
+    let temp = test_temp_dir("snapshot-write-failure");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    let mut plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+    let auth_path = codex_home.join(AUTH_FILE_NAME);
+
+    let first_auth = codex_auth_with_claims(
+        "first@example.com",
+        "plus",
+        "user-first",
+        "account-first",
+        1,
+    );
+    fs::write(&auth_path, &first_auth).unwrap();
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("first".to_string()),
+        })
+        .unwrap();
+    let second_auth = codex_auth_with_claims(
+        "second@example.com",
+        "plus",
+        "user-second",
+        "account-second",
+        1,
+    );
+    fs::write(&auth_path, &second_auth).unwrap();
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("second".to_string()),
+        })
+        .unwrap();
+    plugin.switch_to("first").unwrap();
+
+    let first_before = plugin.resolve_account("first").unwrap();
+    let rotated_first_auth = codex_auth_with_claims(
+        "first@example.com",
+        "plus",
+        "user-first",
+        "account-first",
+        2,
+    );
+    fs::write(&auth_path, &rotated_first_auth).unwrap();
+    plugin.fail_snapshot_write();
+
+    let err = plugin.switch_to("second").unwrap_err();
+
+    assert!(err.to_string().contains("snapshot write failure"));
+    assert_eq!(fs::read(&auth_path).unwrap(), rotated_first_auth.as_bytes());
+    let first_after = plugin.resolve_account("first").unwrap();
+    assert_eq!(first_after.auth_hash, first_before.auth_hash);
+    assert_eq!(first_after.secret_ref, first_before.secret_ref);
+    assert_eq!(
+        plugin.current().unwrap().unwrap().account.alias.as_deref(),
+        Some("first")
+    );
+}
+
+#[test]
+fn switching_rejects_auth_changed_after_snapshot_sync() {
+    let temp = test_temp_dir("auth-changed-after-sync");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    let mut plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+    let auth_path = codex_home.join(AUTH_FILE_NAME);
+
+    fs::write(&auth_path, br#"{"account":"first"}"#).unwrap();
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("first".to_string()),
+        })
+        .unwrap();
+    fs::write(&auth_path, br#"{"account":"second"}"#).unwrap();
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("second".to_string()),
+        })
+        .unwrap();
+    plugin.switch_to("first").unwrap();
+
+    plugin.set_before_auth_replace(overwrite_auth_during_replace);
+    let err = plugin.switch_to("second").unwrap_err();
+
+    assert!(err.to_string().contains("changed during account switching"));
+    assert_eq!(
+        fs::read(&auth_path).unwrap(),
+        br#"{"account":"concurrent"}"#
+    );
+    assert_eq!(
+        plugin.current().unwrap().unwrap().account.alias.as_deref(),
+        Some("first")
+    );
+}
+
+#[test]
+fn switching_rejects_active_auth_from_a_different_account() {
+    let temp = test_temp_dir("mismatched-active-auth");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    let plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+    let auth_path = codex_home.join(AUTH_FILE_NAME);
+
+    fs::write(
+        &auth_path,
+        codex_auth_with_claims("a@example.com", "plus", "user-a", "account-a", 1),
+    )
+    .unwrap();
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("a".to_string()),
+        })
+        .unwrap();
+    fs::write(
+        &auth_path,
+        codex_auth_with_claims("b@example.com", "plus", "user-b", "account-b", 1),
+    )
+    .unwrap();
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("b".to_string()),
+        })
+        .unwrap();
+    plugin.switch_to("a").unwrap();
+
+    let a_before = plugin.resolve_account("a").unwrap();
+    let foreign_auth = codex_auth_with_claims(
+        "foreign@example.com",
+        "plus",
+        "user-foreign",
+        "account-foreign",
+        1,
+    );
+    fs::write(&auth_path, &foreign_auth).unwrap();
+
+    let err = plugin.switch_to("b").unwrap_err();
+
+    assert!(err.to_string().contains("does not belong"));
+    assert_eq!(fs::read(&auth_path).unwrap(), foreign_auth.as_bytes());
+    let a_after = plugin.resolve_account("a").unwrap();
+    assert_eq!(a_after.auth_hash, a_before.auth_hash);
+    assert_eq!(a_after.secret_ref, a_before.secret_ref);
+    assert_eq!(
+        plugin.current().unwrap().unwrap().account.alias.as_deref(),
+        Some("a")
+    );
+}
+
+#[test]
+fn switching_rejects_changed_auth_when_identity_cannot_be_verified() {
+    let temp = test_temp_dir("unverifiable-active-auth");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    let plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+    let auth_path = codex_home.join(AUTH_FILE_NAME);
+
+    fs::write(&auth_path, br#"{"account":"a"}"#).unwrap();
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("a".to_string()),
+        })
+        .unwrap();
+    fs::write(&auth_path, br#"{"account":"b"}"#).unwrap();
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("b".to_string()),
+        })
+        .unwrap();
+    plugin.switch_to("a").unwrap();
+
+    let changed_auth = br#"{"account":"a","rotated":true}"#;
+    fs::write(&auth_path, changed_auth).unwrap();
+    let err = plugin.switch_to("b").unwrap_err();
+
+    assert!(err.to_string().contains("identity cannot be verified"));
+    assert_eq!(fs::read(auth_path).unwrap(), changed_auth);
+    assert_eq!(
+        plugin.current().unwrap().unwrap().account.alias.as_deref(),
+        Some("a")
+    );
+}
+
+#[test]
+fn legacy_duplicate_codex_accounts_are_merged_when_subject_can_be_backfilled() {
+    let temp = test_temp_dir("legacy-duplicate-subject");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    let snapshot_dir = temp.join("snapshots");
+    fs::create_dir_all(&codex_home).unwrap();
+    fs::create_dir_all(&snapshot_dir).unwrap();
+    let plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+    let store = plugin.state_store().unwrap();
+
+    for nonce in 1..=2 {
+        let auth = codex_auth_with_claims(
+            "profile@example.com",
+            "plus",
+            "user-123",
+            "account-456",
+            nonce,
+        );
+        let snapshot_path = snapshot_dir.join(format!("{nonce}.auth.json"));
+        fs::write(&snapshot_path, auth.as_bytes()).unwrap();
+        store
+            .upsert_account(UpsertAccount {
+                provider: plugin.id().to_string(),
+                alias: None,
+                provider_subject_kind: None,
+                provider_subject_hash: None,
+                provider_subject_label: None,
+                account_label: Some("profile@example.com".to_string()),
+                plan_label: Some("Plus".to_string()),
+                auth_type: None,
+                expires_at_unix: None,
+                auth_hash: sha256_hex(auth.as_bytes()),
+                secret_ref: display_path(&snapshot_path),
+                imported_at_unix: nonce as u64,
+            })
+            .unwrap();
+    }
+
+    plugin.reconcile_account_subjects(&store).unwrap();
+    let accounts = plugin.list_accounts().unwrap();
+
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0].account.number, 1);
+    let stored = store.list_accounts(plugin.id()).unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(
+        stored[0].provider_subject_kind.as_deref(),
+        Some("codex_chatgpt_account")
+    );
+    assert!(stored[0].secret_ref.ends_with("2.auth.json"));
+    assert!(snapshot_dir.join("1.auth.json").exists());
+    assert!(snapshot_dir.join("2.auth.json").exists());
+}
+
+#[test]
 fn remove_account_deletes_snapshot_and_excludes_from_list() {
     let temp = test_temp_dir("remove-account");
     let codex_home = temp.join("codex-home");
@@ -233,6 +537,86 @@ fn login_assigns_numbers_supports_alias_device_auth_and_use() {
     let args_log = fs::read_to_string(fake_codex.with_extension("args")).unwrap();
     assert!(args_log.contains("login\n"));
     assert!(args_log.contains("login --device-auth\n"));
+}
+
+#[cfg(unix)]
+#[test]
+fn relogin_of_active_account_keeps_new_credentials_active_without_use_flag() {
+    let temp = test_temp_dir("relogin-active-account");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    let first_auth =
+        codex_auth_with_claims("same@example.com", "plus", "same-user", "same-account", 1);
+    let refreshed_auth =
+        codex_auth_with_claims("same@example.com", "plus", "same-user", "same-account", 2);
+    let fake_codex =
+        fake_codex_rotating_same_account_executable(&temp, &first_auth, &refreshed_auth);
+    let plugin =
+        CodexPlugin::with_paths_and_codex_executable(&codex_home, &state_root, &fake_codex);
+
+    plugin
+        .login(LoginOptions {
+            activate: true,
+            ..LoginOptions::default()
+        })
+        .unwrap();
+    let relogged = plugin.login(LoginOptions::default()).unwrap();
+
+    assert_eq!(relogged.number, 1);
+    assert_eq!(plugin.list_accounts().unwrap().len(), 1);
+    assert_eq!(
+        fs::read(codex_home.join(AUTH_FILE_NAME)).unwrap(),
+        refreshed_auth.as_bytes()
+    );
+    assert_eq!(
+        fs::read(plugin.account_snapshot_path_for_number(1).unwrap()).unwrap(),
+        refreshed_auth.as_bytes()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn relogin_read_failure_rolls_back_active_snapshot_metadata() {
+    let temp = test_temp_dir("relogin-read-rollback");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    let first_auth =
+        codex_auth_with_claims("same@example.com", "plus", "same-user", "same-account", 1);
+    let refreshed_auth =
+        codex_auth_with_claims("same@example.com", "plus", "same-user", "same-account", 2);
+    let fake_codex =
+        fake_codex_rotating_same_account_executable(&temp, &first_auth, &refreshed_auth);
+    let mut plugin =
+        CodexPlugin::with_paths_and_codex_executable(&codex_home, &state_root, &fake_codex);
+
+    plugin
+        .login(LoginOptions {
+            activate: true,
+            ..LoginOptions::default()
+        })
+        .unwrap();
+    let original_snapshot = plugin.account_snapshot_path_for_number(1).unwrap();
+    let original_record = plugin
+        .state_store()
+        .unwrap()
+        .account_by_selector(plugin.id(), "1")
+        .unwrap()
+        .unwrap();
+
+    plugin.set_before_auth_replace(remove_auth_during_replace);
+    let err = plugin.login(LoginOptions::default()).unwrap_err();
+
+    assert!(err.to_string().contains("metadata was rolled back"));
+    let rolled_back = plugin
+        .state_store()
+        .unwrap()
+        .account_by_selector(plugin.id(), "1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(rolled_back.auth_hash, original_record.auth_hash);
+    assert_eq!(rolled_back.secret_ref, original_record.secret_ref);
+    assert!(original_snapshot.exists());
+    assert_eq!(fs::read(original_snapshot).unwrap(), first_auth.as_bytes());
 }
 
 #[test]
@@ -733,6 +1117,38 @@ printf '{"account":"%s"}' "$count" > "$CODEX_HOME/auth.json"
 }
 
 #[cfg(unix)]
+fn fake_codex_rotating_same_account_executable(
+    temp: &Path,
+    first_auth: &str,
+    refreshed_auth: &str,
+) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script = temp.join("codex-rotating-same-account");
+    let content = format!(
+        r#"#!/bin/sh
+set -eu
+count_file="$0.count"
+count=0
+if [ -f "$count_file" ]; then
+  count="$(cat "$count_file")"
+fi
+count=$((count + 1))
+printf '%s' "$count" > "$count_file"
+mkdir -p "$CODEX_HOME"
+if [ "$count" -eq 1 ]; then
+  printf '%s' '{first_auth}' > "$CODEX_HOME/auth.json"
+else
+  printf '%s' '{refreshed_auth}' > "$CODEX_HOME/auth.json"
+fi
+"#
+    );
+    fs::write(&script, content).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+#[cfg(unix)]
 fn fake_codex_static_executable(temp: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
@@ -756,6 +1172,14 @@ fn fake_jwt(header: &str, payload: &str) -> String {
         base64_url_encode(header.as_bytes()),
         base64_url_encode(payload.as_bytes())
     )
+}
+
+fn overwrite_auth_during_replace(auth_path: &Path) {
+    fs::write(auth_path, br#"{"account":"concurrent"}"#).unwrap();
+}
+
+fn remove_auth_during_replace(auth_path: &Path) {
+    fs::remove_file(auth_path).unwrap();
 }
 
 fn codex_auth_with_claims(

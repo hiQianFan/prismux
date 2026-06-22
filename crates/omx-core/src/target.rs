@@ -9,7 +9,7 @@ pub enum TargetKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetResolution {
     pub kind: TargetKind,
-    pub selector: String,
+    pub target_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -23,7 +23,7 @@ pub struct TargetCatalog {
 struct TargetCandidate {
     display_index: u32,
     kind: TargetKind,
-    selector: String,
+    target_id: String,
     name: Option<String>,
 }
 
@@ -36,7 +36,7 @@ impl TargetCatalog {
             candidates.push(TargetCandidate {
                 display_index: next_index,
                 kind: TargetKind::Account,
-                selector: status.account.number.to_string(),
+                target_id: status.account.local_id.clone(),
                 name: status.account.alias.clone(),
             });
             next_index += 1;
@@ -46,10 +46,7 @@ impl TargetCatalog {
             candidates.push(TargetCandidate {
                 display_index: next_index,
                 kind: TargetKind::Profile,
-                selector: profile
-                    .number
-                    .map(|number| number.to_string())
-                    .unwrap_or_else(|| profile.name.clone()),
+                target_id: profile.local_id.clone(),
                 name: Some(profile.name.clone()),
             });
             next_index += 1;
@@ -77,7 +74,7 @@ impl TargetCatalog {
             .filter(|candidate| candidate.name.as_deref() == Some(selector))
         {
             if !matches.iter().any(|matched| {
-                matched.kind == candidate.kind && matched.selector == candidate.selector
+                matched.kind == candidate.kind && matched.target_id == candidate.target_id
             }) {
                 matches.push(candidate);
             }
@@ -86,7 +83,7 @@ impl TargetCatalog {
         match matches.as_slice() {
             [candidate] => Ok(TargetResolution {
                 kind: candidate.kind,
-                selector: candidate.selector.clone(),
+                target_id: candidate.target_id.clone(),
             }),
             [] => Err(OpenMuxError::Message(format!(
                 "`{selector}` did not match any account or profile for `{platform_id}`"
@@ -126,7 +123,7 @@ mod tests {
             catalog.resolve("codex", "3").unwrap(),
             TargetResolution {
                 kind: TargetKind::Profile,
-                selector: "gateway".to_string(),
+                target_id: "profile-gateway".to_string(),
             }
         );
     }
@@ -159,6 +156,7 @@ mod tests {
         AccountStatus {
             account: AccountRef {
                 platform: "test".to_string(),
+                local_id: format!("account-{number}"),
                 number,
                 alias: alias.map(str::to_string),
             },
@@ -178,6 +176,7 @@ mod tests {
     fn profile(number: Option<u32>, name: &str) -> ConfigProfile {
         ConfigProfile {
             platform: platform_info("test", "Test"),
+            local_id: format!("profile-{name}"),
             name: name.to_string(),
             active: false,
             config_path: format!("{name}.config.toml"),

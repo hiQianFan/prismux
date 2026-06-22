@@ -152,6 +152,8 @@ Codex active auth path：
 9. 默认不替换当前 active auth；传入 `--use` 时才立即切换。
 10. 清理临时 login home。
 
+`login` 负责获取并登记凭据，`use` 负责改变当前运行上下文。默认不激活使添加账号保持最小副作用，并允许脚本先完成多账号登记；`--use` 是将两步组合为一次操作的显式便利开关。CLI 在未传 `--use` 时必须打印可直接执行的 `omx use codex <selector>`。如果新登录结果与当前 active account 是同一 provider subject，则应同步更新 active auth，因为这不改变账号上下文，只是替换该账号已经轮换的凭据。
+
 ## Save Flow
 
 `omx save codex [--alias <alias>]` 是恢复/高级路径：
@@ -201,12 +203,14 @@ Claude profile import 使用 `omx import claude "<KV-or-JSON-or-TOML>"`。插件
 `omx use codex <selector>`：
 
 1. 如果 Codex 同时有 accounts 和 profiles，CLI 先用 `TargetCatalog` 将数字展示编号翻译为底层 account selector 或 profile selector。
-2. 命中 account 时读取目标账号 snapshot。
-3. 如果当前 active auth 存在且内容不同，先写入 backup。
-4. 将目标 snapshot 原子写入 Codex `auth.json`。
-5. 如果存在 OpenMux 保存的 default config snapshot，则恢复 `config.toml`，避免旧 profile 继续显示 active。
-6. 更新 SQLite active target 和 activation timestamp。
-7. 命中 profile 时切换 `config.toml`，并清空 account active marker，保证同一平台最多一个 active target。
+2. 命中 account 时，先比较当前 `auth.json` 与 SQLite active account snapshot。内容变化时必须从两者提取 provider subject 并确认身份一致。
+3. 身份一致时将当前 auth 原子写入新的 hash snapshot，更新 active account 的 `auth_hash`/`secret_ref` 后再清理旧 snapshot；身份缺失或不匹配时拒绝切换。
+4. 重新解析目标账号并校验目标 snapshot hash，确保切换到当前账号时不会使用同步前的旧记录。
+5. 如果当前 active auth 存在且内容不同，先写入 backup；覆盖前再次检查 active auth 未被其他进程修改。
+6. 将目标 snapshot 原子写入 Codex `auth.json`。
+7. 如果存在 OpenMux 保存的 default config snapshot，则恢复 `config.toml`，避免旧 profile 继续显示 active。
+8. 更新 SQLite active target 和 activation timestamp。
+9. 命中 profile 时切换 `config.toml`，并清空 account active marker，保证同一平台最多一个 active target。
 
 ## Safety Rules
 
@@ -219,5 +223,7 @@ Claude profile import 使用 `omx import claude "<KV-or-JSON-or-TOML>"`。插件
 - snapshot、backup 和 SQLite state root 使用私有权限。
 - auth replacement 使用原子写入；SQLite 更新通过 `StateStore` 集中执行。
 - 切换前备份已有 active auth。
+- 切换前同步同一 provider subject 的 active auth，避免恢复已经轮换过的 refresh token。
+- active auth 身份不匹配、无法验证或在最终替换检查前被并发修改时拒绝切换；这是 best-effort 检测，不是 Codex 进程共同遵守的文件锁，切换前仍应关闭运行中的 Codex 实例。
 - 切换前校验 snapshot hash，hash mismatch 时拒绝写入 active auth/credentials。
 - SQLite active 更新失败时尽力回滚已写入的 active auth/credentials/settings。

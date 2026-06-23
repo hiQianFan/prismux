@@ -1937,6 +1937,8 @@ mod tests {
     use std::{
         env, fs,
         path::{Path, PathBuf},
+        thread,
+        time::Duration,
     };
 
     fn insert_test_account(
@@ -2770,6 +2772,144 @@ mod tests {
                 .event_count,
             1
         );
+    }
+
+    #[test]
+    fn ingest_usage_events_rolls_back_batch_and_watermark_on_event_conflict() {
+        let state_root = env::temp_dir().join(format!(
+            "openmux-state-store-usage-ingest-rollback-{}",
+            unix_now_nanos()
+        ));
+        let source_root = state_root.join("sources");
+        fs::create_dir_all(&source_root).unwrap();
+        let source_path = source_root.join("session.jsonl");
+        fs::write(&source_path, b"{\"tokens\":1}\n").unwrap();
+        let store = StateStore::open(&state_root).unwrap();
+        let existing = usage_event("codex", "same-hash", CostStatus::Missing, None);
+        let new_event = usage_event("codex", "new-in-batch", CostStatus::Missing, None);
+        let mut conflicting = usage_event("codex", "same-hash", CostStatus::Missing, None);
+        conflicting.tokens.output = 500;
+        let watermark = usage_watermark("codex:session", &source_path);
+
+        store.insert_usage_event(&existing, 100).unwrap();
+        let err = store
+            .ingest_usage_events(&[new_event, conflicting], Some(&watermark), 123)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("usage event hash conflict"));
+        assert!(store.scan_watermark("codex:session").unwrap().is_none());
+        let summaries = store.usage_summaries(Some("codex"), None, None).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].event_count, 1);
+        assert_eq!(summaries[0].tokens.output, 5);
+    }
+
+    #[test]
+    fn usage_insert_waits_for_short_sqlite_write_lock() {
+        let state_root = env::temp_dir().join(format!(
+            "openmux-state-store-usage-busy-timeout-{}",
+            unix_now_nanos()
+        ));
+        fs::create_dir_all(&state_root).unwrap();
+        let store = StateStore::open(&state_root).unwrap();
+        let db_path = state_root.join("omx-state.sqlite");
+        let lock_conn = Connection::open(&db_path).unwrap();
+        lock_conn.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        drop(store);
+
+        let insert_state_root = state_root.clone();
+        let handle = thread::spawn(move || {
+            let store = StateStore::open(&insert_state_root).unwrap();
+            let event = usage_event("codex", "busy-wait-event", CostStatus::Missing, None);
+            store.insert_usage_event(&event, 100).unwrap()
+        });
+
+        thread::sleep(Duration::from_millis(100));
+        assert!(
+            !handle.is_finished(),
+            "usage insert finished while another connection held a write lock"
+        );
+        lock_conn.execute_batch("COMMIT;").unwrap();
+
+        assert!(handle.join().unwrap());
+        let store = StateStore::open(&state_root).unwrap();
+        let summaries = store.usage_summaries(Some("codex"), None, None).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].event_count, 1);
+    }
+
+    #[test]
+    fn usage_events_do_not_store_raw_sensitive_source_text() {
+        let state_root = env::temp_dir().join(format!(
+            "openmux-state-store-usage-privacy-{}",
+            unix_now_nanos()
+        ));
+        let source_root = state_root.join("sources");
+        fs::create_dir_all(&source_root).unwrap();
+        let source_path = source_root.join("session.jsonl");
+        let raw_log_line = concat!(
+            r#"{"prompt":"raw prompt secret","response":"raw response secret","#,
+            r#""access_token":"access-token-secret","api_key":"sk-live-secret"}"#,
+            "\n"
+        );
+        fs::write(&source_path, raw_log_line.as_bytes()).unwrap();
+        let store = StateStore::open(&state_root).unwrap();
+        let fingerprint =
+            UsageSourceFingerprint::from_path(&source_path, 1, "test-backend").unwrap();
+        let mut event = usage_event("codex", "privacy-event", CostStatus::Missing, None);
+        event.source.path = Some(source_path);
+        event.source.fingerprint_json = Some(fingerprint.to_json().unwrap());
+        event.source.record_hash = Some("hashed-record-only".to_string());
+
+        store.insert_usage_event(&event, 100).unwrap();
+        store
+            .conn
+            .execute_batch("PRAGMA wal_checkpoint(FULL);")
+            .unwrap();
+
+        let sqlite_text = sqlite_files_text(&state_root);
+        for forbidden in [
+            raw_log_line.trim(),
+            "raw prompt secret",
+            "raw response secret",
+            "access-token-secret",
+            "sk-live-secret",
+        ] {
+            assert!(
+                !sqlite_text.contains(forbidden),
+                "SQLite usage store leaked sensitive source text: {forbidden}"
+            );
+        }
+    }
+
+    fn usage_watermark(source_id: &str, source_path: &Path) -> UsageScanWatermark {
+        let fingerprint =
+            UsageSourceFingerprint::from_path(source_path, 1, "test-backend").unwrap();
+        UsageScanWatermark {
+            source_id: source_id.to_string(),
+            client: "codex".to_string(),
+            backend: "test-backend".to_string(),
+            backend_version: "0.0.0".to_string(),
+            parser_schema_version: 1,
+            source_kind: "jsonl".to_string(),
+            source_path: source_path.to_path_buf(),
+            source_fingerprint: fingerprint,
+            last_offset: Some(42),
+            last_record_id: None,
+            last_scanned_at_unix: 200,
+            last_scan_status: "success".to_string(),
+            diagnostic_code: None,
+        }
+    }
+
+    fn sqlite_files_text(state_root: &Path) -> String {
+        ["omx-state.sqlite", "omx-state.sqlite-wal"]
+            .into_iter()
+            .map(|file_name| state_root.join(file_name))
+            .filter(|path| path.exists())
+            .map(|path| String::from_utf8_lossy(&fs::read(path).unwrap()).into_owned())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn usage_event(

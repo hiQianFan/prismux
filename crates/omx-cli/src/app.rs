@@ -2,7 +2,7 @@ use crate::input::{read_import_content, read_optional_import_content};
 use anstream::println;
 use anstyle::{AnsiColor, Style};
 use anyhow::{Context, Result, bail};
-use chrono::{Local, TimeZone};
+use chrono::{Datelike, Local, NaiveDate, TimeZone};
 use clap::{Parser, Subcommand};
 use comfy_table::{
     Attribute, Cell, Color, ContentArrangement, Table, modifiers::UTF8_ROUND_CORNERS,
@@ -12,11 +12,14 @@ use inquire::Select;
 use omx_core::{
     AccountRef, AccountStatus, ConfigProfile, ImportConfigOptions, LoginOptions, PlatformPlugin,
     RemoveReport, SaveOptions, StateStore, TargetCatalog, TargetKind, TargetResolution, UsageLimit,
-    UsageSnapshot, UseReport,
+    UsageScanBudget, UsageScanDiagnostic, UsageScanOptions, UsageSnapshot, UsageSummary,
+    UsageSummaryQuery, UseReport,
     storage::{state_root, unix_now},
 };
-use omx_plugin_claude::{ClaudeAccountPlugin, ClaudePlugin};
+use omx_plugin_claude::ClaudePlugin;
 use omx_plugin_codex::CodexPlugin;
+use omx_usage_tokscale::TokscaleUsageBackend;
+use serde_json::{Value, json};
 use std::{fmt, path::PathBuf};
 
 #[derive(Debug, Parser)]
@@ -114,28 +117,34 @@ enum Command {
         /// Optional platform id, for example: codex.
         platform: Option<String>,
     },
+    /// Show parsed local token usage.
+    Usage {
+        /// Optional client id, for example: codex, claude, or gemini.
+        client: Option<String>,
+        /// Start of the local date window as YYYY-MM-DD or a Unix timestamp.
+        #[arg(long)]
+        since: Option<String>,
+        /// End of the local date window as YYYY-MM-DD or a Unix timestamp. Date values are exclusive of the next day.
+        #[arg(long)]
+        until: Option<String>,
+        /// Print a versioned JSON document.
+        #[arg(long)]
+        json: bool,
+        /// Skip local log scan and query the existing SQLite cache only.
+        #[arg(long)]
+        no_scan: bool,
+    },
 }
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
-    let plugins: Vec<Box<dyn PlatformPlugin>> = vec![
-        Box::new(CodexPlugin::new()),
-        Box::new(ClaudePlugin::new()),
-        Box::new(ClaudeAccountPlugin::new()),
-    ];
+    let plugins: Vec<Box<dyn PlatformPlugin>> =
+        vec![Box::new(CodexPlugin::new()), Box::new(ClaudePlugin::new())];
 
     match cli.command {
         Command::List { platform } => {
             if let Some(platform) = platform {
-                if platform == "claude" {
-                    print_aggregated_platform(
-                        find_plugin(&plugins, "claude")?,
-                        Some(find_plugin(&plugins, "claude-account")?),
-                    )?;
-                } else {
-                    let plugin = find_plugin(&plugins, &platform)?;
-                    print_platform_accounts(plugin)?;
-                }
+                print_platform_accounts(find_plugin(&plugins, &platform)?)?;
             } else {
                 print_section("Overview");
                 let mut table = view_table();
@@ -149,11 +158,7 @@ pub fn run() -> Result<()> {
                     header_cell("Status"),
                 ]);
                 for plugin in visible_plugins(&plugins) {
-                    let account_plugin = aggregated_account_plugin(plugin, &plugins)?;
-                    let accounts = match account_plugin {
-                        Some(plugin) => plugin.list_accounts()?,
-                        None => plugin.list_accounts()?,
-                    };
+                    let accounts = plugin.list_accounts()?;
                     let profiles = plugin.list_configs()?;
                     let active = accounts.iter().find(|status| status.active);
                     let active_profile = profiles.iter().find(|profile| profile.active);
@@ -177,13 +182,10 @@ pub fn run() -> Result<()> {
         }
         Command::Current { platform } => {
             if let Some(platform) = platform {
-                if platform == "claude" {
-                    print_aggregated_current(
-                        find_plugin(&plugins, "claude")?,
-                        Some(find_plugin(&plugins, "claude-account")?),
-                    )?;
+                let plugin = find_plugin(&plugins, &platform)?;
+                if plugin.capabilities().accounts && plugin.capabilities().profiles {
+                    print_aggregated_current(plugin)?;
                 } else {
-                    let plugin = find_plugin(&plugins, &platform)?;
                     match plugin.current()? {
                         Some(status) => {
                             println!("{}", active_account_label(plugin.name(), &status.account))
@@ -196,12 +198,7 @@ pub fn run() -> Result<()> {
                 let mut table = view_table();
                 table.set_header(vec![header_cell("Platform"), header_cell("Active")]);
                 for plugin in visible_plugins(&plugins) {
-                    let account_plugin = aggregated_account_plugin(plugin, &plugins)?;
-                    let current = account_plugin
-                        .map(PlatformPlugin::current)
-                        .transpose()?
-                        .flatten()
-                        .or(plugin.current()?);
+                    let current = plugin.current()?;
                     match current {
                         Some(status) => {
                             table.add_row(vec![
@@ -226,21 +223,13 @@ pub fn run() -> Result<()> {
             alias,
             use_account,
         } => {
-            let plugin = if platform == "claude" {
-                find_plugin(&plugins, "claude-account")?
-            } else {
-                find_plugin(&plugins, &platform)?
-            };
+            let plugin = find_plugin(&plugins, &platform)?;
             let account = plugin.login(LoginOptions {
                 device_auth,
                 alias,
                 activate: use_account,
             })?;
-            let display_name = if platform == "claude" {
-                "Claude Code"
-            } else {
-                plugin.name()
-            };
+            let display_name = plugin.name();
             print_success(format!(
                 "Imported {display_name} account {}",
                 account_label(&account)
@@ -294,22 +283,13 @@ pub fn run() -> Result<()> {
         } => {
             let requested_content =
                 read_optional_import_content(file.as_deref(), clipboard, content)?;
-            let (plugin, content, imported_kind) = if platform == "claude" {
-                if let Some(content) = requested_content {
-                    (
-                        find_plugin(&plugins, "claude")?,
-                        content,
-                        ImportKind::Profile,
-                    )
-                } else {
-                    (
-                        find_plugin(&plugins, "claude-account")?,
-                        String::new(),
-                        ImportKind::Account,
-                    )
+            let plugin = find_plugin(&plugins, &platform)?;
+            let (content, imported_kind) = if platform == "claude" {
+                match requested_content {
+                    Some(content) => (content, ImportKind::Profile),
+                    None => (String::new(), ImportKind::Account),
                 }
             } else {
-                let plugin = find_plugin(&plugins, &platform)?;
                 let content = match (plugin.capabilities().account_import, requested_content) {
                     (true, content) => content.unwrap_or_default(),
                     (false, Some(content)) => content,
@@ -320,14 +300,10 @@ pub fn run() -> Result<()> {
                 } else {
                     ImportKind::Profile
                 };
-                (plugin, content, kind)
+                (content, kind)
             };
             let imported = plugin.import_config(ImportConfigOptions { name, content })?;
-            let display_name = if platform == "claude" {
-                "Claude Code"
-            } else {
-                imported.platform.name.as_str()
-            };
+            let display_name = imported.platform.name.as_str();
             if imported_kind == ImportKind::Account {
                 print_success(format!(
                     "Imported {display_name} account `{}`",
@@ -353,10 +329,7 @@ pub fn run() -> Result<()> {
                 "Profile snapshot"
             };
             print_hint(format!("{snapshot_label}: {}", imported.config_path));
-            print_hint(format!(
-                "List: omx list {}",
-                public_platform_id(plugin.id())
-            ));
+            print_hint(format!("List: omx list {}", plugin.id()));
         }
         Command::Save { platform, alias } => {
             let plugin = find_plugin(&plugins, &platform)?;
@@ -369,12 +342,11 @@ pub fn run() -> Result<()> {
         }
         Command::Use { platform, selector } => {
             let plugin = find_plugin(&plugins, &platform)?;
-            let account_plugin = aggregated_account_plugin(plugin, &plugins)?;
             let selector = match selector {
                 Some(selector) => selector,
-                None => choose_target(plugin, account_plugin, true)?,
+                None => choose_target(plugin, true)?,
             };
-            let report = use_resolved_target(plugin, account_plugin, &selector)?;
+            let report = use_resolved_target(plugin, &selector)?;
             match report {
                 UseReport::Account(report) => {
                     print_success(format!(
@@ -406,12 +378,11 @@ pub fn run() -> Result<()> {
         }
         Command::Remove { platform, selector } => {
             let plugin = find_plugin(&plugins, &platform)?;
-            let account_plugin = aggregated_account_plugin(plugin, &plugins)?;
             let selector = match selector {
                 Some(selector) => selector,
-                None => choose_target(plugin, account_plugin, true)?,
+                None => choose_target(plugin, true)?,
             };
-            let report = remove_resolved_target(plugin, account_plugin, &selector)?;
+            let report = remove_resolved_target(plugin, &selector)?;
             match report {
                 RemoveReport::Account(report) => {
                     print_success(format!(
@@ -450,56 +421,52 @@ pub fn run() -> Result<()> {
             alias,
         } => {
             let plugin = find_plugin(&plugins, &platform)?;
-            let account_plugin = aggregated_account_plugin(plugin, &plugins)?;
-            let target = resolve_target(plugin, account_plugin, &selector)?;
+            let target = resolve_target(plugin, &selector)?;
             if target.kind != TargetKind::Account {
                 bail!("`{selector}` matched a profile; aliases can only be set on accounts");
             }
-            let account_plugin = account_plugin.unwrap_or(plugin);
-            let account = account_plugin.set_alias(&target.target_id, &alias)?;
+            let account = plugin.set_alias(&target.target_id, &alias)?;
             print_success(format!(
                 "Updated {} account {}",
-                account_plugin.name(),
+                plugin.name(),
                 account_label(&account)
             ));
         }
         Command::Unalias { platform, selector } => {
             let plugin = find_plugin(&plugins, &platform)?;
-            let account_plugin = aggregated_account_plugin(plugin, &plugins)?;
-            let target = resolve_target(plugin, account_plugin, &selector)?;
+            let target = resolve_target(plugin, &selector)?;
             if target.kind != TargetKind::Account {
                 bail!("`{selector}` matched a profile; aliases can only be cleared on accounts");
             }
-            let account_plugin = account_plugin.unwrap_or(plugin);
             let store = StateStore::open(&state_root()?)?;
             let account = store.clear_account_alias_by_selector(
-                account_plugin.id(),
+                plugin.id(),
                 &target.target_id,
                 unix_now(),
             )?;
             print_success(format!(
                 "Cleared alias for {} account #{}",
-                account_plugin.name(),
+                plugin.name(),
                 account.number
             ));
         }
         Command::Doctor { platform } => {
             if let Some(platform) = platform {
-                if platform == "claude" {
-                    print_doctor(find_plugin(&plugins, "claude")?)?;
-                    print_doctor(find_plugin(&plugins, "claude-account")?)?;
-                } else {
-                    let plugin = find_plugin(&plugins, &platform)?;
-                    print_doctor(plugin)?;
-                }
+                print_doctor(find_plugin(&plugins, &platform)?)?;
             } else {
                 for plugin in visible_plugins(&plugins) {
                     print_doctor(plugin)?;
-                    if plugin.id() == "claude" {
-                        print_doctor(find_plugin(&plugins, "claude-account")?)?;
-                    }
                 }
             }
+        }
+        Command::Usage {
+            client,
+            since,
+            until,
+            json,
+            no_scan,
+        } => {
+            print_usage(client, since, until, json, no_scan)?;
         }
     }
 
@@ -520,25 +487,374 @@ fn find_plugin<'a>(
 fn visible_plugins(
     plugins: &[Box<dyn PlatformPlugin>],
 ) -> impl Iterator<Item = &dyn PlatformPlugin> {
-    plugins
-        .iter()
-        .map(|plugin| plugin.as_ref())
-        .filter(|plugin| plugin.id() != "claude-account")
+    plugins.iter().map(|plugin| plugin.as_ref())
 }
 
-fn aggregated_account_plugin<'a>(
-    plugin: &'a dyn PlatformPlugin,
-    plugins: &'a [Box<dyn PlatformPlugin>],
-) -> Result<Option<&'a dyn PlatformPlugin>> {
-    if plugin.id() == "claude" {
-        Ok(Some(find_plugin(plugins, "claude-account")?))
+fn print_usage(
+    client: Option<String>,
+    since: Option<String>,
+    until: Option<String>,
+    json_output: bool,
+    no_scan: bool,
+) -> Result<()> {
+    let window = usage_window(since.as_deref(), until.as_deref())?;
+    let store = StateStore::open(&state_root()?)?;
+    let mut diagnostics = Vec::new();
+    let mut scanned_events = 0_usize;
+    let mut inserted_events = 0_usize;
+
+    if !no_scan {
+        match TokscaleUsageBackend::new().scan(UsageScanOptions {
+            clients: client.iter().cloned().collect(),
+            since_unix: Some(window.since_unix),
+            until_unix: Some(window.until_unix),
+            budget: UsageScanBudget::default(),
+        }) {
+            Ok(report) => {
+                scanned_events = report.events.len();
+                diagnostics.extend(report.diagnostics);
+                inserted_events = store.ingest_usage_events(&report.events, None, unix_now())?;
+            }
+            Err(err) => diagnostics.push(UsageScanDiagnostic {
+                client: client.clone(),
+                source_kind: Some("tokscale-local".to_string()),
+                code: "scan_failed".to_string(),
+                message: err.to_string(),
+            }),
+        }
+    }
+
+    let summaries = store.usage_summaries_by(UsageSummaryQuery {
+        client: client.clone(),
+        since_unix: Some(window.since_unix),
+        until_unix: Some(window.until_unix),
+        group_by_model_provider: true,
+        group_by_model: true,
+        ..UsageSummaryQuery::default()
+    })?;
+
+    if json_output {
+        print_usage_json(
+            &client,
+            &window,
+            &summaries,
+            &diagnostics,
+            scanned_events,
+            inserted_events,
+            no_scan,
+        )?;
     } else {
-        Ok(None)
+        print_usage_table(
+            &client,
+            &window,
+            &summaries,
+            &diagnostics,
+            scanned_events,
+            inserted_events,
+            no_scan,
+        );
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct UsageWindow {
+    since_unix: i64,
+    until_unix: i64,
+    since_display: String,
+    until_display: String,
+    timezone: String,
+}
+
+fn usage_window(since: Option<&str>, until: Option<&str>) -> Result<UsageWindow> {
+    let today = Local::now().date_naive();
+    let since_unix = match since {
+        Some(value) => parse_usage_boundary(value, UsageBoundary::Start)?,
+        None => local_date_start_unix(today)?,
+    };
+    let until_unix = match until {
+        Some(value) => parse_usage_boundary(value, UsageBoundary::End)?,
+        None => local_date_start_unix(today.succ_opt().context("invalid local date")?)?,
+    };
+    if since_unix >= until_unix {
+        bail!("usage window must have --since earlier than --until");
+    }
+
+    Ok(UsageWindow {
+        since_unix,
+        until_unix,
+        since_display: display_usage_timestamp(since_unix),
+        until_display: display_usage_timestamp(until_unix),
+        timezone: Local::now().offset().to_string(),
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum UsageBoundary {
+    Start,
+    End,
+}
+
+fn parse_usage_boundary(value: &str, boundary: UsageBoundary) -> Result<i64> {
+    if let Ok(timestamp) = value.parse::<i64>() {
+        return Ok(timestamp);
+    }
+
+    let date = NaiveDate::parse_from_str(value, "%Y-%m-%d").with_context(|| {
+        format!("invalid usage date `{value}`, expected YYYY-MM-DD or Unix timestamp")
+    })?;
+    match boundary {
+        UsageBoundary::Start => local_date_start_unix(date),
+        UsageBoundary::End => local_date_start_unix(date.succ_opt().context("invalid usage date")?),
     }
 }
 
-fn public_platform_id(id: &str) -> &str {
-    if id == "claude-account" { "claude" } else { id }
+fn local_date_start_unix(date: NaiveDate) -> Result<i64> {
+    Local
+        .with_ymd_and_hms(date.year(), date.month(), date.day(), 0, 0, 0)
+        .single()
+        .map(|time| time.timestamp())
+        .context("local date boundary is ambiguous or invalid")
+}
+
+fn display_usage_timestamp(timestamp: i64) -> String {
+    Local
+        .timestamp_opt(timestamp, 0)
+        .single()
+        .map(|time| time.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|| timestamp.to_string())
+}
+
+fn print_usage_table(
+    client: &Option<String>,
+    window: &UsageWindow,
+    summaries: &[UsageSummary],
+    diagnostics: &[UsageScanDiagnostic],
+    scanned_events: usize,
+    inserted_events: usize,
+    no_scan: bool,
+) {
+    print_section(format!(
+        "Usage: {} · {} to {} · {}",
+        client.as_deref().unwrap_or("all"),
+        window.since_display,
+        window.until_display,
+        window.timezone
+    ));
+    if no_scan {
+        print_hint("scan skipped; showing cached usage only");
+    } else {
+        print_hint(format!(
+            "scanned {scanned_events} events, inserted {inserted_events} new events"
+        ));
+    }
+    print_hint(usage_accounting_note());
+
+    let mut table = view_table();
+    table.set_header(vec![
+        header_cell("Client"),
+        header_cell("Provider"),
+        header_cell("Model"),
+        header_cell("Input"),
+        header_cell("Output"),
+        header_cell("Cache R"),
+        header_cell("Cache W"),
+        header_cell("Reasoning"),
+        header_cell("Total"),
+        header_cell("Provider Total"),
+        header_cell("Cost"),
+        header_cell("Quality"),
+        header_cell("Events"),
+    ]);
+
+    for summary in summaries {
+        table.add_row(vec![
+            Cell::new(&summary.client).add_attribute(Attribute::Bold),
+            text_or_empty_cell(summary.model_provider.as_deref()),
+            text_or_empty_cell(summary.model.as_deref()),
+            Cell::new(summary.tokens.input),
+            Cell::new(summary.tokens.output),
+            Cell::new(summary.tokens.cache_read),
+            Cell::new(summary.tokens.cache_write),
+            Cell::new(summary.tokens.reasoning),
+            Cell::new(summary.normalized_total_tokens),
+            summary
+                .provider_total_tokens
+                .map(Cell::new)
+                .unwrap_or_else(|| muted_cell("-")),
+            Cell::new(usage_cost_display(summary)),
+            Cell::new(usage_quality_display(summary)),
+            Cell::new(summary.event_count),
+        ]);
+    }
+
+    if summaries.is_empty() {
+        println!("{}", muted("No usage events found for this window."));
+    } else {
+        println!("{table}");
+    }
+
+    for diagnostic in diagnostics {
+        print_hint(format!(
+            "usage diagnostic [{}]: {}",
+            diagnostic.code,
+            sanitized_usage_diagnostic_message(&diagnostic.message)
+        ));
+    }
+}
+
+fn print_usage_json(
+    client: &Option<String>,
+    window: &UsageWindow,
+    summaries: &[UsageSummary],
+    diagnostics: &[UsageScanDiagnostic],
+    scanned_events: usize,
+    inserted_events: usize,
+    no_scan: bool,
+) -> Result<()> {
+    let payload = usage_json_payload(
+        client,
+        window,
+        summaries,
+        diagnostics,
+        scanned_events,
+        inserted_events,
+        no_scan,
+    );
+    println!("{}", serde_json::to_string_pretty(&payload)?);
+    Ok(())
+}
+
+fn usage_json_payload(
+    client: &Option<String>,
+    window: &UsageWindow,
+    summaries: &[UsageSummary],
+    diagnostics: &[UsageScanDiagnostic],
+    scanned_events: usize,
+    inserted_events: usize,
+    no_scan: bool,
+) -> Value {
+    let clients = summaries
+        .iter()
+        .map(|summary| {
+            json!({
+                "client": summary.client,
+                "model_provider": summary.model_provider,
+                "model": summary.model,
+                "tokens": {
+                    "input": summary.tokens.input,
+                    "output": summary.tokens.output,
+                    "cache_read": summary.tokens.cache_read,
+                    "cache_write": summary.tokens.cache_write,
+                    "cache_write_5m": summary.tokens.cache_write_5m,
+                    "cache_write_1h": summary.tokens.cache_write_1h,
+                    "reasoning": summary.tokens.reasoning,
+                    "extra": summary.tokens.extra,
+                    "normalized_total": summary.normalized_total_tokens,
+                    "provider_total": summary.provider_total_tokens,
+                },
+                "cost": {
+                    "status": usage_cost_status_display(summary),
+                    "estimated_usd": summary.estimated_cost_usd,
+                },
+                "quality": usage_quality_display(summary),
+                "event_count": summary.event_count,
+            })
+        })
+        .collect::<Vec<_>>();
+    let diagnostics = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            json!({
+                "client": diagnostic.client,
+                "source_kind": diagnostic.source_kind,
+                "code": diagnostic.code,
+                "message": sanitized_usage_diagnostic_message(&diagnostic.message),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "schema_version": 1,
+        "generated_at_unix": unix_now(),
+        "timezone": window.timezone,
+        "notes": {
+            "usage": usage_accounting_note(),
+            "cost": "cost is optional and may be missing or estimated unless reported by the source",
+        },
+        "window": {
+            "since_unix": window.since_unix,
+            "until_unix": window.until_unix,
+            "since": window.since_display,
+            "until": window.until_display,
+        },
+        "scan": {
+            "enabled": !no_scan,
+            "scanned_events": scanned_events,
+            "inserted_events": inserted_events,
+        },
+        "filter": {
+            "client": client,
+        },
+        "quality": "parsed",
+        "clients": clients,
+        "diagnostics": diagnostics,
+    })
+}
+
+fn usage_cost_display(summary: &UsageSummary) -> String {
+    match summary.estimated_cost_usd {
+        Some(cost) => format!("${cost:.4} {}", usage_cost_status_display(summary)),
+        None => usage_cost_status_display(summary).to_string(),
+    }
+}
+
+fn usage_accounting_note() -> &'static str {
+    "parsed local usage; not provider billing or exact quota accounting"
+}
+
+fn usage_cost_status_display(summary: &UsageSummary) -> &'static str {
+    match summary.cost_status {
+        omx_core::CostStatus::ProviderReported => "provider_reported",
+        omx_core::CostStatus::Estimated => "estimated",
+        omx_core::CostStatus::Missing => "missing",
+        omx_core::CostStatus::Mixed => "mixed",
+    }
+}
+
+fn usage_quality_display(summary: &UsageSummary) -> &'static str {
+    match summary.quality {
+        omx_core::UsageDataQuality::Parsed => "parsed",
+    }
+}
+
+fn sanitized_usage_diagnostic_message(message: &str) -> String {
+    let lower = message.to_ascii_lowercase();
+    let sensitive_markers = [
+        "access_token",
+        "access token",
+        "refresh_token",
+        "refresh token",
+        "api_key",
+        "api key",
+        "x-api-key",
+        "authorization:",
+        "bearer ",
+        "auth payload",
+        "raw prompt",
+        "raw response",
+        "raw log line",
+        "sk-",
+    ];
+    if sensitive_markers
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        "[redacted sensitive diagnostic]".to_string()
+    } else {
+        message.to_string()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -547,55 +863,25 @@ enum ImportKind {
     Profile,
 }
 
-fn use_resolved_target(
-    profile_plugin: &dyn PlatformPlugin,
-    account_plugin: Option<&dyn PlatformPlugin>,
-    selector: &str,
-) -> Result<UseReport> {
-    let target = resolve_target(profile_plugin, account_plugin, selector)?;
-    let account_plugin = account_plugin.unwrap_or(profile_plugin);
-    match target.kind {
-        TargetKind::Account => Ok(account_plugin.use_target_by_id(target.kind, &target.target_id)?),
-        TargetKind::Profile => Ok(profile_plugin.use_target_by_id(target.kind, &target.target_id)?),
-    }
+fn use_resolved_target(plugin: &dyn PlatformPlugin, selector: &str) -> Result<UseReport> {
+    let target = resolve_target(plugin, selector)?;
+    Ok(plugin.use_target(&target.target_id)?)
 }
 
-fn remove_resolved_target(
-    profile_plugin: &dyn PlatformPlugin,
-    account_plugin: Option<&dyn PlatformPlugin>,
-    selector: &str,
-) -> Result<RemoveReport> {
-    let target = resolve_target(profile_plugin, account_plugin, selector)?;
-    let account_plugin = account_plugin.unwrap_or(profile_plugin);
-    match target.kind {
-        TargetKind::Account => {
-            Ok(account_plugin.remove_target_by_id(target.kind, &target.target_id)?)
-        }
-        TargetKind::Profile => {
-            Ok(profile_plugin.remove_target_by_id(target.kind, &target.target_id)?)
-        }
-    }
+fn remove_resolved_target(plugin: &dyn PlatformPlugin, selector: &str) -> Result<RemoveReport> {
+    let target = resolve_target(plugin, selector)?;
+    Ok(plugin.remove_target(&target.target_id)?)
 }
 
-fn resolve_target(
-    profile_plugin: &dyn PlatformPlugin,
-    account_plugin: Option<&dyn PlatformPlugin>,
-    selector: &str,
-) -> Result<TargetResolution> {
-    let catalog = load_target_catalog(profile_plugin, account_plugin)?;
-    Ok(catalog.resolve(profile_plugin.id(), selector)?)
+fn resolve_target(plugin: &dyn PlatformPlugin, selector: &str) -> Result<TargetResolution> {
+    Ok(load_target_catalog(plugin)?.resolve(plugin.id(), selector)?)
 }
 
-fn load_target_catalog(
-    profile_plugin: &dyn PlatformPlugin,
-    account_plugin: Option<&dyn PlatformPlugin>,
-) -> Result<TargetCatalog> {
-    let accounts = match account_plugin {
-        Some(plugin) => plugin.list_accounts()?,
-        None => profile_plugin.list_accounts()?,
-    };
-    let profiles = profile_plugin.list_configs()?;
-    Ok(TargetCatalog::new(accounts, profiles))
+fn load_target_catalog(plugin: &dyn PlatformPlugin) -> Result<TargetCatalog> {
+    Ok(TargetCatalog::new(
+        plugin.list_accounts()?,
+        plugin.list_configs()?,
+    ))
 }
 
 fn target_choice_from_account(
@@ -652,41 +938,14 @@ fn target_choice_from_profile(
     }
 }
 
-fn print_aggregated_platform(
-    profile_plugin: &dyn PlatformPlugin,
-    account_plugin: Option<&dyn PlatformPlugin>,
-) -> Result<()> {
-    let catalog = load_target_catalog(profile_plugin, account_plugin)?;
-    print_account_section_from_statuses(profile_plugin.name(), &catalog.accounts, Some(1));
-    print_platform_profiles_with_start(
-        profile_plugin,
-        &catalog.profiles,
-        Some(catalog.accounts.len() as u32 + 1),
-    );
-    if catalog.accounts.is_empty() && catalog.profiles.is_empty() {
-        print_hint(format!("Add account: omx login {}", profile_plugin.id()));
-        print_hint(format!(
-            "Add profile: omx import {} --file <path>",
-            profile_plugin.id()
-        ));
-    }
-    Ok(())
-}
-
-fn print_aggregated_current(
-    profile_plugin: &dyn PlatformPlugin,
-    account_plugin: Option<&dyn PlatformPlugin>,
-) -> Result<()> {
-    let account = account_plugin
-        .map(PlatformPlugin::current)
-        .transpose()?
-        .flatten();
-    let profile = profile_plugin
+fn print_aggregated_current(plugin: &dyn PlatformPlugin) -> Result<()> {
+    let account = plugin.current()?;
+    let profile = plugin
         .list_configs()?
         .into_iter()
         .find(|profile| profile.active);
 
-    print_section(profile_plugin.name());
+    print_section(plugin.name());
     let mut table = view_table();
     table.set_header(vec![header_cell("Kind"), header_cell("Active")]);
     table.add_row(vec![
@@ -708,7 +967,7 @@ fn print_aggregated_current(
 fn print_platform_accounts(plugin: &dyn PlatformPlugin) -> Result<()> {
     let capabilities = plugin.capabilities();
     if capabilities.accounts && capabilities.profiles {
-        let catalog = load_target_catalog(plugin, None)?;
+        let catalog = load_target_catalog(plugin)?;
         print_account_section_from_statuses(plugin.name(), &catalog.accounts, Some(1));
         print_platform_profiles_with_start(
             plugin,
@@ -860,20 +1119,13 @@ fn account_table_row(status: &AccountStatus, display_number: u32) -> Vec<Cell> {
     ]
 }
 
-fn choose_target(
-    profile_plugin: &dyn PlatformPlugin,
-    account_plugin: Option<&dyn PlatformPlugin>,
-    use_display_selector: bool,
-) -> Result<String> {
-    let accounts = match account_plugin {
-        Some(plugin) => plugin.list_accounts()?,
-        None => profile_plugin.list_accounts()?,
-    };
-    let profiles = profile_plugin.list_configs()?;
+fn choose_target(plugin: &dyn PlatformPlugin, use_display_selector: bool) -> Result<String> {
+    let accounts = plugin.list_accounts()?;
+    let profiles = plugin.list_configs()?;
     if accounts.is_empty() && profiles.is_empty() {
         bail!(
             "no saved accounts or profiles for platform `{}`",
-            profile_plugin.id()
+            plugin.id()
         );
     }
 
@@ -1238,7 +1490,10 @@ fn paint(style: Style, value: impl AsRef<str>) -> String {
 mod tests {
     use super::*;
     use clap::CommandFactory;
-    use omx_core::{Availability, AvailabilityState, UsageLimitKind, UsageLimitScope, UsageSource};
+    use omx_core::{
+        Availability, AvailabilityState, CostStatus, UsageDataQuality, UsageLimitKind,
+        UsageLimitScope, UsageSource, UsageTokenBreakdown,
+    };
 
     #[test]
     fn login_use_hint_prefers_alias_and_falls_back_to_number() {
@@ -1387,6 +1642,114 @@ mod tests {
         assert!(help.contains("Remove a managed account or profile"));
         assert!(help.contains("unalias"));
         assert!(help.contains("Clear a local alias for an account"));
+        assert!(help.contains("usage"));
+        assert!(help.contains("Show parsed local token usage"));
+    }
+
+    #[test]
+    fn usage_date_until_is_exclusive_next_local_day() {
+        let since = parse_usage_boundary("2026-06-23", UsageBoundary::Start).unwrap();
+        let until = parse_usage_boundary("2026-06-23", UsageBoundary::End).unwrap();
+
+        assert_eq!(until - since, 86_400);
+    }
+
+    #[test]
+    fn usage_unix_boundary_is_passthrough() {
+        assert_eq!(
+            parse_usage_boundary("1782144000", UsageBoundary::Start).unwrap(),
+            1_782_144_000
+        );
+        assert_eq!(
+            parse_usage_boundary("1782144000", UsageBoundary::End).unwrap(),
+            1_782_144_000
+        );
+    }
+
+    #[test]
+    fn missing_usage_cost_does_not_render_zero_dollars() {
+        let summary = UsageSummary {
+            client: "codex".to_string(),
+            model_provider: None,
+            model: None,
+            project_path: None,
+            session_id: None,
+            tokens: UsageTokenBreakdown::default(),
+            normalized_total_tokens: 0,
+            provider_total_tokens: None,
+            estimated_cost_usd: None,
+            cost_status: CostStatus::Missing,
+            quality: UsageDataQuality::Parsed,
+            event_count: 1,
+        };
+
+        assert_eq!(usage_cost_display(&summary), "missing");
+    }
+
+    #[test]
+    fn usage_json_payload_contains_versioned_empty_no_scan_shape() {
+        let window = UsageWindow {
+            since_unix: 1_782_144_000,
+            until_unix: 1_782_230_400,
+            since_display: "2026-06-23 00:00:00".to_string(),
+            until_display: "2026-06-24 00:00:00".to_string(),
+            timezone: "+08:00".to_string(),
+        };
+
+        let payload = usage_json_payload(&None, &window, &[], &[], 0, 0, true);
+
+        assert_eq!(payload["schema_version"], 1);
+        assert_eq!(payload["timezone"], "+08:00");
+        assert_eq!(
+            payload["notes"]["usage"],
+            "parsed local usage; not provider billing or exact quota accounting"
+        );
+        assert_eq!(
+            payload["notes"]["cost"],
+            "cost is optional and may be missing or estimated unless reported by the source"
+        );
+        assert_eq!(payload["window"]["since_unix"], 1_782_144_000);
+        assert_eq!(payload["window"]["until_unix"], 1_782_230_400);
+        assert_eq!(payload["scan"]["enabled"], false);
+        assert_eq!(payload["clients"].as_array().unwrap().len(), 0);
+        assert_eq!(payload["diagnostics"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn usage_json_payload_redacts_sensitive_diagnostics() {
+        let window = UsageWindow {
+            since_unix: 1_782_144_000,
+            until_unix: 1_782_230_400,
+            since_display: "2026-06-23 00:00:00".to_string(),
+            until_display: "2026-06-24 00:00:00".to_string(),
+            timezone: "+08:00".to_string(),
+        };
+        let diagnostics = vec![
+            UsageScanDiagnostic {
+                client: Some("codex".to_string()),
+                source_kind: Some("tokscale-local".to_string()),
+                code: "parse_error".to_string(),
+                message:
+                    "raw prompt hello; access_token=secret; api_key=sk-secret; raw response bye"
+                        .to_string(),
+            },
+            UsageScanDiagnostic {
+                client: Some("gemini".to_string()),
+                source_kind: Some("tokscale-local".to_string()),
+                code: "missing_source".to_string(),
+                message: "local usage source not found".to_string(),
+            },
+        ];
+
+        let payload = usage_json_payload(&None, &window, &[], &diagnostics, 0, 0, false);
+        let rendered = serde_json::to_string(&payload).unwrap();
+
+        assert!(rendered.contains("[redacted sensitive diagnostic]"));
+        assert!(rendered.contains("local usage source not found"));
+        assert!(!rendered.contains("hello"));
+        assert!(!rendered.contains("secret"));
+        assert!(!rendered.contains("sk-secret"));
+        assert!(!rendered.contains("bye"));
     }
 
     #[test]
@@ -1402,44 +1765,38 @@ mod tests {
 
     #[test]
     fn selector_resolution_picks_unique_account_or_profile_and_rejects_ambiguity() {
-        let account_plugin = FakePlugin {
-            id: "claude-account",
-            name: "Claude Account",
+        let plugin = FakePlugin {
+            id: "claude",
+            name: "Claude",
             accounts: vec![
                 account_status_with_alias(1, Some("work")),
                 account_status_with_alias(2, Some("personal")),
             ],
-            profiles: Vec::new(),
-        };
-        let profile_plugin = FakePlugin {
-            id: "claude",
-            name: "Claude",
-            accounts: Vec::new(),
             profiles: vec![config_profile(1, "gateway"), config_profile(2, "work")],
         };
 
         assert_eq!(
-            resolve_target(&profile_plugin, Some(&account_plugin), "1").unwrap(),
+            resolve_target(&plugin, "1").unwrap(),
             TargetResolution {
                 kind: TargetKind::Account,
                 target_id: "claude-account-1".to_string()
             }
         );
         assert_eq!(
-            resolve_target(&profile_plugin, Some(&account_plugin), "3").unwrap(),
+            resolve_target(&plugin, "3").unwrap(),
             TargetResolution {
                 kind: TargetKind::Profile,
                 target_id: "claude-profile-gateway".to_string()
             }
         );
         assert_eq!(
-            resolve_target(&profile_plugin, Some(&account_plugin), "gateway").unwrap(),
+            resolve_target(&plugin, "gateway").unwrap(),
             TargetResolution {
                 kind: TargetKind::Profile,
                 target_id: "claude-profile-gateway".to_string()
             }
         );
-        let err = resolve_target(&profile_plugin, Some(&account_plugin), "work").unwrap_err();
+        let err = resolve_target(&plugin, "work").unwrap_err();
         assert!(err.to_string().contains("ambiguous"));
     }
 
@@ -1457,7 +1814,7 @@ mod tests {
         };
 
         assert_eq!(
-            resolve_target(&plugin, None, "4").unwrap(),
+            resolve_target(&plugin, "4").unwrap(),
             TargetResolution {
                 kind: TargetKind::Profile,
                 target_id: "codex-profile-api-apikey-fun".to_string()
@@ -1527,7 +1884,7 @@ mod tests {
     fn account_status_with_alias(number: u32, alias: Option<&str>) -> AccountStatus {
         AccountStatus {
             account: AccountRef {
-                platform: "claude-account".to_string(),
+                platform: "claude".to_string(),
                 local_id: format!("claude-account-{number}"),
                 number,
                 alias: alias.map(str::to_string),

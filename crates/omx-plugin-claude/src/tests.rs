@@ -114,17 +114,7 @@ fn use_claude_profile_reports_missing_selector() {
 
     let err = plugin.use_target("missing").unwrap_err();
 
-    assert!(err.to_string().contains("not found"));
-}
-
-#[test]
-fn claude_oauth_account_methods_are_deferred() {
-    let temp = test_temp_dir("claude-deferred");
-    let plugin = ClaudePlugin::with_paths(temp.join("claude-home"), temp.join("openmux-state"));
-
-    let err = plugin.login(LoginOptions::default()).unwrap_err();
-
-    assert!(err.to_string().contains("deferred"));
+    assert!(err.to_string().contains("did not match"));
 }
 
 #[cfg(unix)]
@@ -134,11 +124,8 @@ fn login_runs_official_claude_cli_then_imports_account_snapshot() {
     let claude_home = temp.join("claude-home");
     let state_root = temp.join("openmux-state");
     let fake_claude = fake_claude_login_executable(&temp);
-    let plugin = ClaudeAccountPlugin::with_paths_and_claude_executable(
-        &claude_home,
-        &state_root,
-        &fake_claude,
-    );
+    let plugin =
+        ClaudePlugin::with_paths_and_claude_executable(&claude_home, &state_root, &fake_claude);
 
     let account = plugin
         .login(LoginOptions {
@@ -193,7 +180,7 @@ fn imports_and_switches_plaintext_claude_account_without_registry_token_leak() {
             br#"{"oauthAccount":{"email":"person@example.com","accountUuid":"account-1","organizationUuid":"org-1"},"theme":"dark"}"#,
         )
         .unwrap();
-    let plugin = ClaudeAccountPlugin::with_paths(&claude_home, &state_root);
+    let plugin = ClaudePlugin::with_paths(&claude_home, &state_root);
 
     let imported = plugin
         .import_config(ImportConfigOptions {
@@ -283,7 +270,7 @@ fn remove_claude_account_deletes_snapshots_and_excludes_from_list() {
             br#"{"oauthAccount":{"email":"person@example.com","accountUuid":"account-1","organizationUuid":"org-1"}}"#,
         )
         .unwrap();
-    let plugin = ClaudeAccountPlugin::with_paths(&claude_home, &state_root);
+    let plugin = ClaudePlugin::with_paths(&claude_home, &state_root);
     plugin
         .import_config(ImportConfigOptions {
             name: Some("work".to_string()),
@@ -325,7 +312,7 @@ fn duplicate_claude_account_import_preserves_existing_number() {
             br#"{"oauthAccount":{"email":"person@example.com","accountUuid":"account-1","organizationUuid":"org-1"}}"#,
         )
         .unwrap();
-    let plugin = ClaudeAccountPlugin::with_paths(&claude_home, &state_root);
+    let plugin = ClaudePlugin::with_paths(&claude_home, &state_root);
 
     let first = plugin
         .import_config(ImportConfigOptions {
@@ -370,7 +357,7 @@ fn claude_account_and_profile_active_states_are_mutually_exclusive() {
         )
         .unwrap();
 
-    let account_plugin = ClaudeAccountPlugin::with_paths(&claude_home, &state_root);
+    let account_plugin = ClaudePlugin::with_paths(&claude_home, &state_root);
     let profile_plugin = ClaudePlugin::with_paths(&claude_home, &state_root);
     account_plugin
         .import_config(ImportConfigOptions {
@@ -378,7 +365,11 @@ fn claude_account_and_profile_active_states_are_mutually_exclusive() {
             content: String::new(),
         })
         .unwrap();
-    account_plugin.use_target("work").unwrap();
+    let account_id = account_plugin.list_accounts().unwrap()[0]
+        .account
+        .local_id
+        .clone();
+    account_plugin.use_target(&account_id).unwrap();
     assert!(account_plugin.list_accounts().unwrap()[0].active);
 
     profile_plugin
@@ -388,13 +379,14 @@ fn claude_account_and_profile_active_states_are_mutually_exclusive() {
                 .to_string(),
         })
         .unwrap();
-    profile_plugin.use_target("gateway").unwrap();
+    let profile_id = profile_plugin.list_configs().unwrap()[0].local_id.clone();
+    profile_plugin.use_target(&profile_id).unwrap();
 
     assert!(account_plugin.current().unwrap().is_none());
     assert!(!account_plugin.list_accounts().unwrap()[0].active);
     assert!(profile_plugin.list_configs().unwrap()[0].active);
 
-    account_plugin.use_target("work").unwrap();
+    account_plugin.use_target(&account_id).unwrap();
 
     assert_eq!(
         account_plugin
@@ -428,7 +420,7 @@ fn claude_account_switch_rolls_back_credential_when_oauth_metadata_write_fails()
         br#"{"oauthAccount":{"email":"target@example.com","accountUuid":"account-target","organizationUuid":"org-target"},"theme":"dark"}"#,
     )
     .unwrap();
-    let plugin = ClaudeAccountPlugin::with_paths_and_fake_keychain_settings_write_failure(
+    let plugin = ClaudePlugin::with_paths_and_fake_keychain_settings_write_failure(
         &claude_home,
         &state_root,
         &keychain_path,
@@ -471,11 +463,8 @@ fn claude_account_switch_keeps_current_credential_when_backend_write_fails() {
         br#"{"oauthAccount":{"email":"target@example.com","accountUuid":"account-target","organizationUuid":"org-target"}}"#,
     )
     .unwrap();
-    let setup = ClaudeAccountPlugin::with_paths_and_fake_keychain(
-        &claude_home,
-        &state_root,
-        &keychain_path,
-    );
+    let setup =
+        ClaudePlugin::with_paths_and_fake_keychain(&claude_home, &state_root, &keychain_path);
     setup
         .import_config(ImportConfigOptions {
             name: Some("target".to_string()),
@@ -488,7 +477,7 @@ fn claude_account_switch_keeps_current_credential_when_backend_write_fails() {
         br#"{"claudeAiOauth":{"accessToken":"current-access","refreshToken":"current-refresh","expiresAt":1781620000,"scopes":["user:inference"]}}"#,
     )
     .unwrap();
-    let plugin = ClaudeAccountPlugin::with_paths_and_fake_keychain_credential_write_failure(
+    let plugin = ClaudePlugin::with_paths_and_fake_keychain_credential_write_failure(
         &claude_home,
         &state_root,
         &keychain_path,
@@ -519,11 +508,8 @@ fn imports_and_switches_fake_keychain_claude_account() {
             br#"{"oauthAccount":{"email":"keychain@example.com","accountUuid":"account-2","organizationUuid":"org-2"}}"#,
         )
         .unwrap();
-    let plugin = ClaudeAccountPlugin::with_paths_and_fake_keychain(
-        &claude_home,
-        &state_root,
-        &keychain_path,
-    );
+    let plugin =
+        ClaudePlugin::with_paths_and_fake_keychain(&claude_home, &state_root, &keychain_path);
 
     plugin
         .import_config(ImportConfigOptions {
@@ -557,7 +543,7 @@ fn claude_account_import_rejects_incomplete_oauth_payload() {
         br#"{"claudeAiOauth":{"accessToken":"access-secret"}}"#,
     )
     .unwrap();
-    let plugin = ClaudeAccountPlugin::with_paths(&claude_home, &state_root);
+    let plugin = ClaudePlugin::with_paths(&claude_home, &state_root);
 
     let err = plugin
         .import_config(ImportConfigOptions {
@@ -594,7 +580,7 @@ fn claude_account_switch_rejects_tampered_snapshot() {
             br#"{"claudeAiOauth":{"accessToken":"access-secret","refreshToken":"refresh-secret","expiresAt":1781629000,"scopes":["user:inference"]}}"#,
         )
         .unwrap();
-    let plugin = ClaudeAccountPlugin::with_paths(&claude_home, &state_root);
+    let plugin = ClaudePlugin::with_paths(&claude_home, &state_root);
     plugin
         .import_config(ImportConfigOptions {
             name: Some("work".to_string()),

@@ -16,6 +16,8 @@ inquire = { workspace = true }
 omx-core = { path = "../omx-core" }
 omx-plugin-claude = { path = "../omx-plugin-claude" }
 omx-plugin-codex = { path = "../omx-plugin-codex" }
+omx-usage-tokscale = { path = "../omx-usage-tokscale" }
+serde_json = { workspace = true }
 
 [[bin]]
 name = "omx"

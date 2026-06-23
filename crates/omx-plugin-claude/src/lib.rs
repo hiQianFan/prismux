@@ -1,3 +1,3 @@
 mod plugin;
 
-pub use plugin::{ClaudeAccountPlugin, ClaudePlugin};
+pub use plugin::ClaudePlugin;

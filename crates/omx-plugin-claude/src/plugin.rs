@@ -3,7 +3,8 @@ use omx_core::{
     DoctorCheck, DoctorReport, ImportConfigOptions, ImportedConfig, LoginOptions, OpenMuxError,
     PlatformCapabilities, PlatformInfo, PlatformInstall, PlatformPlugin, PlatformPoolSummary,
     ProfileRecord, RemoveReport, RemovedAccount, RemovedConfig, Result, SaveOptions, StateStore,
-    SwitchReport, UpsertAccount, UpsertProfile, UseReport, platform_info,
+    SwitchReport, TargetCatalog, TargetKind, TargetResolution, UpsertAccount, UpsertProfile,
+    UseReport, platform_info,
     storage::{
         create_dir_private, display_path, home_dir, io_error, prune_backup_files, read_file,
         sha256_hex, state_root as default_state_root, unix_now, unix_now_nanos,
@@ -34,14 +35,8 @@ const MANAGED_ENV_KEYS: &[&str] = &[
     "CLAUDE_CODE_SKIP_VERTEX_AUTH",
 ];
 
-#[derive(Debug, Clone, Default)]
-pub struct ClaudePlugin {
-    claude_home: Option<PathBuf>,
-    state_root: Option<PathBuf>,
-}
-
 #[derive(Debug, Clone)]
-pub struct ClaudeAccountPlugin {
+pub struct ClaudePlugin {
     claude_home: Option<PathBuf>,
     state_root: Option<PathBuf>,
     claude_executable: PathBuf,
@@ -213,7 +208,7 @@ struct ParsedProfile {
     env: BTreeMap<String, String>,
 }
 
-impl Default for ClaudeAccountPlugin {
+impl Default for ClaudePlugin {
     fn default() -> Self {
         Self {
             claude_home: None,
@@ -238,6 +233,7 @@ impl ClaudePlugin {
         Self {
             claude_home: Some(claude_home.into()),
             state_root: Some(state_root.into()),
+            ..Self::default()
         }
     }
 
@@ -475,137 +471,7 @@ impl ClaudePlugin {
     }
 }
 
-impl PlatformPlugin for ClaudePlugin {
-    fn id(&self) -> &'static str {
-        "claude"
-    }
-
-    fn name(&self) -> &'static str {
-        "Claude Code"
-    }
-
-    fn capabilities(&self) -> PlatformCapabilities {
-        PlatformCapabilities {
-            profiles: true,
-            profile_import: true,
-            ..PlatformCapabilities::default()
-        }
-    }
-
-    fn detect(&self) -> Result<PlatformInstall> {
-        let settings_path = self.settings_path()?;
-        Ok(PlatformInstall {
-            platform: self.info(),
-            config_path: settings_path.exists().then(|| display_path(&settings_path)),
-            auth_path: None,
-        })
-    }
-
-    fn pool_summary(&self) -> Result<PlatformPoolSummary> {
-        let store = self.state_store()?;
-        let profiles = store.list_profiles(CLAUDE_STATE_PROVIDER)?;
-        let active_profile = store
-            .active_profile(CLAUDE_STATE_PROVIDER)?
-            .map(|profile| profile.name);
-        Ok(PlatformPoolSummary {
-            platform: self.info(),
-            account_count: 0,
-            active: None,
-            profile_count: profiles.len(),
-            active_profile,
-            availability: Availability::unknown(),
-        })
-    }
-
-    fn current(&self) -> Result<Option<AccountStatus>> {
-        Ok(None)
-    }
-
-    fn list_accounts(&self) -> Result<Vec<AccountStatus>> {
-        Ok(Vec::new())
-    }
-
-    fn list_configs(&self) -> Result<Vec<ConfigProfile>> {
-        let store = self.state_store()?;
-        let active = store.active_profile(CLAUDE_STATE_PROVIDER)?;
-        let active_id = active.as_ref().map(|profile| profile.local_id.as_str());
-        Ok(store
-            .list_profiles(CLAUDE_STATE_PROVIDER)?
-            .iter()
-            .map(|profile| self.profile_status(profile, active_id))
-            .collect())
-    }
-
-    fn login(&self, _options: LoginOptions) -> Result<AccountRef> {
-        Err(deferred_account_error())
-    }
-
-    fn save_current(&self, _options: SaveOptions) -> Result<AccountRef> {
-        Err(deferred_account_error())
-    }
-
-    fn import_config(&self, options: ImportConfigOptions) -> Result<ImportedConfig> {
-        self.import_profile(options)
-    }
-
-    fn use_target(&self, selector: &str) -> Result<UseReport> {
-        self.use_profile(selector).map(UseReport::Config)
-    }
-
-    fn remove_target(&self, selector: &str) -> Result<RemoveReport> {
-        self.remove_profile(selector).map(RemoveReport::Config)
-    }
-
-    fn switch_to(&self, _selector: &str) -> Result<SwitchReport> {
-        Err(deferred_account_error())
-    }
-
-    fn set_alias(&self, _selector: &str, _alias: &str) -> Result<AccountRef> {
-        Err(deferred_account_error())
-    }
-
-    fn doctor(&self) -> Result<DoctorReport> {
-        let claude_home = self.claude_home()?;
-        let settings_path = self.settings_path()?;
-        let state_path = self.state_root()?.join("omx-state.sqlite");
-        let state_store = self.state_store();
-        Ok(DoctorReport {
-            platform: self.id().to_string(),
-            checks: vec![
-                DoctorCheck {
-                    name: "claude-home".to_string(),
-                    ok: claude_home.exists(),
-                    message: display_path(&claude_home),
-                },
-                DoctorCheck {
-                    name: "user-settings".to_string(),
-                    ok: settings_path.exists(),
-                    message: display_path(&settings_path),
-                },
-                DoctorCheck {
-                    name: "state-store".to_string(),
-                    ok: state_store.is_ok(),
-                    message: display_path(&state_path),
-                },
-            ],
-        })
-    }
-}
-
-impl ClaudeAccountPlugin {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_paths(claude_home: impl Into<PathBuf>, state_root: impl Into<PathBuf>) -> Self {
-        Self {
-            claude_home: Some(claude_home.into()),
-            state_root: Some(state_root.into()),
-            credential_backend: None,
-            ..Self::default()
-        }
-    }
-
+impl ClaudePlugin {
     #[cfg(test)]
     fn with_paths_and_claude_executable(
         claude_home: impl Into<PathBuf>,
@@ -672,46 +538,8 @@ impl ClaudeAccountPlugin {
         }
     }
 
-    fn info(&self) -> PlatformInfo {
-        platform_info(self.id(), self.name())
-    }
-
-    fn claude_home(&self) -> Result<PathBuf> {
-        if let Some(path) = &self.claude_home {
-            return Ok(path.clone());
-        }
-
-        if let Some(path) = env::var_os("CLAUDE_CONFIG_DIR").filter(|value| !value.is_empty()) {
-            return Ok(PathBuf::from(path));
-        }
-
-        home_dir()
-            .map(|path| path.join(".claude"))
-            .ok_or_else(|| OpenMuxError::Message("could not resolve the home directory".into()))
-    }
-
-    fn state_root(&self) -> Result<PathBuf> {
-        if let Some(path) = &self.state_root {
-            return Ok(path.clone());
-        }
-
-        default_state_root()
-    }
-
-    fn platform_state_dir(&self) -> Result<PathBuf> {
-        Ok(self.state_root()?.join("platforms").join("claude"))
-    }
-
     fn accounts_dir(&self) -> Result<PathBuf> {
         Ok(self.platform_state_dir()?.join("accounts"))
-    }
-
-    fn backups_dir(&self) -> Result<PathBuf> {
-        Ok(self.platform_state_dir()?.join("backups"))
-    }
-
-    fn state_store(&self) -> Result<StateStore> {
-        StateStore::open(&self.state_root()?)
     }
 
     fn credentials_path(&self) -> Result<PathBuf> {
@@ -746,10 +574,6 @@ impl ClaudeAccountPlugin {
                 path: self.credentials_path()?,
             })),
         }
-    }
-
-    fn settings_path(&self) -> Result<PathBuf> {
-        Ok(self.claude_home()?.join(SETTINGS_FILE_NAME))
     }
 
     fn account_snapshot_path(&self, snapshot_hash: &str) -> Result<PathBuf> {
@@ -848,6 +672,27 @@ impl ClaudeAccountPlugin {
             })
     }
 
+    fn resolve_target(&self, selector: &str) -> Result<TargetResolution> {
+        let store = self.state_store()?;
+        if let Some(account) = store.account_by_local_id(selector)?
+            && account.provider == CLAUDE_STATE_PROVIDER
+        {
+            return Ok(TargetResolution {
+                kind: TargetKind::Account,
+                target_id: account.local_id,
+            });
+        }
+        if let Some(profile) = store.profile_by_local_id(selector)?
+            && profile.provider == CLAUDE_STATE_PROVIDER
+        {
+            return Ok(TargetResolution {
+                kind: TargetKind::Profile,
+                target_id: profile.local_id,
+            });
+        }
+        TargetCatalog::new(self.list_accounts()?, self.list_configs()?).resolve(self.id(), selector)
+    }
+
     fn login_with_official_cli(&self, options: LoginOptions) -> Result<AccountRef> {
         let mut command = Command::new(&self.claude_executable);
         command
@@ -918,7 +763,7 @@ impl ClaudeAccountPlugin {
         let account_name = name
             .filter(|value| !value.trim().is_empty())
             .or(safe.email.clone())
-            .unwrap_or_else(|| "claude-account".to_string());
+            .unwrap_or_else(|| "claude".to_string());
         let account = self.state_store()?.upsert_account(UpsertAccount {
             provider: CLAUDE_STATE_PROVIDER.to_string(),
             alias: Some(sanitize_profile_name(&account_name)),
@@ -963,13 +808,13 @@ impl ClaudeAccountPlugin {
     }
 }
 
-impl PlatformPlugin for ClaudeAccountPlugin {
+impl PlatformPlugin for ClaudePlugin {
     fn id(&self) -> &'static str {
-        "claude-account"
+        "claude"
     }
 
     fn name(&self) -> &'static str {
-        "Claude Account"
+        "Claude Code"
     }
 
     fn capabilities(&self) -> PlatformCapabilities {
@@ -977,7 +822,9 @@ impl PlatformPlugin for ClaudeAccountPlugin {
             accounts: true,
             account_login: true,
             account_import: true,
-            ..PlatformCapabilities::default()
+            profiles: true,
+            profile_import: true,
+            account_save: false,
         }
     }
 
@@ -997,12 +844,16 @@ impl PlatformPlugin for ClaudeAccountPlugin {
         let active = store
             .active_account(CLAUDE_STATE_PROVIDER)?
             .map(|account| self.account_ref(&account));
+        let profiles = store.list_profiles(CLAUDE_STATE_PROVIDER)?;
+        let active_profile = store
+            .active_profile(CLAUDE_STATE_PROVIDER)?
+            .map(|profile| profile.name);
         Ok(PlatformPoolSummary {
             platform: self.info(),
             account_count: accounts.len(),
             active,
-            profile_count: 0,
-            active_profile: None,
+            profile_count: profiles.len(),
+            active_profile,
             availability: Availability::unknown(),
         })
     }
@@ -1025,6 +876,17 @@ impl PlatformPlugin for ClaudeAccountPlugin {
             .collect())
     }
 
+    fn list_configs(&self) -> Result<Vec<ConfigProfile>> {
+        let store = self.state_store()?;
+        let active = store.active_profile(CLAUDE_STATE_PROVIDER)?;
+        let active_id = active.as_ref().map(|profile| profile.local_id.as_str());
+        Ok(store
+            .list_profiles(CLAUDE_STATE_PROVIDER)?
+            .iter()
+            .map(|profile| self.profile_status(profile, active_id))
+            .collect())
+    }
+
     fn login(&self, options: LoginOptions) -> Result<AccountRef> {
         self.login_with_official_cli(options)
     }
@@ -1034,6 +896,9 @@ impl PlatformPlugin for ClaudeAccountPlugin {
     }
 
     fn import_config(&self, options: ImportConfigOptions) -> Result<ImportedConfig> {
+        if !options.content.trim().is_empty() {
+            return self.import_profile(options);
+        }
         let account = self.import_account(options.name)?;
         Ok(ImportedConfig {
             platform: self.info(),
@@ -1052,11 +917,23 @@ impl PlatformPlugin for ClaudeAccountPlugin {
     }
 
     fn use_target(&self, selector: &str) -> Result<UseReport> {
-        self.switch_to(selector).map(UseReport::Account)
+        let target = self.resolve_target(selector)?;
+        match target.kind {
+            TargetKind::Account => self.switch_to(&target.target_id).map(UseReport::Account),
+            TargetKind::Profile => self.use_profile(&target.target_id).map(UseReport::Config),
+        }
     }
 
     fn remove_target(&self, selector: &str) -> Result<RemoveReport> {
-        self.remove_account(selector).map(RemoveReport::Account)
+        let target = self.resolve_target(selector)?;
+        match target.kind {
+            TargetKind::Account => self
+                .remove_account(&target.target_id)
+                .map(RemoveReport::Account),
+            TargetKind::Profile => self
+                .remove_profile(&target.target_id)
+                .map(RemoveReport::Config),
+        }
     }
 
     fn switch_to(&self, selector: &str) -> Result<SwitchReport> {
@@ -1189,6 +1066,7 @@ impl PlatformPlugin for ClaudeAccountPlugin {
 
     fn doctor(&self) -> Result<DoctorReport> {
         let backend = self.credential_backend()?;
+        let settings_path = self.settings_path()?;
         let state_path = self.state_root()?.join("omx-state.sqlite");
         let state_store = self.state_store();
         Ok(DoctorReport {
@@ -1200,6 +1078,11 @@ impl PlatformPlugin for ClaudeAccountPlugin {
                     message: display_path(backend.location()),
                 },
                 DoctorCheck {
+                    name: "user-settings".to_string(),
+                    ok: settings_path.exists(),
+                    message: display_path(&settings_path),
+                },
+                DoctorCheck {
                     name: "state-store".to_string(),
                     ok: state_store.is_ok(),
                     message: display_path(&state_path),
@@ -1207,13 +1090,6 @@ impl PlatformPlugin for ClaudeAccountPlugin {
             ],
         })
     }
-}
-
-fn deferred_account_error() -> OpenMuxError {
-    OpenMuxError::Message(
-        "Claude OAuth account switching is deferred; use `omx import claude` for profiles"
-            .to_string(),
-    )
 }
 
 #[derive(Debug, Clone)]

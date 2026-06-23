@@ -1,8 +1,14 @@
 use omx_core::{
-    CostStatus, UsageBackend, UsageDataQuality, UsageEvent, UsageEventSource, UsageScanDiagnostic,
-    UsageScanOptions, UsageScanReport, UsageTokenBreakdown,
+    CostStatus, UsageDataQuality, UsageEvent, UsageEventSource, UsageScanBudget,
+    UsageScanDiagnostic, UsageScanOptions, UsageScanReport, UsageTokenBreakdown,
 };
-use std::path::PathBuf;
+use std::{
+    fs,
+    path::PathBuf,
+    sync::mpsc::{self, Receiver, RecvTimeoutError},
+    thread,
+    time::Duration,
+};
 
 pub const TOKSCALE_BACKEND: &str = "tokscale-core";
 pub const TOKSCALE_BACKEND_VERSION: &str = "3.1.3+cbbd0dff";
@@ -27,40 +33,193 @@ impl TokscaleUsageBackend {
     }
 }
 
-impl UsageBackend for TokscaleUsageBackend {
-    fn scan(&self, options: UsageScanOptions) -> omx_core::Result<UsageScanReport> {
+impl TokscaleUsageBackend {
+    pub fn scan(&self, options: UsageScanOptions) -> omx_core::Result<UsageScanReport> {
         let (clients, diagnostics) = requested_clients(options.clients);
+        if clients.is_empty() {
+            return Ok(usage_scan_report(Vec::new(), diagnostics));
+        }
+        if options.budget.timeout_ms == 0 {
+            return Ok(usage_scan_report(
+                Vec::new(),
+                diagnostics_with_budget_exceeded(diagnostics, &clients),
+            ));
+        }
+
         let home_dir = self
             .home_dir
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned());
-        let parsed = tokscale_core::parse_local_clients(tokscale_core::LocalParseOptions {
-            home_dir,
-            use_env_roots: true,
-            clients: Some(clients.clone()),
-            since: None,
-            until: None,
-            year: None,
-            scanner_settings: tokscale_core::scanner::ScannerSettings::default(),
-        })
-        .map_err(|err| omx_core::OpenMuxError::Message(format!("tokscale scan: {err}")))?;
+        if let Some(diagnostic) =
+            source_budget_diagnostic(home_dir.as_deref(), &clients, &options.budget)?
+        {
+            let mut diagnostics = diagnostics;
+            diagnostics.push(diagnostic);
+            return Ok(usage_scan_report(Vec::new(), diagnostics));
+        }
+        let Some(parsed) =
+            parse_local_clients_with_timeout(home_dir, clients.clone(), options.budget.timeout_ms)?
+        else {
+            return Ok(usage_scan_report(
+                Vec::new(),
+                diagnostics_with_budget_exceeded(diagnostics, &clients),
+            ));
+        };
 
         let events = parsed
             .messages
             .into_iter()
             .filter(|message| {
-                within_window(message.timestamp, options.since_unix, options.until_unix)
+                within_window(
+                    tokscale_timestamp_to_unix_seconds(message.timestamp),
+                    options.since_unix,
+                    options.until_unix,
+                )
             })
             .map(usage_event_from_tokscale_message)
             .collect();
 
-        Ok(UsageScanReport {
-            backend: TOKSCALE_BACKEND.to_string(),
-            backend_version: TOKSCALE_BACKEND_VERSION.to_string(),
-            parser_schema_version: TOKSCALE_PARSER_SCHEMA_VERSION,
-            events,
-            diagnostics,
-        })
+        Ok(usage_scan_report(events, diagnostics))
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SourceInventory {
+    file_count: usize,
+    total_bytes: u64,
+}
+
+fn source_budget_diagnostic(
+    home_dir: Option<&str>,
+    clients: &[String],
+    budget: &UsageScanBudget,
+) -> omx_core::Result<Option<UsageScanDiagnostic>> {
+    let home_dir = resolved_home_dir(home_dir)?;
+    let inventory = source_inventory(&home_dir, clients);
+    if inventory.file_count > budget.max_source_files {
+        return Ok(Some(UsageScanDiagnostic {
+            client: usage_diagnostic_client(clients),
+            source_kind: Some("tokscale-local".to_string()),
+            code: "budget_exceeded".to_string(),
+            message: format!(
+                "usage scan source file count exceeds configured budget: {} > {}",
+                inventory.file_count, budget.max_source_files
+            ),
+        }));
+    }
+    if inventory.total_bytes > budget.max_source_bytes {
+        return Ok(Some(UsageScanDiagnostic {
+            client: usage_diagnostic_client(clients),
+            source_kind: Some("tokscale-local".to_string()),
+            code: "budget_exceeded".to_string(),
+            message: format!(
+                "usage scan source bytes exceed configured budget: {} > {}",
+                inventory.total_bytes, budget.max_source_bytes
+            ),
+        }));
+    }
+    Ok(None)
+}
+
+fn resolved_home_dir(home_dir: Option<&str>) -> omx_core::Result<String> {
+    if let Some(home_dir) = home_dir {
+        return Ok(home_dir.to_string());
+    }
+    std::env::var("HOME").map_err(|err| {
+        omx_core::OpenMuxError::Message(format!("resolve home directory for usage scan: {err}"))
+    })
+}
+
+fn source_inventory(home_dir: &str, clients: &[String]) -> SourceInventory {
+    let scan_result = tokscale_core::scanner::scan_all_clients_with_scanner_settings(
+        home_dir,
+        clients,
+        true,
+        &tokscale_core::scanner::ScannerSettings::default(),
+    );
+    scan_result.all_files().into_iter().fold(
+        SourceInventory::default(),
+        |mut inventory, (_, path)| {
+            inventory.file_count += 1;
+            inventory.total_bytes = inventory
+                .total_bytes
+                .saturating_add(file_size(&path).unwrap_or(0));
+            inventory
+        },
+    )
+}
+
+fn file_size(path: &PathBuf) -> Option<u64> {
+    fs::metadata(path).ok().map(|metadata| metadata.len())
+}
+
+fn parse_local_clients_with_timeout(
+    home_dir: Option<String>,
+    clients: Vec<String>,
+    timeout_ms: u64,
+) -> omx_core::Result<Option<tokscale_core::ParsedMessages>> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let result = tokscale_core::parse_local_clients(tokscale_core::LocalParseOptions {
+            home_dir,
+            use_env_roots: true,
+            clients: Some(clients),
+            since: None,
+            until: None,
+            year: None,
+            scanner_settings: tokscale_core::scanner::ScannerSettings::default(),
+        });
+        let _ = sender.send(result);
+    });
+    wait_for_parse_result(receiver, timeout_ms)
+}
+
+fn wait_for_parse_result(
+    receiver: Receiver<Result<tokscale_core::ParsedMessages, String>>,
+    timeout_ms: u64,
+) -> omx_core::Result<Option<tokscale_core::ParsedMessages>> {
+    match receiver.recv_timeout(Duration::from_millis(timeout_ms)) {
+        Ok(Ok(parsed)) => Ok(Some(parsed)),
+        Ok(Err(err)) => Err(omx_core::OpenMuxError::Message(format!(
+            "tokscale scan: {err}"
+        ))),
+        Err(RecvTimeoutError::Timeout) => Ok(None),
+        Err(RecvTimeoutError::Disconnected) => Err(omx_core::OpenMuxError::Message(
+            "tokscale scan worker exited before returning a result".to_string(),
+        )),
+    }
+}
+
+fn usage_scan_report(
+    events: Vec<UsageEvent>,
+    diagnostics: Vec<UsageScanDiagnostic>,
+) -> UsageScanReport {
+    UsageScanReport {
+        backend: TOKSCALE_BACKEND.to_string(),
+        backend_version: TOKSCALE_BACKEND_VERSION.to_string(),
+        parser_schema_version: TOKSCALE_PARSER_SCHEMA_VERSION,
+        events,
+        diagnostics,
+    }
+}
+
+fn diagnostics_with_budget_exceeded(
+    mut diagnostics: Vec<UsageScanDiagnostic>,
+    clients: &[String],
+) -> Vec<UsageScanDiagnostic> {
+    diagnostics.push(UsageScanDiagnostic {
+        client: usage_diagnostic_client(clients),
+        source_kind: Some("tokscale-local".to_string()),
+        code: "budget_exceeded".to_string(),
+        message: "usage scan exceeded the configured time budget".to_string(),
+    });
+    diagnostics
+}
+
+fn usage_diagnostic_client(clients: &[String]) -> Option<String> {
+    match clients {
+        [client] => Some(client.clone()),
+        _ => None,
     }
 }
 
@@ -108,7 +267,16 @@ fn within_window(timestamp: i64, since_unix: Option<i64>, until_unix: Option<i64
     true
 }
 
+fn tokscale_timestamp_to_unix_seconds(timestamp: i64) -> i64 {
+    if timestamp.abs() >= 10_000_000_000 {
+        timestamp / 1_000
+    } else {
+        timestamp
+    }
+}
+
 fn usage_event_from_tokscale_message(message: tokscale_core::ParsedMessage) -> UsageEvent {
+    let occurred_at_unix = tokscale_timestamp_to_unix_seconds(message.timestamp);
     let mut event = UsageEvent {
         client: message.client,
         model_provider: non_empty(message.provider_id),
@@ -116,7 +284,7 @@ fn usage_event_from_tokscale_message(message: tokscale_core::ParsedMessage) -> U
         session_id: non_empty(message.session_id),
         request_id: None,
         project_path: message.workspace_label.map(PathBuf::from),
-        occurred_at_unix: message.timestamp,
+        occurred_at_unix,
         tokens: UsageTokenBreakdown {
             input: non_negative(message.input),
             output: non_negative(message.output),
@@ -182,22 +350,116 @@ mod tests {
     }
 
     #[test]
+    fn scan_with_only_unsupported_clients_does_not_scan_everything() {
+        let home = tempfile::tempdir().unwrap();
+        write_codex_session_fixture(home.path());
+        let backend = TokscaleUsageBackend::with_home_dir(home.path());
+
+        let report = backend
+            .scan(UsageScanOptions {
+                clients: vec!["cursor".to_string()],
+                since_unix: None,
+                until_unix: None,
+                budget: UsageScanBudget::default(),
+            })
+            .unwrap();
+
+        assert!(report.events.is_empty());
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(report.diagnostics[0].client.as_deref(), Some("cursor"));
+        assert_eq!(report.diagnostics[0].code, "unsupported_client");
+    }
+
+    #[test]
+    fn scan_zero_timeout_budget_returns_budget_diagnostic_without_events() {
+        let home = tempfile::tempdir().unwrap();
+        write_codex_session_fixture(home.path());
+        let backend = TokscaleUsageBackend::with_home_dir(home.path());
+
+        let report = backend
+            .scan(UsageScanOptions {
+                clients: vec!["codex".to_string()],
+                since_unix: None,
+                until_unix: None,
+                budget: UsageScanBudget {
+                    timeout_ms: 0,
+                    ..UsageScanBudget::default()
+                },
+            })
+            .unwrap();
+
+        assert!(report.events.is_empty());
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(report.diagnostics[0].client.as_deref(), Some("codex"));
+        assert_eq!(report.diagnostics[0].code, "budget_exceeded");
+        assert!(!report.diagnostics[0].message.contains("session-1"));
+    }
+
+    #[test]
+    fn scan_source_file_budget_returns_budget_diagnostic_without_events() {
+        let home = tempfile::tempdir().unwrap();
+        write_codex_session_fixture(home.path());
+        let backend = TokscaleUsageBackend::with_home_dir(home.path());
+
+        let report = backend
+            .scan(UsageScanOptions {
+                clients: vec!["codex".to_string()],
+                since_unix: None,
+                until_unix: None,
+                budget: UsageScanBudget {
+                    max_source_files: 0,
+                    ..UsageScanBudget::default()
+                },
+            })
+            .unwrap();
+
+        assert!(report.events.is_empty());
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(report.diagnostics[0].client.as_deref(), Some("codex"));
+        assert_eq!(report.diagnostics[0].code, "budget_exceeded");
+        assert!(report.diagnostics[0].message.contains("source file count"));
+        assert!(!report.diagnostics[0].message.contains("session-1"));
+    }
+
+    #[test]
+    fn scan_source_bytes_budget_returns_budget_diagnostic_without_events() {
+        let home = tempfile::tempdir().unwrap();
+        write_codex_session_fixture(home.path());
+        let backend = TokscaleUsageBackend::with_home_dir(home.path());
+
+        let report = backend
+            .scan(UsageScanOptions {
+                clients: vec!["codex".to_string()],
+                since_unix: None,
+                until_unix: None,
+                budget: UsageScanBudget {
+                    max_source_bytes: 1,
+                    ..UsageScanBudget::default()
+                },
+            })
+            .unwrap();
+
+        assert!(report.events.is_empty());
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(report.diagnostics[0].client.as_deref(), Some("codex"));
+        assert_eq!(report.diagnostics[0].code, "budget_exceeded");
+        assert!(report.diagnostics[0].message.contains("source bytes"));
+        assert!(!report.diagnostics[0].message.contains("session-1"));
+    }
+
+    #[test]
+    fn wait_for_parse_result_returns_none_on_timeout() {
+        let (_sender, receiver) = mpsc::channel();
+
+        let result = wait_for_parse_result(receiver, 1).unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[test]
     fn scan_maps_codex_tokens_into_openmux_usage_events() {
         let home = tempfile::tempdir().unwrap();
-        let codex_dir = home.path().join(".codex/sessions");
-        fs::create_dir_all(&codex_dir).unwrap();
-        fs::write(
-            codex_dir.join("session-1.jsonl"),
-            concat!(
-                r#"{"timestamp":"2026-04-30T11:00:00Z","type":"session_meta","payload":{"id":"session-1","source":"interactive","model_provider":"openai","cwd":"/tmp/openmux-project"}}"#,
-                "\n",
-                r#"{"timestamp":"2026-04-30T11:00:01Z","type":"turn_context","payload":{"model":"gpt-5"}}"#,
-                "\n",
-                r#"{"timestamp":"2026-04-30T11:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"reasoning_output_tokens":4},"last_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"reasoning_output_tokens":4}}}}"#,
-                "\n",
-            ),
-        )
-        .unwrap();
+        write_codex_session_fixture(home.path());
         let backend = TokscaleUsageBackend::with_home_dir(home.path());
 
         let report = backend
@@ -215,6 +477,7 @@ mod tests {
         assert_eq!(event.client, "codex");
         assert_eq!(event.model_provider.as_deref(), Some("openai"));
         assert_eq!(event.model.as_deref(), Some("gpt-5"));
+        assert_eq!(event.occurred_at_unix, 1_777_546_802);
         assert_eq!(event.tokens.input, 8);
         assert_eq!(event.tokens.cache_read, 2);
         assert_eq!(event.tokens.output, 3);
@@ -310,22 +573,220 @@ mod tests {
     }
 
     #[test]
-    fn scan_applies_openmux_time_window_after_tokscale_parse() {
+    fn scan_maps_gemini_cache_only_and_reasoning_only_events() {
         let home = tempfile::tempdir().unwrap();
-        let codex_dir = home.path().join(".codex/sessions");
-        fs::create_dir_all(&codex_dir).unwrap();
+        let chats_dir = home.path().join(".gemini/tmp/project-1/chats");
+        fs::create_dir_all(&chats_dir).unwrap();
         fs::write(
-            codex_dir.join("session-1.jsonl"),
-            concat!(
-                r#"{"timestamp":"2026-04-30T11:00:00Z","type":"session_meta","payload":{"id":"session-1","source":"interactive","model_provider":"openai"}}"#,
-                "\n",
-                r#"{"timestamp":"2026-04-30T11:00:01Z","type":"turn_context","payload":{"model":"gpt-5"}}"#,
-                "\n",
-                r#"{"timestamp":"2026-04-30T11:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":3}}}}"#,
-                "\n",
-            ),
+            chats_dir.join("chat-edge-buckets.json"),
+            r#"{
+  "sessionId": "gemini-session-edge",
+  "projectHash": "project-1",
+  "startTime": "2026-04-02T10:00:00.000Z",
+  "lastUpdated": "2026-04-02T10:00:02.000Z",
+  "messages": [
+    {
+      "id": "msg-cache-only",
+      "timestamp": "2026-04-02T10:00:01.000Z",
+      "type": "assistant",
+      "model": "gemini-2.5-pro",
+      "tokens": {
+        "cached": 15
+      }
+    },
+    {
+      "id": "msg-reasoning-only",
+      "timestamp": "2026-04-02T10:00:02.000Z",
+      "type": "assistant",
+      "model": "gemini-2.5-pro",
+      "tokens": {
+        "thoughts": 9
+      }
+    }
+  ]
+}"#,
         )
         .unwrap();
+        let backend = TokscaleUsageBackend::with_home_dir(home.path());
+
+        let report = backend
+            .scan(UsageScanOptions {
+                clients: vec!["gemini".to_string()],
+                since_unix: None,
+                until_unix: None,
+                budget: UsageScanBudget::default(),
+            })
+            .unwrap();
+
+        assert_eq!(report.events.len(), 2);
+        let cache_only = report
+            .events
+            .iter()
+            .find(|event| event.tokens.cache_read == 15)
+            .expect("cache-only event");
+        assert_eq!(cache_only.tokens.input, 0);
+        assert_eq!(cache_only.tokens.output, 0);
+        assert_eq!(cache_only.tokens.reasoning, 0);
+        assert_eq!(cache_only.normalized_total_tokens(), 15);
+
+        let reasoning_only = report
+            .events
+            .iter()
+            .find(|event| event.tokens.reasoning == 9)
+            .expect("reasoning-only event");
+        assert_eq!(reasoning_only.tokens.input, 0);
+        assert_eq!(reasoning_only.tokens.output, 0);
+        assert_eq!(reasoning_only.tokens.cache_read, 0);
+        assert_eq!(reasoning_only.normalized_total_tokens(), 9);
+    }
+
+    #[test]
+    fn scan_preserves_unknown_model_label_from_gemini_source() {
+        let home = tempfile::tempdir().unwrap();
+        let chats_dir = home.path().join(".gemini/tmp/project-1/chats");
+        fs::create_dir_all(&chats_dir).unwrap();
+        fs::write(
+            chats_dir.join("chat-unknown-model.json"),
+            r#"{
+  "sessionId": "gemini-session-unknown-model",
+  "projectHash": "project-1",
+  "startTime": "2026-04-03T10:00:00.000Z",
+  "lastUpdated": "2026-04-03T10:00:01.000Z",
+  "messages": [
+    {
+      "id": "msg-unknown-model",
+      "timestamp": "2026-04-03T10:00:01.000Z",
+      "type": "assistant",
+      "model": "unknown-local-model",
+      "tokens": {
+        "input": 1,
+        "output": 2
+      }
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+        let backend = TokscaleUsageBackend::with_home_dir(home.path());
+
+        let report = backend
+            .scan(UsageScanOptions {
+                clients: vec!["gemini".to_string()],
+                since_unix: None,
+                until_unix: None,
+                budget: UsageScanBudget::default(),
+            })
+            .unwrap();
+
+        assert_eq!(report.events.len(), 1);
+        assert_eq!(
+            report.events[0].model.as_deref(),
+            Some("unknown-local-model")
+        );
+        assert_eq!(report.events[0].tokens.input, 1);
+        assert_eq!(report.events[0].tokens.output, 2);
+    }
+
+    #[test]
+    fn scan_keeps_cross_day_gemini_events_and_applies_day_window() {
+        let home = tempfile::tempdir().unwrap();
+        write_gemini_cross_day_fixture(home.path());
+        let backend = TokscaleUsageBackend::with_home_dir(home.path());
+
+        let all = backend
+            .scan(UsageScanOptions {
+                clients: vec!["gemini".to_string()],
+                since_unix: None,
+                until_unix: None,
+                budget: UsageScanBudget::default(),
+            })
+            .unwrap();
+
+        assert_eq!(all.events.len(), 2);
+        assert!(
+            all.events
+                .iter()
+                .any(|event| event.occurred_at_unix == 1_776_211_199)
+        );
+        assert!(
+            all.events
+                .iter()
+                .any(|event| event.occurred_at_unix == 1_776_211_201)
+        );
+
+        let second_day = backend
+            .scan(UsageScanOptions {
+                clients: vec!["gemini".to_string()],
+                since_unix: Some(1_776_211_200),
+                until_unix: Some(1_776_297_600),
+                budget: UsageScanBudget::default(),
+            })
+            .unwrap();
+
+        assert_eq!(second_day.events.len(), 1);
+        assert_eq!(second_day.events[0].occurred_at_unix, 1_776_211_201);
+        assert_eq!(second_day.events[0].tokens.input, 20);
+        assert_eq!(second_day.events[0].tokens.output, 2);
+    }
+
+    #[test]
+    fn scan_assigns_same_event_hash_to_repeated_gemini_messages() {
+        let home = tempfile::tempdir().unwrap();
+        let chats_dir = home.path().join(".gemini/tmp/project-1/chats");
+        fs::create_dir_all(&chats_dir).unwrap();
+        fs::write(
+            chats_dir.join("chat-duplicate-message.json"),
+            r#"{
+  "sessionId": "gemini-session-duplicate",
+  "projectHash": "project-1",
+  "startTime": "2026-04-04T10:00:00.000Z",
+  "lastUpdated": "2026-04-04T10:00:02.000Z",
+  "messages": [
+    {
+      "id": "msg-duplicate",
+      "timestamp": "2026-04-04T10:00:01.000Z",
+      "type": "assistant",
+      "model": "gemini-2.5-pro",
+      "tokens": {
+        "input": 10,
+        "output": 1
+      }
+    },
+    {
+      "id": "msg-duplicate",
+      "timestamp": "2026-04-04T10:00:01.000Z",
+      "type": "assistant",
+      "model": "gemini-2.5-pro",
+      "tokens": {
+        "input": 10,
+        "output": 1
+      }
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+        let backend = TokscaleUsageBackend::with_home_dir(home.path());
+
+        let report = backend
+            .scan(UsageScanOptions {
+                clients: vec!["gemini".to_string()],
+                since_unix: None,
+                until_unix: None,
+                budget: UsageScanBudget::default(),
+            })
+            .unwrap();
+
+        assert_eq!(report.events.len(), 2);
+        assert_eq!(report.events[0].event_hash, report.events[1].event_hash);
+        assert_eq!(report.events[0].tokens.input, 10);
+        assert_eq!(report.events[0].tokens.output, 1);
+    }
+
+    #[test]
+    fn scan_applies_openmux_time_window_after_tokscale_parse() {
+        let home = tempfile::tempdir().unwrap();
+        write_codex_session_fixture(home.path());
         let backend = TokscaleUsageBackend::with_home_dir(home.path());
 
         let report = backend
@@ -338,5 +799,71 @@ mod tests {
             .unwrap();
 
         assert!(report.events.is_empty());
+    }
+
+    #[test]
+    fn tokscale_timestamp_normalization_preserves_seconds_and_converts_millis() {
+        assert_eq!(
+            tokscale_timestamp_to_unix_seconds(1_777_546_802),
+            1_777_546_802
+        );
+        assert_eq!(
+            tokscale_timestamp_to_unix_seconds(1_777_546_802_000),
+            1_777_546_802
+        );
+    }
+
+    fn write_codex_session_fixture(home: &std::path::Path) {
+        let codex_dir = home.join(".codex/sessions");
+        fs::create_dir_all(&codex_dir).unwrap();
+        fs::write(
+            codex_dir.join("session-1.jsonl"),
+            concat!(
+                r#"{"timestamp":"2026-04-30T11:00:00Z","type":"session_meta","payload":{"id":"session-1","source":"interactive","model_provider":"openai","cwd":"/tmp/openmux-project"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-04-30T11:00:01Z","type":"turn_context","payload":{"model":"gpt-5"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-04-30T11:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"reasoning_output_tokens":4},"last_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"reasoning_output_tokens":4}}}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_gemini_cross_day_fixture(home: &std::path::Path) {
+        let chats_dir = home.join(".gemini/tmp/project-1/chats");
+        fs::create_dir_all(&chats_dir).unwrap();
+        fs::write(
+            chats_dir.join("chat-cross-day.json"),
+            r#"{
+  "sessionId": "gemini-session-cross-day",
+  "projectHash": "project-1",
+  "startTime": "2026-04-14T23:59:59.000Z",
+  "lastUpdated": "2026-04-15T00:00:01.000Z",
+  "messages": [
+    {
+      "id": "msg-before-midnight",
+      "timestamp": "2026-04-14T23:59:59.000Z",
+      "type": "assistant",
+      "model": "gemini-2.5-pro",
+      "tokens": {
+        "input": 10,
+        "output": 1
+      }
+    },
+    {
+      "id": "msg-after-midnight",
+      "timestamp": "2026-04-15T00:00:01.000Z",
+      "type": "assistant",
+      "model": "gemini-2.5-pro",
+      "tokens": {
+        "input": 20,
+        "output": 2
+      }
+    }
+  ]
+}"#,
+        )
+        .unwrap();
     }
 }

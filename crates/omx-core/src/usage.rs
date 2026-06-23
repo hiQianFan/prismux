@@ -414,10 +414,6 @@ pub struct UsageScanDiagnostic {
     pub message: String,
 }
 
-pub trait UsageBackend {
-    fn scan(&self, options: UsageScanOptions) -> crate::Result<UsageScanReport>;
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UsageScanWatermark {
     pub source_id: String,

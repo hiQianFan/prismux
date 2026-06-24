@@ -316,7 +316,7 @@ doctor 应该回答：
 - 展示编号是当前列表编号，不是持久 ID；新增/删除 target 后可以动态变化。底层 account/profile 持久编号不得因为展示编号变化而重排。
 - profile 没有持久编号时，仍必须获得当前列表展示编号，并可通过该编号执行 `omx use <platform> <number>`。
 - 非数字 selector 按 account alias 和 profile name 精确匹配；同时命中时必须报歧义错误，不静默偏向 account 或 profile。
-- 聚合平台同一时间只能有一个 active target。切换 account 后 profile 不再显示 active；切换 profile 后 account 不再显示 active。
+- active 语义由平台真实状态决定。Codex 的 account 与 profile 分别对应 `auth.json` 和 `config.toml` provider selector，可以同时 active；账号切换不得清除或改写用户的 provider、plugin、skill、MCP 等习惯配置。
 - 每个账号拥有平台内持久编号，这是 account-only 平台或底层 account plugin 的默认 selector。
 - 每个账号可以有 alias。
 - 每个账号可以有检测到的 account metadata，例如 email、account id、team 或 provider-specific account context；plan 单独展示。Codex 第一版从 `id_token` claims 提取 email 和 ChatGPT plan，并在 account 不可用时回退到 account id。
@@ -344,6 +344,7 @@ omx use codex 4
 - `omx save <platform>` 是恢复/高级路径，用于保存当前已经存在的 active account。
 - `omx save <platform> --file <path>` 和 `omx save <platform> --dir <path>` 是未来恢复/迁移能力。
 - `omx import <platform> "<TOML-or-KV>"` 用于导入外部中转站或 provider/profile 配置，配置内容放在命令最后。
+- Codex 始终维护一份 live `config.toml`。导入 profile 只新增 OpenMux 命名的 provider section，`omx use codex <profile>` 只持久切换相关 selector，不能用账号级完整配置副本覆盖 live 文件。
 - `omx import claude [--name <name>]` 在没有外部 KV/TOML 内容时用于导入本机已有 Claude Code OAuth account snapshot。
 - `save` 和 `import` 都不得打印 raw auth content 或 raw API key。
 - login/save 都应尽可能避免重复账号。

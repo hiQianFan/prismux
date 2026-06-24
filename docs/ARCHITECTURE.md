@@ -100,8 +100,8 @@ OpenMux state 位于用户平台数据目录下。SQLite 是 account/profile/act
   omx-state.sqlite
   platforms/codex/
     accounts/<auth_hash>.auth.json
-    configs/default.config.toml
     backups/auth.json.bak.<timestamp>
+    backups/config.toml.bak.<timestamp>
     login/codex-login-<pid>-<timestamp>/
   platforms/claude/
     profiles/<config_hash>.profile.json
@@ -169,7 +169,9 @@ Codex active auth path：
 
 `omx import codex "<TOML-or-KV>"` 用于从外部导入中转站、API key 或 provider/profile 配置。配置内容放在命令最后，普通用户可以直接粘贴中转站网页给出的 Codex TOML 片段，或官方/事实标准变量名，例如 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 和 `OPENAI_MODEL`。
 
-Codex plugin 会把导入内容写入 `<codex-home>/<profile>.config.toml`，符合 Codex 官方 profile 文件模型，避免覆盖用户现有 `config.toml`。TOML 片段会原样保存；OpenAI-compatible KV 会转换为 `[model_providers.<id>]` 下的 `base_url`、`env_key` 和 `wire_api`。OpenMux SQLite 只保存 profile metadata 和 snapshot ref，不保存 raw API key；KV 导入只把 `OPENAI_API_KEY` 这类 env var 名写入 profile。
+Codex plugin 会把导入内容写入 `<codex-home>/<profile>.config.toml` 作为 OpenMux 管理的 provider 来源片段，并把 provider section 安装到唯一的 live `<codex-home>/config.toml` 中。安装后的 section 使用 `openmux-<profile-name>` 命名，导入本身不改变当前 `model_provider`。OpenAI-compatible KV 会转换为该 section 下的 `base_url`、`env_key` 和 `wire_api`。OpenMux SQLite 只保存 profile metadata、hash 和 snapshot ref，不保存 raw API key；KV 导入只保存 `OPENAI_API_KEY` 这类 env var 名。
+
+`config.toml` 是用户习惯配置的唯一事实源，不按账号复制，也不维护多份完整配置。Codex App、CLI 或用户手工写入的 plugins、skills、MCP、UI、comments 和未知字段都保留在 live 文件中。`omx use codex <profile>` 只持久修改 OpenMux 管理的 provider selector，并在缺失时补回对应 provider section；写入前会检查文件是否被其他进程并发修改。显式删除 profile 时只删除仍与导入快照语义一致的 OpenMux provider section；如果该 section 已被外部修改，则拒绝删除。
 
 Profile 名解析顺序：显式 `--name`、`base_url` host、`model_provider` 或 `[model_providers.<id>]`、最后回退到 `codex-import`。例如 `https://api.apikey.fun/v1` 会生成 `api-apikey-fun.config.toml`。
 
@@ -208,9 +210,10 @@ Claude profile import 使用 `omx import claude "<KV-or-JSON-or-TOML>"`。插件
 4. 重新解析目标账号并校验目标 snapshot hash，确保切换到当前账号时不会使用同步前的旧记录。
 5. 如果当前 active auth 存在且内容不同，先写入 backup；覆盖前再次检查 active auth 未被其他进程修改。
 6. 将目标 snapshot 原子写入 Codex `auth.json`。
-7. 如果存在 OpenMux 保存的 default config snapshot，则恢复 `config.toml`，避免旧 profile 继续显示 active。
-8. 更新 SQLite active target 和 activation timestamp。
-9. 命中 profile 时切换 `config.toml`，并清空 account active marker，保证同一平台最多一个 active target。
+7. 更新 SQLite active account 和 activation timestamp；账号切换不读取或写入 `config.toml`。
+8. 命中 profile 时，读取唯一 live `config.toml`，只更新 `model_provider`、可选 model selector 和对应的 `[model_providers.openmux-<name>]` section。
+9. provider 写入使用原子替换和乐观并发检查；Codex App 在切换期间改写配置时，本次切换失败并要求重试，不覆盖较新的内容。
+10. account 与 profile active 状态彼此独立：前者表示当前认证身份，后者表示 live config 当前选择的 provider。
 
 ## Safety Rules
 

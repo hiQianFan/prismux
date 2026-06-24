@@ -410,6 +410,61 @@ fn usage_scan_diagnostic_does_not_break_account_commands() {
     fs::remove_dir_all(&state_root).unwrap();
 }
 
+#[test]
+fn codex_account_and_provider_remain_active_through_same_use_command() {
+    let home = unique_temp_root("openmux-codex-account-provider-home");
+    let state_root = unique_temp_state_root();
+    write_codex_auth(&home, r#"{"account":"work"}"#);
+    fs::write(
+        home.join(".codex/config.toml"),
+        "# user preference\n[plugins.\"ponytail@ponytail\"]\nenabled = true\n",
+    )
+    .unwrap();
+
+    assert_command_success(&run_omx_usage_with_home_and_state(
+        &["save", "codex", "--alias", "work"],
+        Some(&home),
+        &state_root,
+    ));
+    assert_command_success(&run_omx_usage_with_home_and_state(
+        &[
+            "import",
+            "codex",
+            "--name",
+            "gateway",
+            "OPENAI_BASE_URL=https://gateway.example/v1",
+        ],
+        Some(&home),
+        &state_root,
+    ));
+    assert_command_success(&run_omx_usage_with_home_and_state(
+        &["use", "codex", "2"],
+        Some(&home),
+        &state_root,
+    ));
+    let provider_config = fs::read(home.join(".codex/config.toml")).unwrap();
+
+    assert_command_success(&run_omx_usage_with_home_and_state(
+        &["use", "codex", "1"],
+        Some(&home),
+        &state_root,
+    ));
+
+    assert_eq!(
+        fs::read(home.join(".codex/config.toml")).unwrap(),
+        provider_config
+    );
+    let current =
+        run_omx_usage_with_home_and_state(&["current", "codex"], Some(&home), &state_root);
+    assert_command_success(&current);
+    let stdout = String::from_utf8_lossy(&current.stdout);
+    assert!(stdout.contains("#1 work"));
+    assert!(stdout.contains("gateway"));
+
+    fs::remove_dir_all(&home).unwrap();
+    fs::remove_dir_all(&state_root).unwrap();
+}
+
 fn run_omx_usage(args: &[&str]) -> std::process::Output {
     run_omx_usage_with_home(args, None)
 }

@@ -162,14 +162,17 @@ pub fn run() -> Result<()> {
                     let profiles = plugin.list_configs()?;
                     let active = accounts.iter().find(|status| status.active);
                     let active_profile = profiles.iter().find(|profile| profile.active);
+                    let active_label = match (active, active_profile) {
+                        (Some(account), Some(profile)) => {
+                            format!("{} + {}", account_label(&account.account), profile.name)
+                        }
+                        (Some(account), None) => account_label(&account.account),
+                        (None, Some(profile)) => profile.name.clone(),
+                        (None, None) => "-".to_string(),
+                    };
                     table.add_row(vec![
                         Cell::new(plugin.name()).add_attribute(Attribute::Bold),
-                        active_account_cell(
-                            active
-                                .map(|status| account_label(&status.account))
-                                .or_else(|| active_profile.map(|profile| profile.name.clone()))
-                                .unwrap_or_else(|| "-".to_string()),
-                        ),
+                        active_account_cell(active_label),
                         Cell::new(accounts.len()),
                         Cell::new(profiles.len()),
                         usage_cell(&summarize_cli_availability(&accounts)),

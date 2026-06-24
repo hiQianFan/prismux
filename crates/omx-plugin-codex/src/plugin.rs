@@ -15,10 +15,11 @@ use omx_core::{
     UsageSnapshot, UsageSource, UseReport, platform_info,
     storage::{
         create_dir_private, display_path, home_dir, io_error, prune_backup_files, read_file,
-        set_private_file_permissions, sha256_hex, state_root as default_state_root, unix_now,
-        unix_now_nanos, write_file_atomic_private,
+        sha256_hex, state_root as default_state_root, unix_now, unix_now_nanos,
+        write_file_atomic_private,
     },
 };
+use toml_edit::{DocumentMut, Item, Table, value};
 
 const AUTH_FILE_NAME: &str = "auth.json";
 const BACKUP_RETENTION_PER_KIND: usize = 3;
@@ -30,6 +31,8 @@ pub struct CodexPlugin {
     codex_executable: PathBuf,
     #[cfg(test)]
     before_auth_replace: Option<fn(&Path)>,
+    #[cfg(test)]
+    before_config_replace: Option<fn(&Path)>,
     #[cfg(test)]
     fail_snapshot_write: bool,
 }
@@ -46,6 +49,21 @@ struct CodexAccountIdentityCandidate {
     subject_kind: String,
     subject_hash: String,
     subject_label: String,
+}
+
+#[derive(Debug, Clone)]
+struct CodexProfileProjection {
+    managed_provider_id: Option<String>,
+    provider_item: Option<Item>,
+    model: Option<String>,
+    review_model: Option<String>,
+}
+
+#[derive(Debug)]
+struct LiveConfigMutation {
+    previous: Option<Vec<u8>>,
+    written: Vec<u8>,
+    backup_path: Option<String>,
 }
 
 impl TempDirCleanup {
@@ -71,6 +89,8 @@ impl Default for CodexPlugin {
                 .unwrap_or_else(|| PathBuf::from("codex")),
             #[cfg(test)]
             before_auth_replace: None,
+            #[cfg(test)]
+            before_config_replace: None,
             #[cfg(test)]
             fail_snapshot_write: false,
         }
@@ -102,6 +122,8 @@ impl CodexPlugin {
             #[cfg(test)]
             before_auth_replace: None,
             #[cfg(test)]
+            before_config_replace: None,
+            #[cfg(test)]
             fail_snapshot_write: false,
         }
     }
@@ -109,6 +131,11 @@ impl CodexPlugin {
     #[cfg(test)]
     fn set_before_auth_replace(&mut self, hook: fn(&Path)) {
         self.before_auth_replace = Some(hook);
+    }
+
+    #[cfg(test)]
+    fn set_before_config_replace(&mut self, hook: fn(&Path)) {
+        self.before_config_replace = Some(hook);
     }
 
     #[cfg(test)]
@@ -120,6 +147,13 @@ impl CodexPlugin {
         #[cfg(test)]
         if let Some(hook) = self.before_auth_replace {
             hook(_auth_path);
+        }
+    }
+
+    fn run_before_config_replace_hook(&self, _config_path: &Path) {
+        #[cfg(test)]
+        if let Some(hook) = self.before_config_replace {
+            hook(_config_path);
         }
     }
 
@@ -161,10 +195,6 @@ impl CodexPlugin {
         Ok(self.platform_state_dir()?.join("backups"))
     }
 
-    fn config_snapshots_dir(&self) -> Result<PathBuf> {
-        Ok(self.platform_state_dir()?.join("configs"))
-    }
-
     fn login_dir(&self) -> Result<PathBuf> {
         Ok(self.platform_state_dir()?.join("login"))
     }
@@ -181,8 +211,85 @@ impl CodexPlugin {
         Ok(self.codex_home()?.join("config.toml"))
     }
 
-    fn default_config_snapshot_path(&self) -> Result<PathBuf> {
-        Ok(self.config_snapshots_dir()?.join("default.config.toml"))
+    fn mutate_live_config(
+        &self,
+        mutate: impl FnOnce(&mut DocumentMut) -> Result<()>,
+    ) -> Result<Option<LiveConfigMutation>> {
+        let config_path = self.config_path()?;
+        let previous = config_path
+            .exists()
+            .then(|| read_file(&config_path))
+            .transpose()?;
+        let current_text = match previous.as_deref() {
+            Some(bytes) => std::str::from_utf8(bytes).map_err(|err| {
+                OpenMuxError::Message(format!(
+                    "Codex config at {} is not valid UTF-8: {err}",
+                    display_path(&config_path)
+                ))
+            })?,
+            None => "",
+        };
+        let mut document = if current_text.trim().is_empty() {
+            DocumentMut::new()
+        } else {
+            current_text.parse::<DocumentMut>().map_err(|err| {
+                OpenMuxError::Message(format!(
+                    "invalid Codex config at {}: {err}",
+                    display_path(&config_path)
+                ))
+            })?
+        };
+
+        mutate(&mut document)?;
+        let written = document.to_string().into_bytes();
+        if previous.as_deref().unwrap_or_default() == written.as_slice() {
+            return Ok(None);
+        }
+
+        let backup_path = if let Some(previous) = previous.as_deref() {
+            let path = self
+                .backups_dir()?
+                .join(format!("config.toml.bak.{}", unix_now_nanos()));
+            if let Some(parent) = path.parent() {
+                create_dir_private(parent)?;
+            }
+            write_file_atomic_private(&path, previous)?;
+            prune_backup_files(
+                &self.backups_dir()?,
+                "config.toml.bak.",
+                BACKUP_RETENTION_PER_KIND,
+            )?;
+            Some(display_path(&path))
+        } else {
+            None
+        };
+
+        self.run_before_config_replace_hook(&config_path);
+        let latest = config_path
+            .exists()
+            .then(|| read_file(&config_path))
+            .transpose()?;
+        if latest != previous {
+            return Err(OpenMuxError::Message(
+                "Codex config changed during provider switching; retry after the Codex App finishes updating settings"
+                    .into(),
+            ));
+        }
+
+        write_file_atomic_private(&config_path, &written)?;
+        Ok(Some(LiveConfigMutation {
+            previous,
+            written,
+            backup_path,
+        }))
+    }
+
+    fn rollback_live_config(&self, mutation: &LiveConfigMutation) -> Result<()> {
+        rollback_file_if_unchanged(
+            &self.config_path()?,
+            &mutation.written,
+            mutation.previous.as_deref(),
+        )
     }
 
     fn profile_config_path(&self, profile_name: &str) -> Result<PathBuf> {
@@ -667,9 +774,135 @@ impl CodexPlugin {
         let account_ref = self.account_ref(&account);
 
         if mark_active {
-            store.set_active_account(self.id(), &account.local_id, now)?;
+            store.set_active_account_preserving_profile(self.id(), &account.local_id, now)?;
         }
         Ok(account_ref)
+    }
+
+    fn managed_provider_id(profile_name: &str) -> String {
+        format!("openmux-{profile_name}")
+    }
+
+    fn profile_projection(
+        &self,
+        profile_name: &str,
+        provider_id: Option<&str>,
+        config_bytes: &[u8],
+    ) -> Result<CodexProfileProjection> {
+        let config_text = std::str::from_utf8(config_bytes).map_err(|err| {
+            OpenMuxError::Message(format!(
+                "stored Codex profile `{profile_name}` is not valid UTF-8: {err}"
+            ))
+        })?;
+        let document = config_text.parse::<DocumentMut>().map_err(|err| {
+            OpenMuxError::Message(format!(
+                "stored Codex profile `{profile_name}` is invalid TOML: {err}"
+            ))
+        })?;
+        let source_provider_id = document
+            .get("model_provider")
+            .and_then(Item::as_str)
+            .or(provider_id)
+            .map(str::to_string)
+            .or_else(|| {
+                document
+                    .get("model_providers")
+                    .and_then(Item::as_table)
+                    .and_then(|providers| providers.iter().next().map(|(id, _)| id.to_string()))
+            });
+        let mut provider_item = source_provider_id.as_deref().and_then(|id| {
+            document
+                .get("model_providers")
+                .and_then(Item::as_table)
+                .and_then(|providers| providers.get(id))
+                .cloned()
+        });
+        if provider_item.is_none()
+            && let Some(base_url) = document.get("openai_base_url").and_then(Item::as_str)
+        {
+            let mut provider = Table::new();
+            provider.insert("name", value(profile_name));
+            provider.insert("base_url", value(base_url));
+            provider.insert("env_key", value("OPENAI_API_KEY"));
+            provider.insert("wire_api", value("responses"));
+            provider.insert("requires_openai_auth", value(true));
+            provider_item = Some(Item::Table(provider));
+        }
+        let managed_provider_id = provider_item
+            .as_ref()
+            .map(|_| Self::managed_provider_id(profile_name))
+            .or(source_provider_id);
+        let model = document
+            .get("model")
+            .and_then(Item::as_str)
+            .map(str::to_string);
+        let review_model = document
+            .get("review_model")
+            .and_then(Item::as_str)
+            .map(str::to_string);
+
+        if managed_provider_id.is_none() && model.is_none() && review_model.is_none() {
+            return Err(OpenMuxError::Message(format!(
+                "stored Codex profile `{profile_name}` has no provider or model selectors"
+            )));
+        }
+
+        Ok(CodexProfileProjection {
+            managed_provider_id,
+            provider_item,
+            model,
+            review_model,
+        })
+    }
+
+    fn install_profile_provider(
+        &self,
+        profile_name: &str,
+        provider_id: Option<&str>,
+        config_bytes: &[u8],
+        replace_existing: bool,
+    ) -> Result<Option<LiveConfigMutation>> {
+        let projection = self.profile_projection(profile_name, provider_id, config_bytes)?;
+        let Some(provider_item) = projection.provider_item else {
+            return Ok(None);
+        };
+        let managed_provider_id = projection
+            .managed_provider_id
+            .expect("provider item requires managed provider id");
+
+        self.mutate_live_config(|document| {
+            ensure_model_providers_table(document)?;
+            let providers = document
+                .get_mut("model_providers")
+                .and_then(Item::as_table_mut)
+                .expect("model_providers table was just ensured");
+            if replace_existing || !providers.contains_key(&managed_provider_id) {
+                providers.insert(&managed_provider_id, provider_item);
+            }
+            Ok(())
+        })
+    }
+
+    fn profile_projection_from_record(
+        &self,
+        profile: &ProfileRecord,
+    ) -> Result<CodexProfileProjection> {
+        let source_path = PathBuf::from(&profile.secret_ref);
+        if !source_path.exists() {
+            return Err(OpenMuxError::Message(format!(
+                "stored config profile `{}` is missing at {}",
+                profile.name,
+                display_path(&source_path)
+            )));
+        }
+        let bytes = read_file(&source_path)?;
+        if sha256_hex(&bytes) != profile.config_hash {
+            return Err(OpenMuxError::Message(format!(
+                "stored config profile `{}` failed hash verification",
+                profile.name
+            )));
+        }
+        self.profile_projection(&profile.name, profile.provider_id.as_deref(), &bytes)
     }
 
     fn build_imported_config(&self, options: ImportConfigOptions) -> Result<ImportedConfig> {
@@ -683,7 +916,13 @@ impl CodexPlugin {
         let imported = parse_codex_import_config(raw_content, options.name.as_deref())?;
         let profile_path = self.profile_config_path(&imported.profile_name)?;
         write_file_atomic_private(&profile_path, imported.config_toml.as_bytes())?;
-        let profile = self.state_store()?.upsert_profile(UpsertProfile {
+        let config_mutation = self.install_profile_provider(
+            &imported.profile_name,
+            imported.provider_id.as_deref(),
+            imported.config_toml.as_bytes(),
+            true,
+        )?;
+        let profile = match self.state_store()?.upsert_profile(UpsertProfile {
             provider: self.id().to_string(),
             name: imported.profile_name.clone(),
             label: None,
@@ -695,7 +934,15 @@ impl CodexPlugin {
             config_hash: sha256_hex(imported.config_toml.as_bytes()),
             secret_ref: display_path(&profile_path),
             imported_at_unix: unix_now(),
-        })?;
+        }) {
+            Ok(profile) => profile,
+            Err(err) => {
+                if let Some(mutation) = config_mutation.as_ref() {
+                    let _ = self.rollback_live_config(mutation);
+                }
+                return Err(err);
+            }
+        };
 
         Ok(ImportedConfig {
             platform: self.info(),
@@ -711,17 +958,44 @@ impl CodexPlugin {
 
     fn list_codex_profiles(&self) -> Result<Vec<ConfigProfile>> {
         let store = self.state_store()?;
-        let active = store.active_profile(self.id())?;
+        let active_provider = self.active_model_provider()?;
         Ok(store
             .list_profiles(self.id())?
             .into_iter()
             .map(|profile| {
-                let is_active = active
-                    .as_ref()
-                    .is_some_and(|active| active.local_id == profile.local_id);
+                let managed_provider_id = Self::managed_provider_id(&profile.name);
+                let is_active = active_provider.as_deref() == Some(managed_provider_id.as_str())
+                    || (profile.provider_id.as_deref() == active_provider.as_deref()
+                        && self
+                            .profile_projection_from_record(&profile)
+                            .is_ok_and(|projection| projection.provider_item.is_none()));
                 profile.to_config_profile(self.info(), is_active)
             })
             .collect())
+    }
+
+    fn active_model_provider(&self) -> Result<Option<String>> {
+        let config_path = self.config_path()?;
+        if !config_path.exists() {
+            return Ok(None);
+        }
+        let bytes = read_file(&config_path)?;
+        let text = std::str::from_utf8(&bytes).map_err(|err| {
+            OpenMuxError::Message(format!(
+                "Codex config at {} is not valid UTF-8: {err}",
+                display_path(&config_path)
+            ))
+        })?;
+        let document = text.parse::<DocumentMut>().map_err(|err| {
+            OpenMuxError::Message(format!(
+                "invalid Codex config at {}: {err}",
+                display_path(&config_path)
+            ))
+        })?;
+        Ok(document
+            .get("model_provider")
+            .and_then(Item::as_str)
+            .map(str::to_string))
     }
 
     fn config_profile_by_selector(&self, selector: &str) -> Result<Option<ProfileRecord>> {
@@ -741,62 +1015,55 @@ impl CodexPlugin {
                 account: selector.to_string(),
             }
         })?;
-        let source_path = PathBuf::from(&profile.secret_ref);
-        if !source_path.exists() {
-            return Err(OpenMuxError::Message(format!(
-                "stored config profile `{}` is missing at {}",
-                profile.name,
-                display_path(&source_path)
-            )));
-        }
-
-        let config_path = self.config_path()?;
-        let next_bytes = read_file(&source_path)?;
-        let current_bytes = config_path
-            .exists()
-            .then(|| read_file(&config_path))
-            .transpose()?;
-        let mut backup_path = None;
-        if let Some(current_bytes) = current_bytes.as_ref() {
-            let default_snapshot_path = self.default_config_snapshot_path()?;
-            if !default_snapshot_path.exists() {
-                write_file_atomic_private(&default_snapshot_path, current_bytes)?;
-            }
-            if current_bytes != &next_bytes {
-                let path = self
-                    .backups_dir()?
-                    .join(format!("config.toml.bak.{}", unix_now_nanos()));
-                if let Some(parent) = path.parent() {
-                    create_dir_private(parent)?;
+        let projection = self.profile_projection_from_record(&profile)?;
+        let managed_provider_id = projection.managed_provider_id.clone();
+        let provider_item = projection.provider_item.clone();
+        let model = projection.model.clone();
+        let review_model = projection.review_model.clone();
+        let mutation = self.mutate_live_config(|document| {
+            if let (Some(provider_id), Some(provider_item)) =
+                (managed_provider_id.as_deref(), provider_item)
+            {
+                ensure_model_providers_table(document)?;
+                let providers = document
+                    .get_mut("model_providers")
+                    .and_then(Item::as_table_mut)
+                    .expect("model_providers table was just ensured");
+                if !providers.contains_key(provider_id) {
+                    providers.insert(provider_id, provider_item);
                 }
-                fs::copy(&config_path, &path).map_err(|err| io_error(&path, err))?;
-                set_private_file_permissions(&path)?;
-                prune_backup_files(
-                    &self.backups_dir()?,
-                    "config.toml.bak.",
-                    BACKUP_RETENTION_PER_KIND,
-                )?;
-                backup_path = Some(display_path(&path));
             }
-        }
+            if let Some(provider_id) = managed_provider_id.as_deref() {
+                document["model_provider"] = value(provider_id);
+            }
+            if let Some(model) = model.as_deref() {
+                document["model"] = value(model);
+            }
+            if let Some(review_model) = review_model.as_deref() {
+                document["review_model"] = value(review_model);
+            }
+            Ok(())
+        })?;
 
-        write_file_atomic_private(&config_path, &next_bytes)?;
-        if let Err(err) =
-            self.state_store()?
-                .set_active_profile(self.id(), &profile.local_id, unix_now())
-        {
-            let rollback = match current_bytes {
-                Some(bytes) => write_file_atomic_private(&config_path, &bytes),
-                None => fs::remove_file(&config_path)
-                    .map_err(|remove_err| io_error(&config_path, remove_err)),
-            };
+        if let Err(err) = self.state_store()?.set_active_profile_preserving_account(
+            self.id(),
+            &profile.local_id,
+            unix_now(),
+        ) {
+            let rollback = mutation
+                .as_ref()
+                .map(|mutation| self.rollback_live_config(mutation))
+                .unwrap_or(Ok(()));
             return match rollback {
                 Ok(()) => Err(OpenMuxError::Message(format!(
-                    "failed to update state store after switching profile; config was rolled back: {err}"
+                    "failed to update state store after switching provider; config was rolled back: {err}"
                 ))),
                 Err(rollback_err) => Err(OpenMuxError::Message(format!(
-                    "failed to update state store after switching profile and rollback failed: {err}; rollback error: {rollback_err}; backup: {}",
-                    backup_path.as_deref().unwrap_or("none")
+                    "failed to update state store after switching provider and rollback failed: {err}; rollback error: {rollback_err}; backup: {}",
+                    mutation
+                        .as_ref()
+                        .and_then(|mutation| mutation.backup_path.as_deref())
+                        .unwrap_or("none")
                 ))),
             };
         }
@@ -804,8 +1071,8 @@ impl CodexPlugin {
         Ok(ConfigSwitchReport {
             platform: self.info(),
             profile: active_profile,
-            config_path: display_path(&config_path),
-            backup_path,
+            config_path: display_path(&self.config_path()?),
+            backup_path: mutation.and_then(|mutation| mutation.backup_path),
         })
     }
 
@@ -835,12 +1102,56 @@ impl CodexPlugin {
                 account: selector.to_string(),
             }
         })?;
-        let was_active = store
-            .active_profile(self.id())?
-            .is_some_and(|active| active.local_id == profile.local_id);
+        let projection = self.profile_projection_from_record(&profile)?;
+        let was_active =
+            projection.managed_provider_id.as_deref() == self.active_model_provider()?.as_deref();
+        let managed_provider_id = projection.managed_provider_id.clone();
+        let expected_provider_item = projection.provider_item.clone();
+        let mutation = if let (Some(provider_id), Some(expected_item)) =
+            (managed_provider_id.as_deref(), expected_provider_item)
+        {
+            self.mutate_live_config(|document| {
+                let mut remove_parent = false;
+                if let Some(providers) = document
+                    .get_mut("model_providers")
+                    .and_then(Item::as_table_mut)
+                {
+                    if let Some(existing) = providers.get(provider_id)
+                        && !toml_items_equivalent(existing, &expected_item)
+                    {
+                        return Err(OpenMuxError::Message(format!(
+                            "Codex provider `{provider_id}` was modified outside OpenMux; refusing to remove it"
+                        )));
+                    }
+                    providers.remove(provider_id);
+                    remove_parent = providers.is_empty();
+                }
+                if remove_parent {
+                    document.as_table_mut().remove("model_providers");
+                }
+                if document
+                    .get("model_provider")
+                    .and_then(Item::as_str)
+                    == Some(provider_id)
+                {
+                    document.as_table_mut().remove("model_provider");
+                }
+                Ok(())
+            })?
+        } else {
+            None
+        };
         let mut removed_paths = Vec::new();
-        remove_file_if_exists(Path::new(&profile.secret_ref), &mut removed_paths)?;
-        store.remove_profile(&profile.local_id)?;
+        let remove_result = (|| {
+            remove_file_if_exists(Path::new(&profile.secret_ref), &mut removed_paths)?;
+            store.remove_profile(&profile.local_id)
+        })();
+        if let Err(err) = remove_result {
+            if let Some(mutation) = mutation.as_ref() {
+                let _ = self.rollback_live_config(mutation);
+            }
+            return Err(err);
+        }
 
         Ok(RemovedConfig {
             was_active,
@@ -1133,16 +1444,6 @@ impl PlatformPlugin for CodexPlugin {
         let changed = current_bytes
             .as_ref()
             .is_some_and(|current| current != &next_bytes);
-        let config_path = self.config_path()?;
-        let current_config_bytes = config_path
-            .exists()
-            .then(|| read_file(&config_path))
-            .transpose()?;
-        let default_config_path = self.default_config_snapshot_path()?;
-        let default_config_bytes = default_config_path
-            .exists()
-            .then(|| read_file(&default_config_path))
-            .transpose()?;
         let backup_path = if changed {
             let backup_path = self
                 .backups_dir()?
@@ -1193,53 +1494,23 @@ impl PlatformPlugin for CodexPlugin {
         }
 
         write_file_atomic_private(&auth_path, &next_bytes)?;
-        match default_config_bytes.as_ref() {
-            Some(default_bytes) if current_config_bytes.as_ref() != Some(default_bytes) => {
-                if let Err(err) = write_file_atomic_private(&config_path, default_bytes) {
-                    let rollback = rollback_auth_if_unchanged(
-                        &auth_path,
-                        &next_bytes,
-                        current_bytes.as_deref(),
-                    );
-                    return match rollback {
-                        Ok(()) => Err(OpenMuxError::Message(format!(
-                            "failed to restore default Codex config after switching account; active auth was rolled back: {err}"
-                        ))),
-                        Err(rollback_err) => Err(OpenMuxError::Message(format!(
-                            "failed to restore default Codex config after switching account and auth rollback failed: {err}; rollback error: {rollback_err}; backup: {}",
-                            backup_path
-                                .as_deref()
-                                .map(display_path)
-                                .unwrap_or_else(|| "none".to_string())
-                        ))),
-                    };
-                }
-            }
-            _ => {}
-        }
-
         let previous = store
             .active_account(self.id())?
             .filter(|current| current.local_id != account.local_id)
             .map(|stored| self.account_ref(&stored));
-        if let Err(err) = store.set_active_account(self.id(), &account.local_id, unix_now()) {
+        if let Err(err) =
+            store.set_active_account_preserving_profile(self.id(), &account.local_id, unix_now())
+        {
             let auth_rollback =
-                rollback_auth_if_unchanged(&auth_path, &next_bytes, current_bytes.as_deref());
-            let config_rollback = match current_config_bytes {
-                Some(bytes) => write_file_atomic_private(&config_path, &bytes),
-                None if default_config_bytes.is_some() => fs::remove_file(&config_path)
-                    .map_err(|remove_err| io_error(&config_path, remove_err)),
-                None => Ok(()),
-            };
-            if auth_rollback.is_ok() && config_rollback.is_ok() {
+                rollback_file_if_unchanged(&auth_path, &next_bytes, current_bytes.as_deref());
+            if auth_rollback.is_ok() {
                 return Err(OpenMuxError::Message(format!(
-                    "failed to update state store after switching auth; active auth and config were rolled back: {err}"
+                    "failed to update state store after switching auth; active auth was rolled back: {err}"
                 )));
             }
             return Err(OpenMuxError::Message(format!(
-                "failed to update state store after switching auth and rollback was incomplete: {err}; auth rollback: {}; config rollback: {}; backup: {}",
+                "failed to update state store after switching auth and rollback failed: {err}; auth rollback: {}; backup: {}",
                 rollback_status(auth_rollback),
-                rollback_status(config_rollback),
                 backup_path
                     .as_deref()
                     .map(display_path)
@@ -1363,24 +1634,21 @@ fn rollback_status(result: Result<()>) -> &'static str {
     }
 }
 
-fn rollback_auth_if_unchanged(
-    auth_path: &Path,
+fn rollback_file_if_unchanged(
+    path: &Path,
     expected_current: &[u8],
     previous: Option<&[u8]>,
 ) -> Result<()> {
-    let current = auth_path
-        .exists()
-        .then(|| read_file(auth_path))
-        .transpose()?;
+    let current = path.exists().then(|| read_file(path)).transpose()?;
     if current.as_deref() != Some(expected_current) {
         return Err(OpenMuxError::Message(
-            "active Codex auth changed after replacement; refusing to overwrite newer credentials during rollback"
+            "file changed after replacement; refusing to overwrite newer content during rollback"
                 .into(),
         ));
     }
     match previous {
-        Some(bytes) => write_file_atomic_private(auth_path, bytes),
-        None => fs::remove_file(auth_path).map_err(|err| io_error(auth_path, err)),
+        Some(bytes) => write_file_atomic_private(path, bytes),
+        None => fs::remove_file(path).map_err(|err| io_error(path, err)),
     }
 }
 
@@ -1390,6 +1658,32 @@ fn remove_file_if_exists(path: &Path, removed_paths: &mut Vec<String>) -> Result
         removed_paths.push(display_path(path));
     }
     Ok(())
+}
+
+fn ensure_model_providers_table(document: &mut DocumentMut) -> Result<()> {
+    match document.get("model_providers") {
+        Some(item) if !item.is_table() => Err(OpenMuxError::Message(
+            "Codex config contains a non-table `model_providers` value".into(),
+        )),
+        Some(_) => Ok(()),
+        None => {
+            document["model_providers"] = Item::Table(Table::new());
+            Ok(())
+        }
+    }
+}
+
+fn toml_items_equivalent(left: &Item, right: &Item) -> bool {
+    fn semantic_value(item: &Item) -> Option<toml::Value> {
+        let mut document = DocumentMut::new();
+        document["value"] = item.clone();
+        toml::from_str::<toml::Value>(&document.to_string())
+            .ok()?
+            .get("value")
+            .cloned()
+    }
+
+    semantic_value(left) == semantic_value(right)
 }
 
 #[derive(Debug, Clone)]

@@ -1058,6 +1058,7 @@ dependencies = [
  "omx-core",
  "serde_json",
  "toml",
+ "toml_edit",
 ]
 
 [[package]]

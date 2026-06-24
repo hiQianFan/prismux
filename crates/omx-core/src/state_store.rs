@@ -485,6 +485,17 @@ impl StateStore {
     }
 
     pub fn set_active_account(&self, provider: &str, local_id: &str, now: u64) -> Result<()> {
+        self.set_active_account_preserving_profile(provider, local_id, now)?;
+        self.clear_active_target(provider, TargetKindRecord::Profile)?;
+        Ok(())
+    }
+
+    pub fn set_active_account_preserving_profile(
+        &self,
+        provider: &str,
+        local_id: &str,
+        now: u64,
+    ) -> Result<()> {
         self.set_active_target(provider, TargetKindRecord::Account, local_id, now)?;
         self.conn
             .execute(
@@ -492,7 +503,6 @@ impl StateStore {
                 params![now, local_id],
             )
             .map_err(db_error_no_path)?;
-        self.clear_active_target(provider, TargetKindRecord::Profile)?;
         Ok(())
     }
 
@@ -876,6 +886,17 @@ impl StateStore {
     }
 
     pub fn set_active_profile(&self, provider: &str, local_id: &str, now: u64) -> Result<()> {
+        self.set_active_profile_preserving_account(provider, local_id, now)?;
+        self.clear_active_target(provider, TargetKindRecord::Account)?;
+        Ok(())
+    }
+
+    pub fn set_active_profile_preserving_account(
+        &self,
+        provider: &str,
+        local_id: &str,
+        now: u64,
+    ) -> Result<()> {
         self.set_active_target(provider, TargetKindRecord::Profile, local_id, now)?;
         self.conn
             .execute(
@@ -883,7 +904,6 @@ impl StateStore {
                 params![now, local_id],
             )
             .map_err(db_error_no_path)?;
-        self.clear_active_target(provider, TargetKindRecord::Account)?;
         Ok(())
     }
 
@@ -2543,6 +2563,48 @@ mod tests {
         );
         assert!(store.active_profile("codex").unwrap().is_none());
         assert!(store.list_profiles("codex").unwrap().is_empty());
+    }
+
+    #[test]
+    fn account_and_profile_can_remain_active_independently() {
+        let state_root = env::temp_dir().join(format!(
+            "openmux-state-store-independent-targets-{}",
+            unix_now_nanos()
+        ));
+        fs::create_dir_all(&state_root).unwrap();
+        let store = StateStore::open(&state_root).unwrap();
+        let account = insert_test_account(&store, "codex", "auth-1", 1);
+        let profile = store
+            .upsert_profile(UpsertProfile {
+                provider: "codex".to_string(),
+                name: "gateway".to_string(),
+                label: None,
+                profile_kind: "api".to_string(),
+                provider_id: Some("openmux-gateway".to_string()),
+                base_url: Some("https://gateway.example/v1".to_string()),
+                model: Some("gpt-5".to_string()),
+                auth_type: Some("api_key".to_string()),
+                config_hash: "config-1".to_string(),
+                secret_ref: "/tmp/gateway.config.toml".to_string(),
+                imported_at_unix: 1,
+            })
+            .unwrap();
+
+        store
+            .set_active_account_preserving_profile("codex", &account.local_id, 2)
+            .unwrap();
+        store
+            .set_active_profile_preserving_account("codex", &profile.local_id, 3)
+            .unwrap();
+
+        assert_eq!(
+            store.active_account("codex").unwrap().unwrap().local_id,
+            account.local_id
+        );
+        assert_eq!(
+            store.active_profile("codex").unwrap().unwrap().local_id,
+            profile.local_id
+        );
     }
 
     #[test]

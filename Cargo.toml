@@ -32,3 +32,4 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3"
 thiserror = "2"
 toml = "0.8"
+toml_edit = "0.22"

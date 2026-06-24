@@ -757,13 +757,17 @@ fn use_target_rejects_account_profile_selector_ambiguity() {
 }
 
 #[test]
-fn codex_account_and_profile_active_states_are_mutually_exclusive() {
-    let temp = test_temp_dir("active-mutual-exclusion");
+fn codex_account_switch_preserves_active_provider_and_live_config() {
+    let temp = test_temp_dir("active-account-provider-independent");
     let codex_home = temp.join("codex-home");
     let state_root = temp.join("openmux-state");
     fs::create_dir_all(&codex_home).unwrap();
     fs::write(codex_home.join(AUTH_FILE_NAME), br#"{"account":"work"}"#).unwrap();
-    fs::write(codex_home.join("config.toml"), "model = \"default\"\n").unwrap();
+    fs::write(
+        codex_home.join("config.toml"),
+        "model = \"default\"\n\n[plugins.\"ponytail@ponytail\"]\nenabled = true\n",
+    )
+    .unwrap();
 
     let plugin = CodexPlugin::with_paths(&codex_home, &state_root);
     plugin
@@ -782,8 +786,8 @@ fn codex_account_and_profile_active_states_are_mutually_exclusive() {
         .unwrap();
     plugin.use_target("gateway").unwrap();
 
-    assert!(plugin.current().unwrap().is_none());
-    assert!(!plugin.list_accounts().unwrap()[0].active);
+    assert!(plugin.current().unwrap().is_some());
+    assert!(plugin.list_accounts().unwrap()[0].active);
     assert!(
         plugin
             .list_configs()
@@ -793,12 +797,17 @@ fn codex_account_and_profile_active_states_are_mutually_exclusive() {
             .unwrap()
             .active
     );
+    let provider_config = fs::read(codex_home.join("config.toml")).unwrap();
+    let provider_text = String::from_utf8(provider_config.clone()).unwrap();
+    assert!(provider_text.contains("model_provider = \"openmux-gateway\""));
+    assert!(provider_text.contains("[model_providers.openmux-gateway]"));
+    assert!(provider_text.contains("[plugins.\"ponytail@ponytail\"]"));
 
     plugin.use_target("work").unwrap();
 
     assert_eq!(plugin.current().unwrap().unwrap().account.number, 1);
     assert!(
-        !plugin
+        plugin
             .list_configs()
             .unwrap()
             .into_iter()
@@ -807,9 +816,44 @@ fn codex_account_and_profile_active_states_are_mutually_exclusive() {
             .active
     );
     assert_eq!(
-        fs::read_to_string(codex_home.join("config.toml")).unwrap(),
-        "model = \"default\"\n"
+        fs::read(codex_home.join("config.toml")).unwrap(),
+        provider_config
     );
+}
+
+#[test]
+fn codex_account_switch_ignores_legacy_default_config_snapshot() {
+    let temp = test_temp_dir("ignore-legacy-default-config");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    fs::write(codex_home.join(AUTH_FILE_NAME), br#"{"account":"one"}"#).unwrap();
+    fs::write(
+        codex_home.join("config.toml"),
+        "[plugins.\"ponytail@ponytail\"]\nenabled = true\n",
+    )
+    .unwrap();
+
+    let plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("one".to_string()),
+        })
+        .unwrap();
+    fs::write(codex_home.join(AUTH_FILE_NAME), br#"{"account":"two"}"#).unwrap();
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("two".to_string()),
+        })
+        .unwrap();
+    let legacy = state_root.join("platforms/codex/configs/default.config.toml");
+    fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    fs::write(&legacy, "model = \"stale\"\n").unwrap();
+    let expected = fs::read(codex_home.join("config.toml")).unwrap();
+
+    plugin.use_target("one").unwrap();
+
+    assert_eq!(fs::read(codex_home.join("config.toml")).unwrap(), expected);
 }
 
 #[test]
@@ -857,6 +901,98 @@ goals = true
         Some("https://api.apikey.fun")
     );
     assert_eq!(profiles[0].model.as_deref(), Some("gpt-5.5"));
+    let live = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+    assert!(live.contains("[model_providers.openmux-api-apikey-fun]"));
+    assert!(!live.contains("model_provider = \"openmux-api-apikey-fun\""));
+}
+
+#[test]
+fn provider_switch_preserves_external_live_config_changes() {
+    let temp = test_temp_dir("provider-preserves-live-config");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    fs::write(
+        codex_home.join("config.toml"),
+        "# user config\n[plugins.\"ponytail@ponytail\"]\nenabled = true\n",
+    )
+    .unwrap();
+    let plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+    plugin
+        .import_config(ImportConfigOptions {
+            name: Some("gateway".to_string()),
+            content: "OPENAI_BASE_URL=https://original.example/v1 OPENAI_API_KEY=secret"
+                .to_string(),
+        })
+        .unwrap();
+    let config_path = codex_home.join("config.toml");
+    let edited = fs::read_to_string(&config_path)
+        .unwrap()
+        .replace("https://original.example/v1", "https://edited.example/v1");
+    fs::write(&config_path, edited).unwrap();
+
+    plugin.use_target("gateway").unwrap();
+
+    let live = fs::read_to_string(&config_path).unwrap();
+    assert!(live.contains("# user config"));
+    assert!(live.contains("[plugins.\"ponytail@ponytail\"]"));
+    assert!(live.contains("base_url = \"https://edited.example/v1\""));
+    assert!(live.contains("model_provider = \"openmux-gateway\""));
+}
+
+#[test]
+fn provider_switch_rejects_concurrent_codex_config_change() {
+    let temp = test_temp_dir("provider-concurrent-config-change");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    let mut plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+    plugin
+        .import_config(ImportConfigOptions {
+            name: Some("gateway".to_string()),
+            content: "OPENAI_BASE_URL=https://gateway.example/v1".to_string(),
+        })
+        .unwrap();
+    plugin.set_before_config_replace(append_config_during_replace);
+
+    let err = plugin.use_target("gateway").unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("config changed during provider switching")
+    );
+    assert!(
+        fs::read_to_string(codex_home.join("config.toml"))
+            .unwrap()
+            .contains("# concurrent Codex App update")
+    );
+    assert!(!plugin.list_configs().unwrap()[0].active);
+}
+
+#[test]
+fn remove_profile_refuses_externally_modified_provider_section() {
+    let temp = test_temp_dir("remove-modified-provider");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    let plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+    plugin
+        .import_config(ImportConfigOptions {
+            name: Some("gateway".to_string()),
+            content: "OPENAI_BASE_URL=https://original.example/v1".to_string(),
+        })
+        .unwrap();
+    let config_path = codex_home.join("config.toml");
+    let edited = fs::read_to_string(&config_path)
+        .unwrap()
+        .replace("https://original.example/v1", "https://edited.example/v1");
+    fs::write(&config_path, edited).unwrap();
+
+    let err = plugin.remove_target("gateway").unwrap_err();
+
+    assert!(err.to_string().contains("modified outside OpenMux"));
+    assert!(codex_home.join("gateway.config.toml").exists());
+    assert_eq!(plugin.list_configs().unwrap().len(), 1);
 }
 
 #[test]
@@ -884,6 +1020,8 @@ fn remove_profile_deletes_codex_profile_file() {
     assert_eq!(report.profile.name, "gateway");
     assert!(!profile_path.exists());
     assert!(plugin.list_configs().unwrap().is_empty());
+    let live = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+    assert!(!live.contains("openmux-gateway"));
 }
 
 #[test]
@@ -1176,6 +1314,12 @@ fn fake_jwt(header: &str, payload: &str) -> String {
 
 fn overwrite_auth_during_replace(auth_path: &Path) {
     fs::write(auth_path, br#"{"account":"concurrent"}"#).unwrap();
+}
+
+fn append_config_during_replace(config_path: &Path) {
+    let mut config = fs::read_to_string(config_path).unwrap();
+    config.push_str("\n# concurrent Codex App update\n");
+    fs::write(config_path, config).unwrap();
 }
 
 fn remove_auth_during_replace(auth_path: &Path) {

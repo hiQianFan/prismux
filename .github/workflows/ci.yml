@@ -31,3 +31,20 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+
+  menubar:
+    name: Menubar / macOS
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build menubar
+        run: scripts/build-menubar.sh
+
+      - name: Bundle smoke
+        run: scripts/bundle-menubar.sh

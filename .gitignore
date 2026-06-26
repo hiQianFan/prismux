@@ -1,4 +1,5 @@
 /target/
+**/.build/
 
 # Local agent/tooling directories. These may exist in a maintainer workspace,
 # but they are not part of the public OpenMux source surface.

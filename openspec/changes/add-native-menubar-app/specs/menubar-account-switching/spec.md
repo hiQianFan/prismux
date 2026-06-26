@@ -1,12 +1,20 @@
 ## ADDED Requirements
 
-### Requirement: 展示可切换账号与 active 状态
-Menubar SHALL 从 OpenMux account report 展示 provider、稳定 local ID 对应的 alias、active 标记、plan、quota 摘要和 status；Swift SHALL NOT 自行扫描 auth 目录推断账号。
+### Requirement: 展示受管账号池与 active 状态
+Menubar SHALL 从 OpenMux account report 展示 provider、display number、稳定 local ID 对应的 alias、account label、plan、auth type、active 标记、quota 摘要和 status；Swift SHALL NOT 自行扫描 auth 目录推断账号。
 
 #### Scenario: 加载账号列表
 - **WHEN** backend 返回多个已管理账号
 - **THEN** Menubar SHALL 明确标记唯一 active account
 - **AND** SHALL 将不可用或 stale 账号与健康账号区分展示
+
+### Requirement: v1 账号管理范围保持只读加切换
+Menubar v1 SHALL 支持查看账号池、查看 active 状态、刷新状态和显式切换账号。账号登录、导入、删除、alias 编辑和凭据修复 SHALL 继续通过 CLI 完成，并可在 Menubar 中提供 CLI help 入口。
+
+#### Scenario: 用户需要新增账号
+- **WHEN** 用户在 Menubar 中寻找新增账号能力
+- **THEN** Menubar SHALL NOT 直接采集或写入 auth payload
+- **AND** SHALL 提供安全的 CLI guidance 或 help entry 指向 `omx login` / `omx import`
 
 ### Requirement: 切换必须由用户显式触发
 Menubar SHALL 仅在用户选择具体账号后发起 switch command，第一版 MUST NOT 根据 quota、usage 或排序结果自动切换账号。

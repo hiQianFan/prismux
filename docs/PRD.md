@@ -194,6 +194,29 @@ omx current codex
 - `omx current` 展示所有已连接平台当前 active 的账号。
 - `omx current codex` 展示 Codex 当前 active 账号，包括编号、alias、account、plan 和 capacity when known。
 
+### 查看本地 token usage
+
+`omx usage` 是辅助判断本地 token consumption 的轻量入口，不是账单或订阅额度视图。默认输出应保持单屏可读：
+
+```sh
+omx usage
+omx usage --period 7d
+omx usage --group-by day
+omx usage --group-by model --details
+omx usage --json --no-scan
+```
+
+期望行为：
+
+- 默认按本地时区最近 7 个自然日汇总，并按 `day` 展示紧凑 rows，让用户先看到时间趋势；显式 `--period today` 时默认按 `client` 汇总。
+- 默认 rows 至少展示 `Day/Client/Model`、`Top Model`、`In`、`Out`、`Total Tokens`、`Cost`、`Events` 和 `Of Total`。`In`/`Out` 是输入/输出 token，`Top Model` 表示该 row 中 token 消耗最高的 model；`Of Total` 表示该 row 的 token total 占当前查询总 token 的比例。
+- `Cost` 优先展示可验证 cost；当前本地解析路径只在已有 tokscale pricing cache 可用时按 `model + provider + token buckets` 估算并标记 `estimated`，未知价格保持 `missing`，不得显示为 `$0.00`。
+- `--period today|7d|30d|all` 覆盖常用窗口；`--since`/`--until` 保留精确范围，两者不能和 `--period` 混用。
+- `--group-by client|day|model` 是第一阶段开放 lens；`project` 和 `session` 等到 metadata 稳定后再开放。
+- `--details` 才展示 input/output/cache read/cache write/reasoning/provider total/event count 等 accounting 字段。
+- `--json` 输出 versioned report，包含 `totals`、`groups`、`freshness`、`coverage`、`accounting` 和脱敏 diagnostics。
+- token consumption、cost 和 quota 必须保持独立口径；不得用本地 token total 推断订阅剩余额度。
+
 ### 命名和整理
 
 alias 是可选的。只有当用户想让列表更好读时才需要设置。
@@ -413,6 +436,21 @@ capacity 是产品模型的一部分，但当前全局总览要保持克制。
 - OpenMux 不需要在 CLI 心智稳定前做 GUI。
 - OpenMux 不要求用户导入账号前先给账号取名。
 - OpenMux 不把 alias、account 和 plan 混为一谈。
+
+## Menubar v1
+
+OpenMux Menubar v1 是 macOS 14+ Apple Silicon 的原生菜单栏账号控制面板。它的主任务是低摩擦查看 active account、账号池、quota/status，并执行手动 refresh 和用户显式 switch。usage 只作为附属摘要展示 today total tokens、top client、top model 和 coverage。
+
+Menubar v1 不做登录、导入、删除、alias 编辑、自动最佳账号选择、account 级 usage attribution、完整 analytics dashboard、Sparkle 自动更新或 notarization 自动化。低频/高风险管理动作继续通过 CLI 完成，例如：
+
+```sh
+omx login codex
+omx import codex --file provider.toml
+omx use codex 2
+omx usage --period today
+```
+
+Swift App 只通过 OpenMux Rust staticlib contract 读取账号报告和提交 switch/refresh intent，不直接读取 auth 文件、SQLite、usage logs 或 provider endpoint。TokenBar 只作为交互密度和 popover chrome 的参考；v1 不复制其源码、资源、scanner、pricing、quota fetcher、cache、bundle ID 或 report DTO。
 
 ## 开放问题
 

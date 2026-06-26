@@ -1,20 +1,25 @@
 ## ADDED Requirements
 
 ### Requirement: 展示账号 quota 与 reset
-Menubar SHALL 展示 OpenMux 最近成功 quota snapshot 中的主要窗口、used/remaining、reset time 和 refreshed time，并 SHALL 将当前 refresh diagnostic 与历史 snapshot 分开表达。
+Menubar SHALL 将 quota 作为账号状态的一部分展示：OpenMux 最近成功 quota snapshot 中的主要窗口、used/remaining、reset time 和 refreshed time，并 SHALL 将当前 refresh diagnostic 与历史 snapshot 分开表达。
 
 #### Scenario: 当前刷新失败但存在 quota snapshot
 - **WHEN** 本次 quota refresh 失败且存在最近成功 snapshot
 - **THEN** Menubar SHALL 展示最近成功 quota 数值与其 refreshed time
 - **AND** SHALL 同时显示 stale/error 状态而不是清空或归零
 
-### Requirement: 展示紧凑 today usage
-Menubar SHALL 通过 OpenMux query service 展示用户本地自然日的 total tokens、top client 和 top model；可选 cost 只有在 coverage 足够时才能作为无歧义总额展示。
+### Requirement: usage 只作为最小附属摘要
+Menubar SHALL 通过 OpenMux query service 展示用户本地自然日的 total tokens、top client、top model 和 freshness/coverage。它 SHALL NOT 提供 history drill-down、daily/model chart、session browser、account usage attribution 或完整 analytics dashboard。
 
 #### Scenario: today usage 有完整 token 但部分 cost 缺失
 - **WHEN** today usage event 可聚合但 pricing coverage 为 partial 或 missing
 - **THEN** Menubar SHALL 展示 token total
 - **AND** SHALL 将 cost 标为 partial/missing，不得把缺失 cost 显示为 `$0.00`
+
+#### Scenario: today usage 缺失
+- **WHEN** backend 没有可用的 today usage event
+- **THEN** Menubar SHALL 将 usage summary 显示为 empty 或 unavailable
+- **AND** SHALL 继续展示账号池、quota 和 switch 操作
 
 ### Requirement: usage 与 quota 必须保持不同口径
 Menubar SHALL 将 provider quota snapshot 与本地 parsed token usage 分成不同 section 和标签，MUST NOT 将本地 token total 推导为订阅剩余额度。

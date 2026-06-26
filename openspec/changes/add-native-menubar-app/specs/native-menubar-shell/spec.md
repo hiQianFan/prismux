@@ -8,13 +8,31 @@ OpenMux SHALL 提供 macOS 14+ Apple Silicon 原生菜单栏应用，以 accesso
 - **THEN** 应用 SHALL 打开或聚焦同一个 popover
 - **AND** SHALL NOT 为每次打开创建重复 status item 或独立窗口实例
 
-### Requirement: 最小信息架构
-Popover SHALL 在单页内提供 active account、quota、account list、today usage、refresh、Settings 和 Quit 入口，并 SHALL NOT 要求用户进入全屏 analytics TUI 才能完成主要任务。
+### Requirement: AppKit shell 与 SwiftUI content 分工
+Menubar v1 SHALL 使用 AppKit 管理 status item、popover lifecycle、activation policy、positioning 和 teardown，并使用 SwiftUI 实现 popover content。纯 SwiftUI shell 或纯 AppKit content SHALL NOT 成为 v1 默认实现，除非后续 spike 证明它以更少风险覆盖同等生命周期、可访问性和测试需求。
+
+#### Scenario: Popover 展示 SwiftUI 内容
+- **WHEN** 用户点击 status item 打开 popover
+- **THEN** AppKit SHALL 创建或复用 `NSPopover`
+- **AND** SwiftUI content SHALL 通过 hosting controller 展示账号控制面板
+- **AND** blocking backend calls SHALL NOT run on the main actor
+
+### Requirement: 不使用 UIKit 或 Catalyst 作为 v1 基础
+Menubar v1 SHALL NOT use UIKit or Mac Catalyst as the primary UI foundation because the product is a macOS-native menu bar utility, not an iOS/iPadOS app port.
+
+#### Scenario: 选择 UI framework
+- **WHEN** implementation creates the Menubar target
+- **THEN** it SHALL use AppKit APIs for macOS menu bar integration
+- **AND** it SHALL NOT introduce a Catalyst lifecycle or UIKit scene/app delegate
+
+### Requirement: 账号优先的最小信息架构
+Popover SHALL 在单页内提供 active account、账号池、quota/status、显式 switch、refresh、Settings 和 Quit 入口。Usage SHALL 仅作为附属摘要展示，且 SHALL NOT 成为完成账号查看或切换的前置条件。
 
 #### Scenario: 用户判断是否切换账号
 - **WHEN** 用户打开已有数据的 popover
-- **THEN** 用户 SHALL 能在当前页面看到 active account、主要 quota/reset 和可切换账号
-- **AND** SHALL 能从同一页面发起刷新或切换
+- **THEN** 用户 SHALL 能在当前页面看到 active account、可切换账号、主要 quota/reset 和账号状态
+- **AND** SHALL 能从同一页面发起刷新或显式切换
+- **AND** usage 数据缺失或 partial SHALL NOT 隐藏账号列表或禁用 switch
 
 ### Requirement: 明确的加载与降级状态
 Shell SHALL 使用最小状态模型区分 `loading`、`ready(report, stale?)` 和 `failed(lastGood?)`；后台或交互刷新失败时 SHALL 优先保留最近成功数据。refreshing、partial 和 empty SHALL 作为 report 字段或 view 派生状态处理。

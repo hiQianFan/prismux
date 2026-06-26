@@ -91,6 +91,21 @@ account 持久编号是平台内 account selector。`codex account #1` 和 `clau
 
 `availability` 是给旧展示和单账号保守状态判断使用的摘要字段，不能替代结构化 `usage`。平台插件应该把原始 provider quota 映射成多个 `UsageLimit`，再由最紧的可用窗口派生单账号 summary；CLI overview 的 `Overall` 则优先对结构化 limit 的剩余额度做账号池聚合。`refreshed_at_unix` 记录 OpenMux 本次获取 usage 的本地时间，不是 provider quota reset time。Codex 当前会把 `primary_window`、`secondary_window` 和 `additional_rate_limits` 解析为多个 limit，并通过 `limit_window_seconds` 识别 `5h`、`weekly` 等窗口；Claude/Gemini 后续可以复用同一模型，但保留各自的 scope、kind 和 raw provider key。provider-specific 字段只有在跨平台语义明确后才进入 core，否则应该留在插件内部或 detail formatter 中。
 
+本地 token usage 使用另一条数据链路：
+
+```text
+tokscale-core parser
+  -> omx-usage-tokscale adapter
+  -> omx-core UsageEvent
+  -> SQLite usage_events / scan_watermarks
+  -> UsageQuery / UsageReport
+  -> CLI human table / versioned JSON / future Menubar contract
+```
+
+`omx usage` 默认只展示轻量 summary：window、total tokens、按 `client` 的紧凑 rows、cost status、freshness/coverage。`--group-by day|model` 和 `--details` 负责渐进披露；human output 和 `--json` 必须来自同一个 `UsageReport`。JSON schema 采用 additive-first v1，保留 `totals`、`groups`、`freshness`、`coverage`、`accounting` 和脱敏 diagnostics。
+
+token consumption、cost 和 subscription quota 是三种不同口径。`UsageEvent` 来自本地日志解析，不能推断 provider quota remaining；cost 只能来自 provider-reported value 或按 `model + provider + token buckets` 与 cached pricing table 估算，未知价格保持 missing。缺少可验证 evidence 时，也不能把历史 usage 归因到当前 active account/profile。未来 Menubar 不应直接查询 SQLite 表或复写 scanner/pricing/aggregation，而应消费同一 `UsageQuery`/`UsageReport` contract。
+
 ## Local State
 
 OpenMux state 位于用户平台数据目录下。SQLite 是 account/profile/active/quota/refresh 的统一状态源，auth-bearing payload 仍保存在私有 snapshot 文件中：
@@ -230,3 +245,16 @@ Claude profile import 使用 `omx import claude "<KV-or-JSON-or-TOML>"`。插件
 - active auth 身份不匹配、无法验证或在最终替换检查前被并发修改时拒绝切换；这是 best-effort 检测，不是 Codex 进程共同遵守的文件锁，切换前仍应关闭运行中的 Codex 实例。
 - 切换前校验 snapshot hash，hash mismatch 时拒绝写入 active auth/credentials。
 - SQLite active 更新失败时尽力回滚已写入的 active auth/credentials/settings。
+
+## Menubar App Boundary
+
+Menubar v1 采用 `omx-core -> omx-app -> omx-menubar-ffi -> Swift` 的单向边界：
+
+1. `omx-core` 继续保存领域类型、SQLite state、usage summary 查询和 provider plugin trait。
+2. `omx-app` 提供普通函数：`menubar_accounts`、`menubar_dashboard`、`menubar_switch`、`menubar_refresh`。它复用 plugin 的账号枚举/切换流程和 `StateStore` usage 聚合，不引入单实现 service trait。
+3. `omx-menubar-ffi` 导出 `omx_menubar_call` 和 `omx_menubar_free`，使用 `schema_version = 1` JSON envelope 暴露 `dashboard`、`accounts`、`switch`、`refresh`。
+4. `apps/omx-menubar` 是 SwiftPM macOS 14 App：AppKit 管 `NSStatusItem`、`NSPopover` 和 accessory lifecycle，SwiftUI 只负责账号控制面板内容。
+
+Swift 不读取 auth、SQLite、usage logs 或 provider endpoint；它只提交 provider/local ID/refresh intent。账号切换仍由 Rust plugin 重新解析 stable local ID，并沿用备份、atomic replacement、私有权限和 rollback 语义。Menubar 的 usage 只展示 today total tokens、top client/model 和 coverage，不做 account attribution 或完整 analytics。
+
+本地发布产物由 `scripts/build-menubar.sh` 和 `scripts/bundle-menubar.sh` 生成。bundle script 从 Cargo workspace version 写入 `CFBundleShortVersionString`，设置 `LSUIElement=true` 和 `LSMinimumSystemVersion=14.0`，并执行 ad-hoc codesign；Developer ID、notarization、Sparkle 和 Homebrew cask 自动 bump 不属于 v1 gate。

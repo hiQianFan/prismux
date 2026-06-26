@@ -8,13 +8,14 @@
 - **THEN** Rust workspace SHALL 不要求 Xcode/Swift 工具链即可完成非 Menubar 构建
 - **AND** Menubar 专用 CI SHALL 在 macOS job 单独运行
 
-### Requirement: Menubar 版本号统一使用仓库版本
-Menubar App 的 `CFBundleShortVersionString` SHALL 使用仓库/Cargo workspace version，并与 CLI release tag 保持一致。
+### Requirement: OpenMux 使用单一产品版本号
+OpenMux SHALL maintain one product version for CLI, Rust crates, Menubar App, release tag and user documentation. The Cargo workspace version SHALL be the single manually maintained source of truth; Menubar App `CFBundleShortVersionString` and bundle metadata SHALL derive from it.
 
 #### Scenario: 组装本地 app bundle
 - **WHEN** `scripts/bundle-menubar.sh` 生成 `.app`
 - **THEN** `Info.plist` SHALL 写入当前 workspace version
-- **AND** 不得在 Swift 源码中硬编码独立 app version
+- **AND** the value SHALL match `omx --version` for the same build
+- **AND** 不得在 Swift 源码、Info.plist 模板或 bundle script 中硬编码独立 app version
 
 ### Requirement: v1 使用最小本地 bundle 和手动分发
 v1 SHALL 提供 CLI 驱动的 build/bundle 流程、本地 ad-hoc signing 和 GitHub Releases 手动分发；Sparkle、appcast、notarization 自动化和 Homebrew cask 自动 bump SHALL NOT 是 v1 gate。

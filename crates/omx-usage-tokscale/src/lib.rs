@@ -5,6 +5,7 @@ use omx_core::{
 use std::{
     fs,
     path::PathBuf,
+    sync::Arc,
     sync::mpsc::{self, Receiver, RecvTimeoutError},
     thread,
     time::Duration,
@@ -66,6 +67,7 @@ impl TokscaleUsageBackend {
             ));
         };
 
+        let pricing = load_pricing_with_timeout(options.budget.timeout_ms);
         let events = parsed
             .messages
             .into_iter()
@@ -76,7 +78,7 @@ impl TokscaleUsageBackend {
                     options.until_unix,
                 )
             })
-            .map(usage_event_from_tokscale_message)
+            .map(|message| usage_event_from_tokscale_message(message, pricing.as_deref()))
             .collect();
 
         Ok(usage_scan_report(events, diagnostics))
@@ -190,6 +192,28 @@ fn wait_for_parse_result(
     }
 }
 
+fn load_pricing_with_timeout(
+    timeout_ms: u64,
+) -> Option<Arc<tokscale_core::pricing::PricingService>> {
+    if let Some(pricing) = tokscale_core::pricing::PricingService::load_cached_any_age() {
+        return Some(Arc::new(pricing));
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_time()
+        .enable_io()
+        .build()
+        .ok()?;
+    runtime.block_on(async {
+        tokio::time::timeout(
+            Duration::from_millis(timeout_ms.min(5_000)),
+            tokscale_core::pricing::PricingService::get_or_init(),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
+    })
+}
+
 fn usage_scan_report(
     events: Vec<UsageEvent>,
     diagnostics: Vec<UsageScanDiagnostic>,
@@ -275,7 +299,10 @@ fn tokscale_timestamp_to_unix_seconds(timestamp: i64) -> i64 {
     }
 }
 
-fn usage_event_from_tokscale_message(message: tokscale_core::ParsedMessage) -> UsageEvent {
+fn usage_event_from_tokscale_message(
+    message: tokscale_core::ParsedMessage,
+    pricing: Option<&tokscale_core::pricing::PricingService>,
+) -> UsageEvent {
     let occurred_at_unix = tokscale_timestamp_to_unix_seconds(message.timestamp);
     let mut event = UsageEvent {
         client: message.client,
@@ -312,8 +339,33 @@ fn usage_event_from_tokscale_message(message: tokscale_core::ParsedMessage) -> U
         quality: UsageDataQuality::Parsed,
         event_hash: String::new(),
     };
+    apply_estimated_cost(&mut event, pricing);
     event.set_generated_event_hash();
     event
+}
+
+fn apply_estimated_cost(
+    event: &mut UsageEvent,
+    pricing: Option<&tokscale_core::pricing::PricingService>,
+) {
+    let (Some(pricing), Some(model)) = (pricing, event.model.as_deref()) else {
+        return;
+    };
+    let cost = pricing.calculate_cost_with_provider(
+        model,
+        event.model_provider.as_deref(),
+        &tokscale_core::TokenBreakdown {
+            input: event.tokens.input.min(i64::MAX as u64) as i64,
+            output: event.tokens.output.min(i64::MAX as u64) as i64,
+            cache_read: event.tokens.cache_read.min(i64::MAX as u64) as i64,
+            cache_write: event.tokens.cache_write.min(i64::MAX as u64) as i64,
+            reasoning: event.tokens.reasoning.min(i64::MAX as u64) as i64,
+        },
+    );
+    if cost > 0.0 {
+        event.estimated_cost_usd = Some(cost);
+        event.cost_status = CostStatus::Estimated;
+    }
 }
 
 fn non_negative(value: i64) -> u64 {
@@ -328,6 +380,7 @@ fn non_empty(value: String) -> Option<String> {
 mod tests {
     use super::*;
     use omx_core::UsageScanBudget;
+    use std::collections::HashMap;
     use std::fs;
 
     #[test]
@@ -482,8 +535,77 @@ mod tests {
         assert_eq!(event.tokens.cache_read, 2);
         assert_eq!(event.tokens.output, 3);
         assert_eq!(event.tokens.reasoning, 4);
-        assert_eq!(event.cost_status, CostStatus::Missing);
         assert!(!event.event_hash.is_empty());
+    }
+
+    #[test]
+    fn usage_event_uses_cached_pricing_when_available() {
+        let mut prices = HashMap::new();
+        prices.insert(
+            "fixture-model".to_string(),
+            tokscale_core::pricing::ModelPricing {
+                input_cost_per_token: Some(0.001),
+                output_cost_per_token: Some(0.002),
+                cache_read_input_token_cost: Some(0.0001),
+                cache_creation_input_token_cost: Some(0.0005),
+                ..Default::default()
+            },
+        );
+        let pricing = tokscale_core::pricing::PricingService::new(prices, HashMap::new());
+
+        let event = usage_event_from_tokscale_message(
+            tokscale_core::ParsedMessage {
+                client: "codex".to_string(),
+                model_id: "fixture-model".to_string(),
+                provider_id: "openai".to_string(),
+                session_id: "session-1".to_string(),
+                workspace_key: None,
+                workspace_label: None,
+                timestamp: 1_777_546_802,
+                date: "2026-04-29".to_string(),
+                input: 10,
+                output: 20,
+                cache_read: 30,
+                cache_write: 40,
+                reasoning: 50,
+                duration_ms: None,
+                message_count: 1,
+                agent: Some("fixture-agent".to_string()),
+            },
+            Some(&pricing),
+        );
+
+        assert_eq!(event.cost_status, CostStatus::Estimated);
+        let cost = event.estimated_cost_usd.unwrap();
+        assert!((cost - 0.173).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn usage_event_keeps_missing_cost_without_pricing() {
+        let event = usage_event_from_tokscale_message(
+            tokscale_core::ParsedMessage {
+                client: "codex".to_string(),
+                model_id: "fixture-model".to_string(),
+                provider_id: "openai".to_string(),
+                session_id: "session-1".to_string(),
+                workspace_key: None,
+                workspace_label: None,
+                timestamp: 1_777_546_802,
+                date: "2026-04-29".to_string(),
+                input: 10,
+                output: 20,
+                cache_read: 30,
+                cache_write: 40,
+                reasoning: 50,
+                duration_ms: None,
+                message_count: 1,
+                agent: Some("fixture-agent".to_string()),
+            },
+            None,
+        );
+
+        assert_eq!(event.cost_status, CostStatus::Missing);
+        assert_eq!(event.estimated_cost_usd, None);
     }
 
     #[test]

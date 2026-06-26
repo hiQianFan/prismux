@@ -1,0 +1,612 @@
+use omx_app::{
+    MenubarQuery, MenubarRefreshCommand, MenubarRemoveCommand, MenubarSwitchCommand,
+    menubar_accounts, menubar_dashboard, menubar_refresh, menubar_remove, menubar_switch,
+};
+use omx_core::{
+    PlatformPlugin, StateStore, UsageScanBudget, UsageScanOptions, storage::state_root,
+};
+use omx_plugin_claude::ClaudePlugin;
+use omx_plugin_codex::CodexPlugin;
+use omx_usage_tokscale::TokscaleUsageBackend;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{
+    ffi::{CStr, CString, c_char},
+    panic::{AssertUnwindSafe, catch_unwind},
+};
+
+const SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Deserialize)]
+struct RequestEnvelope {
+    schema_version: u32,
+    op: String,
+    #[serde(default)]
+    payload: Value,
+    #[serde(default)]
+    request_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ResponseEnvelope {
+    schema_version: u32,
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<ResponseError>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ResponseError {
+    code: String,
+    message: String,
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn omx_menubar_call(request_json: *const c_char) -> *mut c_char {
+    let response = catch_unwind(AssertUnwindSafe(|| call_from_ptr(request_json)))
+        .unwrap_or_else(|_| error_envelope(None, "panic", "internal menubar backend error"));
+    cstring(response).into_raw()
+}
+
+/// # Safety
+///
+/// `value` must be a pointer returned by `omx_menubar_call` and must be freed at most once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn omx_menubar_free(value: *mut c_char) {
+    if value.is_null() {
+        return;
+    }
+    unsafe {
+        drop(CString::from_raw(value));
+    }
+}
+
+pub fn call_json(request_json: &str) -> String {
+    catch_unwind(AssertUnwindSafe(|| call_request(request_json)))
+        .unwrap_or_else(|_| error_envelope(None, "panic", "internal menubar backend error"))
+}
+
+fn call_from_ptr(request_json: *const c_char) -> String {
+    if request_json.is_null() {
+        return error_envelope(None, "null_request", "request pointer was null");
+    }
+    let request = unsafe { CStr::from_ptr(request_json) };
+    match request.to_str() {
+        Ok(value) => call_request(value),
+        Err(_) => error_envelope(None, "bad_utf8", "request was not valid UTF-8"),
+    }
+}
+
+fn call_request(request_json: &str) -> String {
+    let request: RequestEnvelope = match serde_json::from_str(request_json) {
+        Ok(request) => request,
+        Err(_) => return error_envelope(None, "bad_json", "request was not valid JSON"),
+    };
+    if request.schema_version != SCHEMA_VERSION {
+        return error_envelope(
+            request.request_id,
+            "unsupported_schema",
+            "unsupported menubar schema_version",
+        );
+    }
+    let request_id = request.request_id.clone();
+    let result = dispatch(request);
+    match result {
+        Ok(data) => encode(ResponseEnvelope {
+            schema_version: SCHEMA_VERSION,
+            ok: true,
+            data: Some(data),
+            error: None,
+            request_id,
+        }),
+        Err(err) => error_envelope(request_id, err.0, err.1),
+    }
+}
+
+fn dispatch(request: RequestEnvelope) -> Result<Value, (&'static str, String)> {
+    #[cfg(test)]
+    if request.op == "__panic" {
+        panic!("test panic");
+    }
+    let plugins = default_plugins();
+    let store = state_root()
+        .ok()
+        .and_then(|root| StateStore::open(&root).ok());
+    match request.op.as_str() {
+        "accounts" => {
+            let query: MenubarQuery = payload_or_default(request.payload)?;
+            json_value(menubar_accounts(&plugins, query))
+        }
+        "dashboard" => {
+            let query: MenubarQuery = payload_or_default(request.payload)?;
+            refresh_usage_cache(store.as_ref(), query.provider.as_deref());
+            json_value(menubar_dashboard(&plugins, query, store.as_ref()))
+        }
+        "switch" => {
+            let command: MenubarSwitchCommand = payload(request.payload)?;
+            refresh_usage_cache(store.as_ref(), Some(&command.provider));
+            json_value(menubar_switch(&plugins, command, store.as_ref()))
+        }
+        "refresh" => {
+            let command: MenubarRefreshCommand = payload(request.payload)?;
+            refresh_usage_cache(store.as_ref(), Some(&command.provider));
+            json_value(menubar_refresh(&plugins, command, store.as_ref()))
+        }
+        "remove" => {
+            let command: MenubarRemoveCommand = payload(request.payload)?;
+            refresh_usage_cache(store.as_ref(), Some(&command.provider));
+            json_value(menubar_remove(&plugins, command, store.as_ref()))
+        }
+        _ => Err(("unknown_op", "unknown menubar operation".to_string())),
+    }
+}
+
+fn default_plugins() -> Vec<Box<dyn PlatformPlugin>> {
+    vec![Box::new(CodexPlugin::new()), Box::new(ClaudePlugin::new())]
+}
+
+fn refresh_usage_cache(store: Option<&StateStore>, provider: Option<&str>) {
+    let Some(store) = store else {
+        return;
+    };
+    let scan = TokscaleUsageBackend::new().scan(UsageScanOptions {
+        clients: provider
+            .map(|value| vec![value.to_string()])
+            .unwrap_or_default(),
+        since_unix: None,
+        until_unix: None,
+        budget: UsageScanBudget::default(),
+    });
+    if let Ok(report) = scan {
+        let _ = store.ingest_usage_events(&report.events, None, omx_core::storage::unix_now());
+    }
+}
+
+fn payload<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, (&'static str, String)> {
+    serde_json::from_value(value)
+        .map_err(|_| ("bad_payload", "payload did not match operation".to_string()))
+}
+
+fn payload_or_default<T>(value: Value) -> Result<T, (&'static str, String)>
+where
+    T: serde::de::DeserializeOwned + Default,
+{
+    if value.is_null() || value == json!({}) {
+        return Ok(T::default());
+    }
+    payload(value)
+}
+
+fn json_value<T: Serialize>(result: omx_core::Result<T>) -> Result<Value, (&'static str, String)> {
+    let value = result.map_err(|err| ("application_error", sanitize(&err.to_string())))?;
+    serde_json::to_value(value)
+        .map_err(|_| ("encode_error", "failed to encode response".to_string()))
+}
+
+fn error_envelope(
+    request_id: Option<String>,
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> String {
+    encode(ResponseEnvelope {
+        schema_version: SCHEMA_VERSION,
+        ok: false,
+        data: None,
+        error: Some(ResponseError {
+            code: code.into(),
+            message: sanitize(&message.into()),
+        }),
+        request_id,
+    })
+}
+
+fn encode(response: ResponseEnvelope) -> String {
+    serde_json::to_string(&response).unwrap_or_else(|_| {
+        "{\"schema_version\":1,\"ok\":false,\"error\":{\"code\":\"encode_error\",\"message\":\"failed to encode response\"}}".to_string()
+    })
+}
+
+fn cstring(value: String) -> CString {
+    CString::new(value).unwrap_or_else(|_| CString::new("{\"schema_version\":1,\"ok\":false,\"error\":{\"code\":\"nul_byte\",\"message\":\"response contained an invalid nul byte\"}}").unwrap())
+}
+
+fn sanitize(message: &str) -> String {
+    let lower = message.to_ascii_lowercase();
+    let sensitive = [
+        "access_token",
+        "refresh_token",
+        "api_key",
+        "authorization:",
+        "bearer ",
+        "auth payload",
+        "raw response",
+        "raw log",
+        "sk-",
+    ];
+    if sensitive.iter().any(|marker| lower.contains(marker)) {
+        "[redacted sensitive diagnostic]".to_string()
+    } else {
+        message.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use omx_core::SaveOptions;
+    use std::fs;
+    use std::ptr;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn bad_json_returns_error_envelope() {
+        let payload: Value = serde_json::from_str(&call_json("{")).unwrap();
+
+        assert_eq!(payload["schema_version"], 1);
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["error"]["code"], "bad_json");
+    }
+
+    #[test]
+    fn bad_utf8_returns_error_envelope() {
+        let bytes = [0xff_u8, 0x00];
+        let payload: Value = serde_json::from_str(&call_from_ptr(bytes.as_ptr().cast())).unwrap();
+
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["error"]["code"], "bad_utf8");
+    }
+
+    #[test]
+    fn panic_returns_error_envelope() {
+        let payload: Value = serde_json::from_str(&call_json(
+            r#"{"schema_version":1,"op":"__panic","payload":{}}"#,
+        ))
+        .unwrap();
+
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["error"]["code"], "panic");
+    }
+
+    #[test]
+    fn unsupported_schema_returns_safe_error() {
+        let payload: Value = serde_json::from_str(&call_json(
+            r#"{"schema_version":2,"op":"dashboard","payload":{}}"#,
+        ))
+        .unwrap();
+
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["error"]["code"], "unsupported_schema");
+    }
+
+    #[test]
+    fn unknown_op_returns_safe_error() {
+        let payload: Value = serde_json::from_str(&call_json(
+            r#"{"schema_version":1,"op":"missing","payload":{}}"#,
+        ))
+        .unwrap();
+
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["error"]["code"], "unknown_op");
+    }
+
+    #[test]
+    fn null_pointer_returns_error_envelope() {
+        let raw = omx_menubar_call(ptr::null());
+        let response = unsafe { CStr::from_ptr(raw) };
+        let payload: Value = serde_json::from_str(response.to_str().unwrap()).unwrap();
+        unsafe { omx_menubar_free(raw) };
+
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["error"]["code"], "null_request");
+    }
+
+    #[test]
+    fn accounts_returns_versioned_envelope() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("OMUX_STATE_ROOT", temp.path());
+            std::env::set_var("CODEX_HOME", temp.path().join("codex-home"));
+        }
+        let payload: Value = serde_json::from_str(&call_json(
+            r#"{"schema_version":1,"op":"accounts","payload":{"provider":"codex"},"request_id":"r1"}"#,
+        ))
+        .unwrap();
+        unsafe {
+            std::env::remove_var("OMUX_STATE_ROOT");
+            std::env::remove_var("CODEX_HOME");
+        }
+
+        assert_eq!(payload["schema_version"], 1);
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["request_id"], "r1");
+        assert!(payload["data"]["accounts"].is_array());
+    }
+
+    #[test]
+    fn dashboard_without_provider_returns_all_default_providers() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", temp.path());
+            std::env::set_var("OMUX_STATE_ROOT", temp.path());
+            std::env::set_var("CODEX_HOME", temp.path().join("codex-home"));
+            std::env::set_var("CLAUDE_CONFIG_DIR", temp.path().join("claude-home"));
+        }
+
+        let payload: Value = serde_json::from_str(&call_json(
+            r#"{"schema_version":1,"op":"dashboard","payload":{}}"#,
+        ))
+        .unwrap();
+
+        unsafe {
+            restore_env("HOME", previous_home);
+            std::env::remove_var("OMUX_STATE_ROOT");
+            std::env::remove_var("CODEX_HOME");
+            std::env::remove_var("CLAUDE_CONFIG_DIR");
+        }
+
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["data"]["accounts"]["providers"][0], "codex");
+        assert_eq!(payload["data"]["accounts"]["providers"][1], "claude");
+    }
+
+    #[test]
+    fn dashboard_refreshes_usage_cache_from_local_codex_sessions() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let state_root = temp.path().join("openmux-state");
+        let codex_home = temp.path().join("codex-home");
+        let sessions = codex_home.join("sessions");
+        let previous_home = std::env::var_os("HOME");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(
+            sessions.join("session-1.jsonl"),
+            concat!(
+                r#"{"type":"session_meta","payload":{"id":"session-1","source":"interactive","model_provider":"openai","cwd":"/tmp/openmux-project"}}"#,
+                "\n",
+                r#"{"type":"turn_context","payload":{"model":"gpt-5"}}"#,
+                "\n",
+                r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"reasoning_output_tokens":4},"last_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"reasoning_output_tokens":4}}}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        unsafe {
+            std::env::set_var("HOME", temp.path());
+            std::env::set_var("OMUX_STATE_ROOT", &state_root);
+            std::env::set_var("CODEX_HOME", &codex_home);
+        }
+
+        let payload: Value = serde_json::from_str(&call_json(
+            r#"{"schema_version":1,"op":"dashboard","payload":{"provider":"codex"}}"#,
+        ))
+        .unwrap();
+
+        unsafe {
+            restore_env("HOME", previous_home);
+            std::env::remove_var("OMUX_STATE_ROOT");
+            std::env::remove_var("CODEX_HOME");
+        }
+
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["data"]["usage"]["total_tokens"], 17);
+        assert_eq!(payload["data"]["usage"]["top_client"], "codex");
+        assert_eq!(payload["data"]["usage"]["top_model"], "gpt-5");
+        assert_eq!(payload["data"]["usage"]["coverage"]["status"], "complete");
+    }
+
+    #[test]
+    fn ffi_success_response_can_be_freed_once() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("OMUX_STATE_ROOT", temp.path());
+            std::env::set_var("CODEX_HOME", temp.path().join("codex-home"));
+        }
+        let request =
+            CString::new(r#"{"schema_version":1,"op":"accounts","payload":{"provider":"codex"}}"#)
+                .unwrap();
+        let raw = omx_menubar_call(request.as_ptr());
+        let payload: Value =
+            serde_json::from_str(unsafe { CStr::from_ptr(raw) }.to_str().unwrap()).unwrap();
+        unsafe { omx_menubar_free(raw) };
+        unsafe {
+            std::env::remove_var("OMUX_STATE_ROOT");
+            std::env::remove_var("CODEX_HOME");
+        }
+
+        assert_eq!(payload["ok"], true);
+    }
+
+    #[test]
+    fn request_contract_ignores_additive_optional_fields() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("OMUX_STATE_ROOT", temp.path());
+            std::env::set_var("CODEX_HOME", temp.path().join("codex-home"));
+        }
+        let payload: Value = serde_json::from_str(&call_json(
+            r#"{"schema_version":1,"op":"accounts","payload":{"provider":"codex","future_optional":"ignored"},"future_envelope_field":true}"#,
+        ))
+        .unwrap();
+        unsafe {
+            std::env::remove_var("OMUX_STATE_ROOT");
+            std::env::remove_var("CODEX_HOME");
+        }
+
+        assert_eq!(payload["ok"], true);
+    }
+
+    #[test]
+    fn application_error_is_redacted() {
+        let payload: Value = serde_json::from_str(&call_json(
+            r#"{"schema_version":1,"op":"switch","payload":{"provider":"access_token-secret","local_id":"missing"}}"#,
+        ))
+        .unwrap();
+
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["error"]["code"], "application_error");
+        assert_eq!(
+            payload["error"]["message"],
+            "[redacted sensitive diagnostic]"
+        );
+    }
+
+    #[test]
+    fn accounts_dashboard_switch_and_refresh_match_golden_fixtures() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        omx_app::reset_menubar_refresh_state_for_tests();
+        let temp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("OMUX_STATE_ROOT", temp.path());
+            std::env::set_var("CODEX_HOME", temp.path().join("codex-home"));
+        }
+        let cases = [
+            (
+                r#"{"schema_version":1,"op":"accounts","payload":{"provider":"codex"},"request_id":"accounts-fixture"}"#,
+                include_str!("../fixtures/menubar/accounts.response.json"),
+            ),
+            (
+                r#"{"schema_version":1,"op":"dashboard","payload":{"provider":"codex"},"request_id":"dashboard-fixture"}"#,
+                include_str!("../fixtures/menubar/dashboard.response.json"),
+            ),
+            (
+                r#"{"schema_version":1,"op":"switch","payload":{"provider":"codex","local_id":"missing-local-id"},"request_id":"switch-fixture"}"#,
+                include_str!("../fixtures/menubar/switch.response.json"),
+            ),
+            (
+                r#"{"schema_version":1,"op":"refresh","payload":{"provider":"codex","kind":"interactive"},"request_id":"refresh-fixture"}"#,
+                include_str!("../fixtures/menubar/refresh.response.json"),
+            ),
+        ];
+
+        for (request, fixture) in cases {
+            let mut actual: Value = serde_json::from_str(&call_json(request)).unwrap();
+            scrub_generated_at(&mut actual);
+            let expected: Value = serde_json::from_str(fixture).unwrap();
+            assert_eq!(actual, expected, "{request}");
+        }
+
+        unsafe {
+            std::env::remove_var("OMUX_STATE_ROOT");
+            std::env::remove_var("CODEX_HOME");
+        }
+    }
+
+    #[test]
+    fn ffi_uses_temp_state_and_codex_home_for_accounts_dashboard_refresh_and_switch() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let state_root = temp.path().join("openmux-state");
+        let codex_home = temp.path().join("codex-home");
+        fs::create_dir_all(&codex_home).unwrap();
+
+        unsafe {
+            std::env::set_var("OMUX_STATE_ROOT", &state_root);
+            std::env::set_var("CODEX_HOME", &codex_home);
+        }
+
+        fs::write(codex_home.join("auth.json"), br#"{"account":"work"}"#).unwrap();
+        let plugin = CodexPlugin::new();
+        let work = plugin
+            .save_current(SaveOptions {
+                alias: Some("work".to_string()),
+            })
+            .unwrap();
+        fs::write(codex_home.join("auth.json"), br#"{"account":"personal"}"#).unwrap();
+        plugin
+            .save_current(SaveOptions {
+                alias: Some("personal".to_string()),
+            })
+            .unwrap();
+
+        let accounts: Value = serde_json::from_str(&call_json(
+            r#"{"schema_version":1,"op":"accounts","payload":{"provider":"codex"}}"#,
+        ))
+        .unwrap();
+        assert_eq!(accounts["ok"], true);
+        assert_eq!(accounts["data"]["accounts"].as_array().unwrap().len(), 2);
+
+        let dashboard: Value = serde_json::from_str(&call_json(
+            r#"{"schema_version":1,"op":"dashboard","payload":{"provider":"codex"}}"#,
+        ))
+        .unwrap();
+        assert_eq!(dashboard["ok"], true);
+        assert_eq!(dashboard["data"]["accounts"]["providers"][0], "codex");
+
+        let refresh: Value = serde_json::from_str(&call_json(
+            r#"{"schema_version":1,"op":"refresh","payload":{"provider":"codex","kind":"interactive"}}"#,
+        ))
+        .unwrap();
+        assert_eq!(refresh["ok"], true);
+
+        let switch_request = json!({
+            "schema_version": 1,
+            "op": "switch",
+            "payload": {
+                "provider": "codex",
+                "local_id": work.local_id,
+            }
+        })
+        .to_string();
+        let switched: Value = serde_json::from_str(&call_json(&switch_request)).unwrap();
+        assert_eq!(switched["ok"], true);
+        assert_eq!(
+            fs::read(codex_home.join("auth.json")).unwrap(),
+            br#"{"account":"work"}"#
+        );
+        assert_eq!(
+            switched["data"]["dashboard"]["active"]["local_id"].as_str(),
+            Some(work.local_id.as_str())
+        );
+        assert!(
+            state_root
+                .join("platforms")
+                .join("codex")
+                .join("backups")
+                .exists()
+        );
+
+        unsafe {
+            std::env::remove_var("OMUX_STATE_ROOT");
+            std::env::remove_var("CODEX_HOME");
+        }
+    }
+
+    fn scrub_generated_at(value: &mut Value) {
+        match value {
+            Value::Object(object) => {
+                if object.contains_key("generated_at_unix") {
+                    object.insert("generated_at_unix".to_string(), Value::from(0));
+                }
+                for value in object.values_mut() {
+                    scrub_generated_at(value);
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    scrub_generated_at(value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    unsafe fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
+        if let Some(value) = value {
+            unsafe { std::env::set_var(key, value) };
+        } else {
+            unsafe { std::env::remove_var(key) };
+        }
+    }
+}

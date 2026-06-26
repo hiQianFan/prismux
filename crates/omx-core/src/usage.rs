@@ -344,8 +344,10 @@ impl UsageEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UsageSummary {
     pub client: String,
+    pub local_day: Option<String>,
     pub model_provider: Option<String>,
     pub model: Option<String>,
+    pub top_model: Option<String>,
     pub project_path: Option<PathBuf>,
     pub session_id: Option<String>,
     pub tokens: UsageTokenBreakdown,
@@ -362,6 +364,8 @@ pub struct UsageSummaryQuery {
     pub client: Option<String>,
     pub since_unix: Option<i64>,
     pub until_unix: Option<i64>,
+    pub group_by_local_day: bool,
+    pub local_day_offset_seconds: i32,
     pub model_provider: Option<String>,
     pub model: Option<String>,
     pub project_path: Option<PathBuf>,
@@ -370,6 +374,107 @@ pub struct UsageSummaryQuery {
     pub group_by_model: bool,
     pub group_by_project: bool,
     pub group_by_session: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UsageQuery {
+    pub client: Option<String>,
+    pub since_unix: Option<i64>,
+    pub until_unix: Option<i64>,
+    pub period: UsagePeriod,
+    pub group_by: UsageGroupBy,
+    pub details: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum UsagePeriod {
+    Today,
+    SevenDays,
+    ThirtyDays,
+    All,
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum UsageGroupBy {
+    Client,
+    Day,
+    Model,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UsageReport {
+    pub query: UsageQuery,
+    pub totals: UsageSummary,
+    pub groups: Vec<UsageSummary>,
+    pub freshness: UsageFreshness,
+    pub coverage: UsageCoverage,
+    pub accounting: UsageAccounting,
+    pub diagnostics: Vec<UsageScanDiagnostic>,
+    pub scan: UsageReportScan,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UsageFreshness {
+    pub generated_at_unix: u64,
+    pub last_scan_at_unix: Option<u64>,
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UsageCoverage {
+    pub requested_clients: Vec<String>,
+    pub available_clients: Vec<String>,
+    pub missing_clients: Vec<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UsageAccounting {
+    pub quality: UsageDataQuality,
+    pub cost_status: CostStatus,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UsageReportScan {
+    pub enabled: bool,
+    pub scanned_events: usize,
+    pub inserted_events: usize,
+}
+
+impl UsageSummary {
+    pub fn empty(client: impl Into<String>) -> Self {
+        Self {
+            client: client.into(),
+            local_day: None,
+            model_provider: None,
+            model: None,
+            top_model: None,
+            project_path: None,
+            session_id: None,
+            tokens: UsageTokenBreakdown::default(),
+            normalized_total_tokens: 0,
+            provider_total_tokens: None,
+            estimated_cost_usd: None,
+            cost_status: CostStatus::Missing,
+            quality: UsageDataQuality::Parsed,
+            event_count: 0,
+        }
+    }
+
+    pub fn add(&mut self, other: &Self) {
+        self.tokens.add(&other.tokens);
+        self.normalized_total_tokens = self
+            .normalized_total_tokens
+            .saturating_add(other.normalized_total_tokens);
+        self.provider_total_tokens =
+            add_optional_tokens(self.provider_total_tokens, other.provider_total_tokens);
+        self.estimated_cost_usd =
+            add_optional_cost(self.estimated_cost_usd, other.estimated_cost_usd);
+        self.cost_status = aggregate_cost_status(&self.cost_status, &other.cost_status);
+        self.event_count = self.event_count.saturating_add(other.event_count);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -518,6 +623,25 @@ fn add_optional_tokens(left: Option<u64>, right: Option<u64>) -> Option<u64> {
         (Some(left), Some(right)) => Some(left.saturating_add(right)),
         (Some(value), None) | (None, Some(value)) => Some(value),
         (None, None) => None,
+    }
+}
+
+fn add_optional_cost(left: Option<f64>, right: Option<f64>) -> Option<f64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left + right),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+fn aggregate_cost_status(left: &CostStatus, right: &CostStatus) -> CostStatus {
+    if left == right {
+        return left.clone();
+    }
+    if matches!(left, CostStatus::Missing) && matches!(right, CostStatus::Missing) {
+        CostStatus::Missing
+    } else {
+        CostStatus::Mixed
     }
 }
 

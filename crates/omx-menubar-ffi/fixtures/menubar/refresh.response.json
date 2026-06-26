@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "ok": true,
+  "data": {
+    "generated_at_unix": 0,
+    "provider": "codex",
+    "kind": "interactive",
+    "operation": {
+      "status": "success",
+      "changed": false,
+      "active_before": null,
+      "active_after": null,
+      "message": "Provider refreshed.",
+      "diagnostics": []
+    },
+    "dashboard": {
+      "generated_at_unix": 0,
+      "accounts": {
+        "generated_at_unix": 0,
+        "providers": [
+          "codex"
+        ],
+        "accounts": [],
+        "profiles": [],
+        "active_local_id": null,
+        "active_target_key": null,
+        "active_target_kind": null,
+        "diagnostics": []
+      },
+      "active": null,
+      "usage": {
+        "period": "Today",
+        "total_tokens": 0,
+        "top_client": null,
+        "top_model": null,
+        "model_breakdown": [],
+        "cost_status": "Missing",
+        "estimated_cost_usd": null,
+        "freshness": {
+          "generated_at_unix": 0,
+          "stale": true
+        },
+        "coverage": {
+          "status": "empty",
+          "requested_clients": [],
+          "available_clients": [],
+          "missing_clients": []
+        }
+      },
+      "provider_usage": [
+        {
+          "provider": "codex",
+          "usage": {
+            "period": "Today",
+            "total_tokens": 0,
+            "top_client": null,
+            "top_model": null,
+            "model_breakdown": [],
+            "cost_status": "Missing",
+            "estimated_cost_usd": null,
+            "freshness": {
+              "generated_at_unix": 0,
+              "stale": true
+            },
+            "coverage": {
+              "status": "empty",
+              "requested_clients": [],
+              "available_clients": [],
+              "missing_clients": []
+            }
+          }
+        }
+      ]
+    },
+    "refreshed": true,
+    "skipped_reason": null,
+    "accounts": {
+      "generated_at_unix": 0,
+      "providers": [
+        "codex"
+      ],
+      "accounts": [],
+      "profiles": [],
+      "active_local_id": null,
+      "active_target_key": null,
+      "active_target_kind": null,
+      "diagnostics": []
+    }
+  },
+  "request_id": "refresh-fixture"
+}

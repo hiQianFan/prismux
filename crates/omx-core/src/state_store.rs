@@ -162,6 +162,26 @@ impl UsageEventPayload {
             quality: usage_quality_name(&event.quality).to_string(),
         }
     }
+
+    fn matches_except_cost(&self, other: &Self) -> bool {
+        self.client == other.client
+            && self.model_provider == other.model_provider
+            && self.model == other.model
+            && self.session_id == other.session_id
+            && self.request_id == other.request_id
+            && self.occurred_at_unix == other.occurred_at_unix
+            && self.input_tokens == other.input_tokens
+            && self.output_tokens == other.output_tokens
+            && self.cache_read_tokens == other.cache_read_tokens
+            && self.cache_write_tokens == other.cache_write_tokens
+            && self.cache_write_5m_tokens == other.cache_write_5m_tokens
+            && self.cache_write_1h_tokens == other.cache_write_1h_tokens
+            && self.reasoning_tokens == other.reasoning_tokens
+            && self.extra_tokens == other.extra_tokens
+            && self.normalized_total_tokens == other.normalized_total_tokens
+            && self.provider_total_tokens == other.provider_total_tokens
+            && self.quality == other.quality
+    }
 }
 
 impl StateStore {
@@ -327,6 +347,7 @@ impl StateStore {
         self.add_column_if_missing(path, "accounts", "provider_subject_hash", "TEXT")?;
         self.add_column_if_missing(path, "accounts", "provider_subject_label", "TEXT")?;
         self.add_column_if_missing(path, "usage_events", "source_record_hash", "TEXT")?;
+        self.delete_duplicate_active_targets()?;
         if self.delete_archived_targets()? {
             self.compact_display_numbers()?;
         }
@@ -486,7 +507,6 @@ impl StateStore {
 
     pub fn set_active_account(&self, provider: &str, local_id: &str, now: u64) -> Result<()> {
         self.set_active_account_preserving_profile(provider, local_id, now)?;
-        self.clear_active_target(provider, TargetKindRecord::Profile)?;
         Ok(())
     }
 
@@ -887,7 +907,6 @@ impl StateStore {
 
     pub fn set_active_profile(&self, provider: &str, local_id: &str, now: u64) -> Result<()> {
         self.set_active_profile_preserving_account(provider, local_id, now)?;
-        self.clear_active_target(provider, TargetKindRecord::Account)?;
         Ok(())
     }
 
@@ -1068,6 +1087,9 @@ impl StateStore {
         if let Some(existing) = self.usage_event_payload_on_connection(conn, &event.event_hash)? {
             let incoming = UsageEventPayload::from_event(event);
             if existing != incoming {
+                if existing.matches_except_cost(&incoming) {
+                    return Ok(false);
+                }
                 return Err(OpenMuxError::Message(format!(
                     "usage event hash conflict: {}",
                     event.event_hash
@@ -1156,6 +1178,15 @@ impl StateStore {
 
     pub fn usage_summaries_by(&self, query: UsageSummaryQuery) -> Result<Vec<UsageSummary>> {
         let project_expr = "project_path";
+        let local_day_expr = format!(
+            "date(occurred_at_unix + {}, 'unixepoch')",
+            query.local_day_offset_seconds
+        );
+        let select_local_day = if query.group_by_local_day {
+            local_day_expr.as_str()
+        } else {
+            "NULL"
+        };
         let select_model_provider = if query.group_by_model_provider {
             "model_provider"
         } else {
@@ -1179,6 +1210,7 @@ impl StateStore {
         let mut sql = format!(
             r#"
             SELECT client,
+                   {select_local_day},
                    {select_model_provider},
                    {select_model},
                    {select_project},
@@ -1234,6 +1266,10 @@ impl StateStore {
         }
 
         sql.push_str(" GROUP BY client");
+        if query.group_by_local_day {
+            sql.push_str(", ");
+            sql.push_str(&local_day_expr);
+        }
         if query.group_by_model_provider {
             sql.push_str(", model_provider");
         }
@@ -1247,7 +1283,7 @@ impl StateStore {
             sql.push_str(", session_id");
         }
         sql.push_str(
-            " ORDER BY client ASC, model_provider ASC, model ASC, project_path ASC, session_id ASC",
+            " ORDER BY client ASC, 2 ASC, model_provider ASC, model ASC, project_path ASC, session_id ASC",
         );
 
         let params = rusqlite::params_from_iter(values.iter().map(|value| value.as_ref()));
@@ -1659,7 +1695,13 @@ impl StateStore {
         local_id: &str,
         now: u64,
     ) -> Result<()> {
-        let previous = self.active_local_id(provider, kind)?;
+        let previous = self.active_any_local_id(provider)?;
+        self.conn
+            .execute(
+                "DELETE FROM active_targets WHERE provider = ?1",
+                params![provider],
+            )
+            .map_err(db_error_no_path)?;
         self.conn
             .execute(
                 r#"
@@ -1677,11 +1719,44 @@ impl StateStore {
         Ok(())
     }
 
-    fn clear_active_target(&self, provider: &str, kind: TargetKindRecord) -> Result<()> {
+    fn active_any_local_id(&self, provider: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT local_id
+                FROM active_targets
+                WHERE provider = ?1
+                ORDER BY activated_at_unix DESC,
+                         CASE target_kind WHEN 'account' THEN 0 ELSE 1 END
+                LIMIT 1
+                "#,
+                params![provider],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_error_no_path)
+    }
+
+    fn delete_duplicate_active_targets(&self) -> Result<()> {
         self.conn
             .execute(
-                "DELETE FROM active_targets WHERE provider = ?1 AND target_kind = ?2",
-                params![provider, kind.as_str()],
+                r#"
+                DELETE FROM active_targets
+                WHERE rowid NOT IN (
+                    SELECT rowid
+                    FROM (
+                        SELECT rowid, provider,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY provider
+                                   ORDER BY activated_at_unix DESC,
+                                            CASE target_kind WHEN 'account' THEN 0 ELSE 1 END
+                               ) AS rank
+                        FROM active_targets
+                    )
+                    WHERE rank = 1
+                )
+                "#,
+                [],
             )
             .map_err(db_error_no_path)?;
         Ok(())
@@ -1845,35 +1920,38 @@ fn display_path_string(path: &Path) -> String {
 
 fn usage_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageSummary> {
     let client: String = row.get(0)?;
-    let model_provider: Option<String> = row.get(1)?;
-    let model: Option<String> = row.get(2)?;
-    let project_path = row.get::<_, Option<String>>(3)?.map(PathBuf::from);
-    let session_id: Option<String> = row.get(4)?;
+    let local_day: Option<String> = row.get(1)?;
+    let model_provider: Option<String> = row.get(2)?;
+    let model: Option<String> = row.get(3)?;
+    let project_path = row.get::<_, Option<String>>(4)?.map(PathBuf::from);
+    let session_id: Option<String> = row.get(5)?;
     let tokens = UsageTokenBreakdown {
-        input: sum_u64(row, 5)?,
-        output: sum_u64(row, 6)?,
-        cache_read: sum_u64(row, 7)?,
-        cache_write: sum_u64(row, 8)?,
-        cache_write_5m: sum_optional_u64(row, 9)?,
-        cache_write_1h: sum_optional_u64(row, 10)?,
-        reasoning: sum_u64(row, 11)?,
-        extra: sum_u64(row, 12)?,
+        input: sum_u64(row, 6)?,
+        output: sum_u64(row, 7)?,
+        cache_read: sum_u64(row, 8)?,
+        cache_write: sum_u64(row, 9)?,
+        cache_write_5m: sum_optional_u64(row, 10)?,
+        cache_write_1h: sum_optional_u64(row, 11)?,
+        reasoning: sum_u64(row, 12)?,
+        extra: sum_u64(row, 13)?,
     };
-    let normalized_total_tokens = sum_u64(row, 13)?;
-    let provider_total_tokens = sum_optional_u64(row, 14)?;
-    let cost_sum: f64 = row.get::<_, Option<f64>>(15)?.unwrap_or_default();
-    let cost_count = sum_u64(row, 16)?;
-    let provider_reported_count = sum_u64(row, 17)?;
-    let estimated_count = sum_u64(row, 18)?;
-    let missing_count = sum_u64(row, 19)?;
-    let event_count = sum_u64(row, 20)?;
+    let normalized_total_tokens = sum_u64(row, 14)?;
+    let provider_total_tokens = sum_optional_u64(row, 15)?;
+    let cost_sum: f64 = row.get::<_, Option<f64>>(16)?.unwrap_or_default();
+    let cost_count = sum_u64(row, 17)?;
+    let provider_reported_count = sum_u64(row, 18)?;
+    let estimated_count = sum_u64(row, 19)?;
+    let missing_count = sum_u64(row, 20)?;
+    let event_count = sum_u64(row, 21)?;
     let estimated_cost_usd = (cost_count > 0).then_some(cost_sum);
     let cost_status =
         aggregate_cost_status(provider_reported_count, estimated_count, missing_count);
     Ok(UsageSummary {
         client,
+        local_day,
         model_provider,
         model,
+        top_model: None,
         project_path,
         session_id,
         tokens,
@@ -2566,7 +2644,7 @@ mod tests {
     }
 
     #[test]
-    fn account_and_profile_can_remain_active_independently() {
+    fn account_and_profile_are_single_active_target_per_provider() {
         let state_root = env::temp_dir().join(format!(
             "openmux-state-store-independent-targets-{}",
             unix_now_nanos()
@@ -2593,18 +2671,77 @@ mod tests {
         store
             .set_active_account_preserving_profile("codex", &account.local_id, 2)
             .unwrap();
+        assert!(store.active_account("codex").unwrap().is_some());
+        assert!(store.active_profile("codex").unwrap().is_none());
+
         store
             .set_active_profile_preserving_account("codex", &profile.local_id, 3)
+            .unwrap();
+
+        assert!(store.active_account("codex").unwrap().is_none());
+        assert_eq!(
+            store.active_profile("codex").unwrap().unwrap().local_id,
+            profile.local_id
+        );
+
+        store
+            .set_active_account_preserving_profile("codex", &account.local_id, 4)
             .unwrap();
 
         assert_eq!(
             store.active_account("codex").unwrap().unwrap().local_id,
             account.local_id
         );
+        assert!(store.active_profile("codex").unwrap().is_none());
+    }
+
+    #[test]
+    fn migration_removes_duplicate_active_targets() {
+        let state_root = env::temp_dir().join(format!(
+            "openmux-state-store-active-target-migration-{}",
+            unix_now_nanos()
+        ));
+        fs::create_dir_all(&state_root).unwrap();
+        let store = StateStore::open(&state_root).unwrap();
+        let account = insert_test_account(&store, "codex", "auth-1", 1);
+        let profile = store
+            .upsert_profile(UpsertProfile {
+                provider: "codex".to_string(),
+                name: "gateway".to_string(),
+                label: None,
+                profile_kind: "api".to_string(),
+                provider_id: Some("openmux-gateway".to_string()),
+                base_url: Some("https://gateway.example/v1".to_string()),
+                model: Some("gpt-5".to_string()),
+                auth_type: Some("api_key".to_string()),
+                config_hash: "config-1".to_string(),
+                secret_ref: "/tmp/gateway.config.toml".to_string(),
+                imported_at_unix: 1,
+            })
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO active_targets (provider, target_kind, local_id, activated_at_unix) VALUES ('codex', 'account', ?1, 10)",
+                params![account.local_id],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO active_targets (provider, target_kind, local_id, activated_at_unix) VALUES ('codex', 'profile', ?1, 10)",
+                params![profile.local_id],
+            )
+            .unwrap();
+        drop(store);
+
+        let reopened = StateStore::open(&state_root).unwrap();
+
         assert_eq!(
-            store.active_profile("codex").unwrap().unwrap().local_id,
-            profile.local_id
+            reopened.active_account("codex").unwrap().unwrap().local_id,
+            account.local_id
         );
+        assert!(reopened.active_profile("codex").unwrap().is_none());
     }
 
     #[test]
@@ -2654,6 +2791,26 @@ mod tests {
         assert!(err.to_string().contains("usage event hash conflict"));
         let summaries = store.usage_summaries(Some("codex"), None, None).unwrap();
         assert_eq!(summaries[0].tokens.output, 5);
+    }
+
+    #[test]
+    fn usage_event_cost_only_change_is_idempotent_without_backfill() {
+        let state_root = env::temp_dir().join(format!(
+            "openmux-state-store-usage-cost-only-{}",
+            unix_now_nanos()
+        ));
+        fs::create_dir_all(&state_root).unwrap();
+        let store = StateStore::open(&state_root).unwrap();
+        let missing = usage_event("codex", "same-hash", CostStatus::Missing, None);
+        let estimated = usage_event("codex", "same-hash", CostStatus::Estimated, Some(0.25));
+
+        assert!(store.insert_usage_event(&missing, 100).unwrap());
+        assert!(!store.insert_usage_event(&estimated, 101).unwrap());
+
+        let summaries = store.usage_summaries(Some("codex"), None, None).unwrap();
+        assert_eq!(summaries[0].event_count, 1);
+        assert_eq!(summaries[0].estimated_cost_usd, None);
+        assert_eq!(summaries[0].cost_status, CostStatus::Missing);
     }
 
     #[test]
@@ -2727,6 +2884,60 @@ mod tests {
         );
         assert_eq!(summary.session_id.as_deref(), Some("session-a"));
         assert_eq!(summary.event_count, 1);
+    }
+
+    #[test]
+    fn usage_summary_groups_by_local_day_and_keeps_unknown_model_tokens() {
+        let state_root = env::temp_dir().join(format!(
+            "openmux-state-store-usage-day-{}",
+            unix_now_nanos()
+        ));
+        fs::create_dir_all(&state_root).unwrap();
+        let store = StateStore::open(&state_root).unwrap();
+        let mut first = usage_event("codex", "day-one", CostStatus::Missing, None);
+        first.occurred_at_unix = 1_775_174_401;
+        first.model = None;
+        let mut second = usage_event("codex", "day-two", CostStatus::Missing, None);
+        second.occurred_at_unix = 1_777_680_001;
+        second.model = Some("gpt-5".to_string());
+
+        store.insert_usage_event(&first, 100).unwrap();
+        store.insert_usage_event(&second, 100).unwrap();
+
+        let by_day = store
+            .usage_summaries_by(UsageSummaryQuery {
+                client: Some("codex".to_string()),
+                group_by_local_day: true,
+                local_day_offset_seconds: 0,
+                ..UsageSummaryQuery::default()
+            })
+            .unwrap();
+        let by_model = store
+            .usage_summaries_by(UsageSummaryQuery {
+                client: Some("codex".to_string()),
+                group_by_model: true,
+                ..UsageSummaryQuery::default()
+            })
+            .unwrap();
+
+        assert_eq!(by_day.len(), 2);
+        assert_eq!(by_day[0].local_day.as_deref(), Some("2026-04-03"));
+        assert_eq!(by_day[1].local_day.as_deref(), Some("2026-05-02"));
+        assert_eq!(
+            by_day
+                .iter()
+                .map(|summary| summary.normalized_total_tokens)
+                .sum::<u64>(),
+            56
+        );
+        assert!(by_model.iter().any(|summary| summary.model.is_none()));
+        assert_eq!(
+            by_model
+                .iter()
+                .map(|summary| summary.normalized_total_tokens)
+                .sum::<u64>(),
+            56
+        );
     }
 
     #[test]

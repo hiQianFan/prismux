@@ -1,14 +1,16 @@
 [package]
-name = "omx-usage-tokscale"
+name = "omx-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
+chrono.workspace = true
 omx-core = { path = "../omx-core" }
-tokscale-core = { path = "../../vendor/tokscale-core" }
-tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+serde.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
-tempfile = { workspace = true }
+serde_json.workspace = true
+tempfile.workspace = true

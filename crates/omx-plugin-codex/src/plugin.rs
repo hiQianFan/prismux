@@ -328,8 +328,16 @@ impl CodexPlugin {
         account: &AccountRecord,
         active_local_id: Option<&str>,
     ) -> AccountStatus {
+        self.account_status_with_usage(account, active_local_id, self.cached_usage(account))
+    }
+
+    fn account_status_with_usage(
+        &self,
+        account: &AccountRecord,
+        active_local_id: Option<&str>,
+        usage: UsageSnapshot,
+    ) -> AccountStatus {
         let metadata = self.metadata_from_snapshot(account);
-        let usage = self.usage_from_snapshot(account);
         let availability = usage.summary.clone();
         AccountStatus {
             active: active_local_id == Some(account.local_id.as_str()),
@@ -341,6 +349,28 @@ impl CodexPlugin {
             availability,
             usage: Some(usage),
         }
+    }
+
+    fn cached_usage(&self, account: &AccountRecord) -> UsageSnapshot {
+        self.state_store()
+            .ok()
+            .and_then(|store| {
+                store
+                    .latest_quota_snapshot(&account.local_id)
+                    .ok()
+                    .flatten()
+            })
+            .map(|mut usage| {
+                usage.source = UsageSource::StoredSnapshot;
+                usage
+            })
+            .unwrap_or(UsageSnapshot {
+                source: UsageSource::StoredSnapshot,
+                refreshed_at_unix: None,
+                summary: Availability::unknown(),
+                limits: Vec::new(),
+                diagnostics: Vec::new(),
+            })
     }
 
     fn metadata_from_snapshot(&self, account: &AccountRecord) -> CodexAccountMetadata {
@@ -436,11 +466,14 @@ impl CodexPlugin {
                 std::process::id(),
                 unix_now_nanos()
             ));
+        let proxy = codex_usage_proxy()
+            .map(|proxy| format!("proxy = \"{}\"\n", escape_curl_config(&proxy)))
+            .unwrap_or_default();
         let config = format!(
-            "header = \"Authorization: Bearer {}\"\nheader = \"ChatGPT-Account-Id: {}\"\nheader = \"User-Agent: codex-cli\"\nmax-time = 4\nsilent\nshow-error\n",
+            "header = \"Authorization: Bearer {}\"\nheader = \"ChatGPT-Account-Id: {}\"\nheader = \"User-Agent: codex-cli\"\nmax-time = 8\nsilent\nshow-error\n",
             escape_curl_config(&auth.access_token),
             escape_curl_config(&auth.account_id)
-        );
+        ) + &proxy;
         write_file_atomic_private(&config_path, config.as_bytes())
             .map_err(usage_diagnostic_from_error)?;
 
@@ -998,6 +1031,19 @@ impl CodexPlugin {
             .map(str::to_string))
     }
 
+    fn deactivate_managed_model_provider(&self) -> Result<Option<LiveConfigMutation>> {
+        if !self
+            .active_model_provider()?
+            .is_some_and(|provider| provider.starts_with("openmux-"))
+        {
+            return Ok(None);
+        }
+        self.mutate_live_config(|document| {
+            document.as_table_mut().remove("model_provider");
+            Ok(())
+        })
+    }
+
     fn config_profile_by_selector(&self, selector: &str) -> Result<Option<ProfileRecord>> {
         let store = self.state_store()?;
         if let Some(profile) = store.profile_by_local_id(selector)?
@@ -1191,7 +1237,7 @@ impl PlatformPlugin for CodexPlugin {
         let availability = summarize_usage_availability(
             accounts
                 .iter()
-                .map(|account| self.usage_from_snapshot(account))
+                .map(|account| self.cached_usage(account))
                 .collect(),
         );
 
@@ -1220,6 +1266,23 @@ impl PlatformPlugin for CodexPlugin {
             .list_accounts(self.id())?
             .iter()
             .map(|account| self.account_status(account, active_id))
+            .collect())
+    }
+
+    fn refresh_accounts(&self) -> Result<Vec<AccountStatus>> {
+        let store = self.state_store()?;
+        let active = store.active_account(self.id())?;
+        let active_id = active.as_ref().map(|account| account.local_id.as_str());
+        Ok(store
+            .list_accounts(self.id())?
+            .iter()
+            .map(|account| {
+                self.account_status_with_usage(
+                    account,
+                    active_id,
+                    self.usage_from_snapshot(account),
+                )
+            })
             .collect())
     }
 
@@ -1494,6 +1557,17 @@ impl PlatformPlugin for CodexPlugin {
         }
 
         write_file_atomic_private(&auth_path, &next_bytes)?;
+        let config_mutation = match self.deactivate_managed_model_provider() {
+            Ok(mutation) => mutation,
+            Err(err) => {
+                let auth_rollback =
+                    rollback_file_if_unchanged(&auth_path, &next_bytes, current_bytes.as_deref());
+                return Err(OpenMuxError::Message(format!(
+                    "failed to deactivate managed Codex provider after switching auth: {err}; auth rollback: {}",
+                    rollback_status(auth_rollback)
+                )));
+            }
+        };
         let previous = store
             .active_account(self.id())?
             .filter(|current| current.local_id != account.local_id)
@@ -1501,16 +1575,21 @@ impl PlatformPlugin for CodexPlugin {
         if let Err(err) =
             store.set_active_account_preserving_profile(self.id(), &account.local_id, unix_now())
         {
+            let config_rollback = config_mutation
+                .as_ref()
+                .map(|mutation| self.rollback_live_config(mutation))
+                .unwrap_or(Ok(()));
             let auth_rollback =
                 rollback_file_if_unchanged(&auth_path, &next_bytes, current_bytes.as_deref());
-            if auth_rollback.is_ok() {
+            if auth_rollback.is_ok() && config_rollback.is_ok() {
                 return Err(OpenMuxError::Message(format!(
-                    "failed to update state store after switching auth; active auth was rolled back: {err}"
+                    "failed to update state store after switching auth; active auth and config were rolled back: {err}"
                 )));
             }
             return Err(OpenMuxError::Message(format!(
-                "failed to update state store after switching auth and rollback failed: {err}; auth rollback: {}; backup: {}",
+                "failed to update state store after switching auth and rollback failed: {err}; auth rollback: {}; config rollback: {}; backup: {}",
                 rollback_status(auth_rollback),
+                rollback_status(config_rollback),
                 backup_path
                     .as_deref()
                     .map(display_path)
@@ -2307,6 +2386,12 @@ fn json_number_as_percent_x100(value: &serde_json::Value) -> Option<u32> {
 
 fn escape_curl_config(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn codex_usage_proxy() -> Option<String> {
+    ["OMUX_HTTPS_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
+        .iter()
+        .find_map(|key| env::var(key).ok().filter(|value| !value.trim().is_empty()))
 }
 
 fn metadata_from_jwt(token: &str) -> Option<CodexAccountMetadata> {

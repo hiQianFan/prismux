@@ -2,8 +2,8 @@ use crate::input::{read_import_content, read_optional_import_content};
 use anstream::println;
 use anstyle::{AnsiColor, Style};
 use anyhow::{Context, Result, bail};
-use chrono::{Datelike, Local, NaiveDate, TimeZone};
-use clap::{Parser, Subcommand};
+use chrono::{Datelike, Duration, Local, NaiveDate, TimeZone};
+use clap::{Parser, Subcommand, ValueEnum};
 use comfy_table::{
     Attribute, Cell, Color, ContentArrangement, Table, modifiers::UTF8_ROUND_CORNERS,
     presets::UTF8_FULL_CONDENSED,
@@ -11,9 +11,10 @@ use comfy_table::{
 use inquire::Select;
 use omx_core::{
     AccountRef, AccountStatus, ConfigProfile, ImportConfigOptions, LoginOptions, PlatformPlugin,
-    RemoveReport, SaveOptions, StateStore, TargetCatalog, TargetKind, TargetResolution, UsageLimit,
-    UsageScanBudget, UsageScanDiagnostic, UsageScanOptions, UsageSnapshot, UsageSummary,
-    UsageSummaryQuery, UseReport,
+    RemoveReport, SaveOptions, StateStore, TargetKind, UsageAccounting, UsageCoverage,
+    UsageFreshness, UsageGroupBy, UsageLimit, UsagePeriod, UsageQuery, UsageReport,
+    UsageReportScan, UsageScanBudget, UsageScanDiagnostic, UsageScanOptions, UsageSnapshot,
+    UsageSummary, UsageSummaryQuery, UseReport,
     storage::{state_root, unix_now},
 };
 use omx_plugin_claude::ClaudePlugin;
@@ -40,6 +41,11 @@ enum Command {
     Current {
         /// Optional platform id, for example: codex.
         platform: Option<String>,
+    },
+    /// Refresh provider quota snapshots for one platform.
+    Refresh {
+        /// Platform id, for example: codex.
+        platform: String,
     },
     /// Login through a platform's official flow and record the account.
     Login {
@@ -121,12 +127,21 @@ enum Command {
     Usage {
         /// Optional client id, for example: codex, claude, or gemini.
         client: Option<String>,
+        /// Common time window preset.
+        #[arg(long, value_enum)]
+        period: Option<UsagePeriodArg>,
         /// Start of the local date window as YYYY-MM-DD or a Unix timestamp.
         #[arg(long)]
         since: Option<String>,
         /// End of the local date window as YYYY-MM-DD or a Unix timestamp. Date values are exclusive of the next day.
         #[arg(long)]
         until: Option<String>,
+        /// Group usage rows by client, local day, or model.
+        #[arg(long, value_enum)]
+        group_by: Option<UsageGroupByArg>,
+        /// Show full token accounting columns.
+        #[arg(long)]
+        details: bool,
         /// Print a versioned JSON document.
         #[arg(long)]
         json: bool,
@@ -134,6 +149,23 @@ enum Command {
         #[arg(long)]
         no_scan: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum UsagePeriodArg {
+    Today,
+    #[value(name = "7d")]
+    SevenDays,
+    #[value(name = "30d")]
+    ThirtyDays,
+    All,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum UsageGroupByArg {
+    Client,
+    Day,
+    Model,
 }
 
 pub fn run() -> Result<()> {
@@ -158,8 +190,8 @@ pub fn run() -> Result<()> {
                     header_cell("Status"),
                 ]);
                 for plugin in visible_plugins(&plugins) {
-                    let accounts = plugin.list_accounts()?;
-                    let profiles = plugin.list_configs()?;
+                    let accounts = omx_app::account_statuses(plugin)?;
+                    let profiles = omx_app::config_profiles(plugin)?;
                     let active = accounts.iter().find(|status| status.active);
                     let active_profile = profiles.iter().find(|profile| profile.active);
                     let active_label = match (active, active_profile) {
@@ -189,7 +221,7 @@ pub fn run() -> Result<()> {
                 if plugin.capabilities().accounts && plugin.capabilities().profiles {
                     print_aggregated_current(plugin)?;
                 } else {
-                    match plugin.current()? {
+                    match omx_app::active_account_status(plugin)? {
                         Some(status) => {
                             println!("{}", active_account_label(plugin.name(), &status.account))
                         }
@@ -201,7 +233,7 @@ pub fn run() -> Result<()> {
                 let mut table = view_table();
                 table.set_header(vec![header_cell("Platform"), header_cell("Active")]);
                 for plugin in visible_plugins(&plugins) {
-                    let current = plugin.current()?;
+                    let current = omx_app::active_account_status(plugin)?;
                     match current {
                         Some(status) => {
                             table.add_row(vec![
@@ -219,6 +251,14 @@ pub fn run() -> Result<()> {
                 }
                 println!("{table}");
             }
+        }
+        Command::Refresh { platform } => {
+            let plugin = find_plugin(&plugins, &platform)?;
+            let accounts = plugin.refresh_accounts()?;
+            print_account_section_from_statuses(plugin.name(), &accounts, None);
+            print_hint(
+                "Proxy: set OMUX_HTTPS_PROXY, HTTPS_PROXY, or ALL_PROXY before running refresh.",
+            );
         }
         Command::Login {
             platform,
@@ -464,12 +504,24 @@ pub fn run() -> Result<()> {
         }
         Command::Usage {
             client,
+            period,
             since,
             until,
+            group_by,
+            details,
             json,
             no_scan,
         } => {
-            print_usage(client, since, until, json, no_scan)?;
+            print_usage(UsageCommandOptions {
+                client,
+                period,
+                since,
+                until,
+                group_by,
+                details,
+                json_output: json,
+                no_scan,
+            })?;
         }
     }
 
@@ -493,18 +545,54 @@ fn visible_plugins(
     plugins.iter().map(|plugin| plugin.as_ref())
 }
 
-fn print_usage(
+struct UsageCommandOptions {
     client: Option<String>,
+    period: Option<UsagePeriodArg>,
     since: Option<String>,
     until: Option<String>,
+    group_by: Option<UsageGroupByArg>,
+    details: bool,
     json_output: bool,
     no_scan: bool,
-) -> Result<()> {
-    let window = usage_window(since.as_deref(), until.as_deref())?;
+}
+
+fn print_usage(options: UsageCommandOptions) -> Result<()> {
+    let window = usage_window(
+        options.period,
+        options.since.as_deref(),
+        options.until.as_deref(),
+    )?;
     let store = StateStore::open(&state_root()?)?;
+    let report = usage_report(
+        &store,
+        options.client,
+        window,
+        options.group_by,
+        options.details,
+        options.no_scan,
+    )?;
+
+    if options.json_output {
+        print_usage_json(&report)?;
+    } else {
+        print_usage_table(&report);
+    }
+
+    Ok(())
+}
+
+fn usage_report(
+    store: &StateStore,
+    client: Option<String>,
+    window: UsageWindow,
+    group_by_arg: Option<UsageGroupByArg>,
+    details: bool,
+    no_scan: bool,
+) -> Result<UsageReport> {
     let mut diagnostics = Vec::new();
     let mut scanned_events = 0_usize;
     let mut inserted_events = 0_usize;
+    let generated_at_unix = unix_now();
 
     if !no_scan {
         match TokscaleUsageBackend::new().scan(UsageScanOptions {
@@ -527,58 +615,198 @@ fn print_usage(
         }
     }
 
-    let summaries = store.usage_summaries_by(UsageSummaryQuery {
+    let group_by = usage_group_by(group_by_arg, &window.period);
+    let summary_query = UsageSummaryQuery {
         client: client.clone(),
         since_unix: Some(window.since_unix),
         until_unix: Some(window.until_unix),
-        group_by_model_provider: true,
+        group_by_local_day: matches!(group_by, UsageGroupBy::Day),
+        local_day_offset_seconds: Local::now().offset().local_minus_utc(),
+        group_by_model_provider: matches!(group_by, UsageGroupBy::Model),
+        group_by_model: matches!(group_by, UsageGroupBy::Model),
+        ..UsageSummaryQuery::default()
+    };
+    let summaries = store.usage_summaries_by(summary_query)?;
+    let model_summaries = store.usage_summaries_by(UsageSummaryQuery {
+        client: client.clone(),
+        since_unix: Some(window.since_unix),
+        until_unix: Some(window.until_unix),
+        group_by_local_day: matches!(group_by, UsageGroupBy::Day),
+        local_day_offset_seconds: Local::now().offset().local_minus_utc(),
         group_by_model: true,
         ..UsageSummaryQuery::default()
     })?;
-
-    if json_output {
-        print_usage_json(
-            &client,
-            &window,
-            &summaries,
-            &diagnostics,
-            scanned_events,
-            inserted_events,
-            no_scan,
-        )?;
+    let groups = usage_groups(group_by, summaries, &model_summaries);
+    let totals = usage_total(&groups);
+    let requested_clients = client.iter().cloned().collect::<Vec<_>>();
+    let available_clients = groups
+        .iter()
+        .map(|summary| summary.client.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let missing_clients = if let Some(client) = client.as_ref() {
+        if available_clients.iter().any(|value| value == client) {
+            Vec::new()
+        } else {
+            vec![client.clone()]
+        }
     } else {
-        print_usage_table(
-            &client,
-            &window,
-            &summaries,
-            &diagnostics,
+        Vec::new()
+    };
+    let coverage_status = if diagnostics.is_empty() {
+        if totals.event_count == 0 {
+            "empty"
+        } else {
+            "complete"
+        }
+    } else if totals.event_count == 0 {
+        "unavailable"
+    } else {
+        "partial"
+    };
+    let total_cost_status = totals.cost_status.clone();
+
+    Ok(UsageReport {
+        query: UsageQuery {
+            client,
+            since_unix: Some(window.since_unix),
+            until_unix: Some(window.until_unix),
+            period: window.period,
+            group_by,
+            details,
+        },
+        totals,
+        groups,
+        freshness: UsageFreshness {
+            generated_at_unix,
+            last_scan_at_unix: (!no_scan).then_some(generated_at_unix),
+            stale: no_scan || !diagnostics.is_empty(),
+        },
+        coverage: UsageCoverage {
+            requested_clients,
+            available_clients,
+            missing_clients,
+            status: coverage_status.to_string(),
+        },
+        accounting: UsageAccounting {
+            quality: omx_core::UsageDataQuality::Parsed,
+            cost_status: total_cost_status,
+            note: usage_accounting_note().to_string(),
+        },
+        diagnostics,
+        scan: UsageReportScan {
+            enabled: !no_scan,
             scanned_events,
             inserted_events,
-            no_scan,
-        );
+        },
+    })
+}
+
+fn usage_groups(
+    group_by: UsageGroupBy,
+    summaries: Vec<UsageSummary>,
+    model_summaries: &[UsageSummary],
+) -> Vec<UsageSummary> {
+    if matches!(group_by, UsageGroupBy::Client) {
+        return summaries
+            .into_iter()
+            .map(|mut summary| {
+                summary.top_model = top_model_for_client(model_summaries, &summary.client);
+                summary
+            })
+            .collect();
+    }
+    if matches!(group_by, UsageGroupBy::Model) {
+        return summaries
+            .into_iter()
+            .map(|mut summary| {
+                summary.top_model = summary.model.clone();
+                summary
+            })
+            .collect();
     }
 
-    Ok(())
+    let mut by_day = std::collections::BTreeMap::<String, UsageSummary>::new();
+    for summary in summaries {
+        let day = summary
+            .local_day
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+        by_day
+            .entry(day.clone())
+            .or_insert_with(|| {
+                let mut total = UsageSummary::empty("all");
+                total.local_day = Some(day);
+                total
+            })
+            .add(&summary);
+    }
+    by_day
+        .into_values()
+        .map(|mut summary| {
+            if let Some(day) = summary.local_day.as_deref() {
+                summary.top_model = top_model_for_day(model_summaries, day);
+            }
+            summary
+        })
+        .collect()
+}
+
+fn top_model_for_client(model_summaries: &[UsageSummary], client: &str) -> Option<String> {
+    model_summaries
+        .iter()
+        .filter(|summary| summary.client == client)
+        .max_by_key(|summary| summary.normalized_total_tokens)
+        .and_then(|summary| summary.model.clone())
+}
+
+fn top_model_for_day(model_summaries: &[UsageSummary], day: &str) -> Option<String> {
+    model_summaries
+        .iter()
+        .filter(|summary| summary.local_day.as_deref() == Some(day))
+        .max_by_key(|summary| summary.normalized_total_tokens)
+        .and_then(|summary| summary.model.clone())
+}
+
+fn usage_total(summaries: &[UsageSummary]) -> UsageSummary {
+    let mut total = UsageSummary::empty("all");
+    for summary in summaries {
+        total.add(summary);
+    }
+    total
 }
 
 #[derive(Debug, Clone)]
 struct UsageWindow {
     since_unix: i64,
     until_unix: i64,
-    since_display: String,
-    until_display: String,
-    timezone: String,
+    period: UsagePeriod,
 }
 
-fn usage_window(since: Option<&str>, until: Option<&str>) -> Result<UsageWindow> {
+fn usage_window(
+    period: Option<UsagePeriodArg>,
+    since: Option<&str>,
+    until: Option<&str>,
+) -> Result<UsageWindow> {
+    if (since.is_some() || until.is_some()) && period.is_some() {
+        bail!("usage --period cannot be combined with --since or --until");
+    }
     let today = Local::now().date_naive();
-    let since_unix = match since {
-        Some(value) => parse_usage_boundary(value, UsageBoundary::Start)?,
-        None => local_date_start_unix(today)?,
-    };
-    let until_unix = match until {
-        Some(value) => parse_usage_boundary(value, UsageBoundary::End)?,
-        None => local_date_start_unix(today.succ_opt().context("invalid local date")?)?,
+    let (since_unix, until_unix, period) = if since.is_some() || until.is_some() {
+        (
+            match since {
+                Some(value) => parse_usage_boundary(value, UsageBoundary::Start)?,
+                None => local_date_start_unix(today)?,
+            },
+            match until {
+                Some(value) => parse_usage_boundary(value, UsageBoundary::End)?,
+                None => local_date_start_unix(today.succ_opt().context("invalid local date")?)?,
+            },
+            UsagePeriod::Custom,
+        )
+    } else {
+        usage_period_window(period.unwrap_or(UsagePeriodArg::SevenDays), today)?
     };
     if since_unix >= until_unix {
         bail!("usage window must have --since earlier than --until");
@@ -587,10 +815,39 @@ fn usage_window(since: Option<&str>, until: Option<&str>) -> Result<UsageWindow>
     Ok(UsageWindow {
         since_unix,
         until_unix,
-        since_display: display_usage_timestamp(since_unix),
-        until_display: display_usage_timestamp(until_unix),
-        timezone: Local::now().offset().to_string(),
+        period,
     })
+}
+
+fn usage_period_window(
+    period: UsagePeriodArg,
+    today: NaiveDate,
+) -> Result<(i64, i64, UsagePeriod)> {
+    let until = local_date_start_unix(today.succ_opt().context("invalid local date")?)?;
+    match period {
+        UsagePeriodArg::Today => Ok((local_date_start_unix(today)?, until, UsagePeriod::Today)),
+        UsagePeriodArg::SevenDays => Ok((
+            local_date_start_unix(today - Duration::days(6))?,
+            until,
+            UsagePeriod::SevenDays,
+        )),
+        UsagePeriodArg::ThirtyDays => Ok((
+            local_date_start_unix(today - Duration::days(29))?,
+            until,
+            UsagePeriod::ThirtyDays,
+        )),
+        UsagePeriodArg::All => Ok((0, i64::MAX, UsagePeriod::All)),
+    }
+}
+
+fn usage_group_by(group_by: Option<UsageGroupByArg>, period: &UsagePeriod) -> UsageGroupBy {
+    match group_by {
+        Some(UsageGroupByArg::Client) => UsageGroupBy::Client,
+        Some(UsageGroupByArg::Day) => UsageGroupBy::Day,
+        Some(UsageGroupByArg::Model) => UsageGroupBy::Model,
+        None if matches!(period, UsagePeriod::Today | UsagePeriod::Custom) => UsageGroupBy::Client,
+        None => UsageGroupBy::Day,
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -629,76 +886,123 @@ fn display_usage_timestamp(timestamp: i64) -> String {
         .unwrap_or_else(|| timestamp.to_string())
 }
 
-fn print_usage_table(
-    client: &Option<String>,
-    window: &UsageWindow,
-    summaries: &[UsageSummary],
-    diagnostics: &[UsageScanDiagnostic],
-    scanned_events: usize,
-    inserted_events: usize,
-    no_scan: bool,
-) {
+fn print_usage_table(report: &UsageReport) {
     print_section(format!(
         "Usage: {} · {} to {} · {}",
-        client.as_deref().unwrap_or("all"),
-        window.since_display,
-        window.until_display,
-        window.timezone
+        report.query.client.as_deref().unwrap_or("all"),
+        display_usage_timestamp(report.query.since_unix.unwrap_or_default()),
+        display_usage_timestamp(report.query.until_unix.unwrap_or_default()),
+        Local::now().offset()
     ));
-    if no_scan {
+    println!(
+        "Total: {} tokens · cost {} · coverage {}",
+        report.totals.normalized_total_tokens,
+        usage_cost_display(&report.totals),
+        report.coverage.status
+    );
+    if !report.coverage.available_clients.is_empty() {
+        print_hint(format!(
+            "clients: {}",
+            report.coverage.available_clients.join(", ")
+        ));
+    }
+    if !report.scan.enabled {
         print_hint("scan skipped; showing cached usage only");
     } else {
         print_hint(format!(
-            "scanned {scanned_events} events, inserted {inserted_events} new events"
+            "scanned {} events, inserted {} new events",
+            report.scan.scanned_events, report.scan.inserted_events
         ));
     }
     print_hint(usage_accounting_note());
 
     let mut table = view_table();
-    table.set_header(vec![
-        header_cell("Client"),
-        header_cell("Provider"),
-        header_cell("Model"),
-        header_cell("Input"),
-        header_cell("Output"),
-        header_cell("Cache R"),
-        header_cell("Cache W"),
-        header_cell("Reasoning"),
-        header_cell("Total"),
-        header_cell("Provider Total"),
-        header_cell("Cost"),
-        header_cell("Quality"),
-        header_cell("Events"),
-    ]);
-
-    for summary in summaries {
-        table.add_row(vec![
-            Cell::new(&summary.client).add_attribute(Attribute::Bold),
-            text_or_empty_cell(summary.model_provider.as_deref()),
-            text_or_empty_cell(summary.model.as_deref()),
-            Cell::new(summary.tokens.input),
-            Cell::new(summary.tokens.output),
-            Cell::new(summary.tokens.cache_read),
-            Cell::new(summary.tokens.cache_write),
-            Cell::new(summary.tokens.reasoning),
-            Cell::new(summary.normalized_total_tokens),
-            summary
-                .provider_total_tokens
-                .map(Cell::new)
-                .unwrap_or_else(|| muted_cell("-")),
-            Cell::new(usage_cost_display(summary)),
-            Cell::new(usage_quality_display(summary)),
-            Cell::new(summary.event_count),
+    if report.query.details {
+        let mut header = vec![header_cell(usage_group_label(report.query.group_by))];
+        if !matches!(report.query.group_by, UsageGroupBy::Model) {
+            header.push(header_cell("Top Model"));
+        }
+        header.extend(vec![
+            header_cell("Input"),
+            header_cell("Output"),
+            header_cell("Cache Read"),
+            header_cell("Cache Write"),
+            header_cell("Reasoning"),
+            header_cell("Total"),
+            header_cell("Provider Total"),
+            header_cell("Cost"),
+            header_cell("Quality"),
+            header_cell("Events"),
+            header_cell("Of Total"),
         ]);
+        table.set_header(header);
+        for summary in &report.groups {
+            let mut row = vec![
+                Cell::new(usage_group_value(report.query.group_by, summary))
+                    .add_attribute(Attribute::Bold),
+            ];
+            if !matches!(report.query.group_by, UsageGroupBy::Model) {
+                row.push(text_or_empty_cell(summary.top_model.as_deref()));
+            }
+            row.extend(vec![
+                Cell::new(summary.tokens.input),
+                Cell::new(summary.tokens.output),
+                Cell::new(summary.tokens.cache_read),
+                Cell::new(summary.tokens.cache_write),
+                Cell::new(summary.tokens.reasoning),
+                Cell::new(summary.normalized_total_tokens),
+                summary
+                    .provider_total_tokens
+                    .map(Cell::new)
+                    .unwrap_or_else(|| muted_cell("-")),
+                Cell::new(usage_cost_display(summary)),
+                Cell::new(usage_quality_display(summary)),
+                Cell::new(summary.event_count),
+                Cell::new(usage_share(summary, &report.totals)),
+            ]);
+            table.add_row(row);
+        }
+    } else {
+        let mut header = vec![header_cell(usage_group_label(report.query.group_by))];
+        if !matches!(report.query.group_by, UsageGroupBy::Model) {
+            header.push(header_cell("Top Model"));
+        }
+        header.extend(vec![
+            header_cell("In"),
+            header_cell("Out"),
+            header_cell("Total Tokens"),
+            header_cell("Cost"),
+            header_cell("Events"),
+            header_cell("Of Total"),
+        ]);
+        table.set_header(header);
+        for summary in &report.groups {
+            let mut row = vec![
+                Cell::new(usage_group_value(report.query.group_by, summary))
+                    .add_attribute(Attribute::Bold),
+            ];
+            if !matches!(report.query.group_by, UsageGroupBy::Model) {
+                row.push(text_or_empty_cell(summary.top_model.as_deref()));
+            }
+            row.extend(vec![
+                Cell::new(summary.tokens.input),
+                Cell::new(summary.tokens.output),
+                Cell::new(summary.normalized_total_tokens),
+                Cell::new(usage_cost_display(summary)),
+                Cell::new(summary.event_count),
+                Cell::new(usage_share(summary, &report.totals)),
+            ]);
+            table.add_row(row);
+        }
     }
 
-    if summaries.is_empty() {
+    if report.groups.is_empty() {
         println!("{}", muted("No usage events found for this window."));
     } else {
         println!("{table}");
     }
 
-    for diagnostic in diagnostics {
+    for diagnostic in &report.diagnostics {
         print_hint(format!(
             "usage diagnostic [{}]: {}",
             diagnostic.code,
@@ -707,66 +1011,20 @@ fn print_usage_table(
     }
 }
 
-fn print_usage_json(
-    client: &Option<String>,
-    window: &UsageWindow,
-    summaries: &[UsageSummary],
-    diagnostics: &[UsageScanDiagnostic],
-    scanned_events: usize,
-    inserted_events: usize,
-    no_scan: bool,
-) -> Result<()> {
-    let payload = usage_json_payload(
-        client,
-        window,
-        summaries,
-        diagnostics,
-        scanned_events,
-        inserted_events,
-        no_scan,
-    );
+fn print_usage_json(report: &UsageReport) -> Result<()> {
+    let payload = usage_json_payload(report);
     println!("{}", serde_json::to_string_pretty(&payload)?);
     Ok(())
 }
 
-fn usage_json_payload(
-    client: &Option<String>,
-    window: &UsageWindow,
-    summaries: &[UsageSummary],
-    diagnostics: &[UsageScanDiagnostic],
-    scanned_events: usize,
-    inserted_events: usize,
-    no_scan: bool,
-) -> Value {
-    let clients = summaries
+fn usage_json_payload(report: &UsageReport) -> Value {
+    let groups = report
+        .groups
         .iter()
-        .map(|summary| {
-            json!({
-                "client": summary.client,
-                "model_provider": summary.model_provider,
-                "model": summary.model,
-                "tokens": {
-                    "input": summary.tokens.input,
-                    "output": summary.tokens.output,
-                    "cache_read": summary.tokens.cache_read,
-                    "cache_write": summary.tokens.cache_write,
-                    "cache_write_5m": summary.tokens.cache_write_5m,
-                    "cache_write_1h": summary.tokens.cache_write_1h,
-                    "reasoning": summary.tokens.reasoning,
-                    "extra": summary.tokens.extra,
-                    "normalized_total": summary.normalized_total_tokens,
-                    "provider_total": summary.provider_total_tokens,
-                },
-                "cost": {
-                    "status": usage_cost_status_display(summary),
-                    "estimated_usd": summary.estimated_cost_usd,
-                },
-                "quality": usage_quality_display(summary),
-                "event_count": summary.event_count,
-            })
-        })
+        .map(usage_summary_json)
         .collect::<Vec<_>>();
-    let diagnostics = diagnostics
+    let diagnostics = report
+        .diagnostics
         .iter()
         .map(|diagnostic| {
             json!({
@@ -781,28 +1039,76 @@ fn usage_json_payload(
     json!({
         "schema_version": 1,
         "generated_at_unix": unix_now(),
-        "timezone": window.timezone,
+        "timezone": Local::now().offset().to_string(),
         "notes": {
             "usage": usage_accounting_note(),
             "cost": "cost is optional and may be missing or estimated unless reported by the source",
         },
         "window": {
-            "since_unix": window.since_unix,
-            "until_unix": window.until_unix,
-            "since": window.since_display,
-            "until": window.until_display,
+            "period": usage_period_label(&report.query.period),
+            "since_unix": report.query.since_unix,
+            "until_unix": report.query.until_unix,
+            "since": report.query.since_unix.map(display_usage_timestamp),
+            "until": report.query.until_unix.map(display_usage_timestamp),
         },
         "scan": {
-            "enabled": !no_scan,
-            "scanned_events": scanned_events,
-            "inserted_events": inserted_events,
+            "enabled": report.scan.enabled,
+            "scanned_events": report.scan.scanned_events,
+            "inserted_events": report.scan.inserted_events,
         },
         "filter": {
-            "client": client,
+            "client": report.query.client,
         },
+        "group_by": usage_group_by_label(report.query.group_by),
         "quality": "parsed",
-        "clients": clients,
+        "totals": usage_summary_json(&report.totals),
+        "groups": groups,
+        "clients": report.groups.iter().filter(|summary| summary.client != "all").map(usage_summary_json).collect::<Vec<_>>(),
+        "freshness": {
+            "generated_at_unix": report.freshness.generated_at_unix,
+            "last_scan_at_unix": report.freshness.last_scan_at_unix,
+            "stale": report.freshness.stale,
+        },
+        "coverage": {
+            "status": report.coverage.status,
+            "requested_clients": report.coverage.requested_clients,
+            "available_clients": report.coverage.available_clients,
+            "missing_clients": report.coverage.missing_clients,
+        },
+        "accounting": {
+            "quality": usage_quality_label(&report.accounting.quality),
+            "cost_status": usage_cost_status_label(&report.accounting.cost_status),
+            "note": report.accounting.note,
+        },
         "diagnostics": diagnostics,
+    })
+}
+
+fn usage_summary_json(summary: &UsageSummary) -> Value {
+    json!({
+        "client": summary.client,
+        "local_day": summary.local_day,
+        "model_provider": summary.model_provider,
+        "model": summary.model,
+        "top_model": summary.top_model,
+        "tokens": {
+            "input": summary.tokens.input,
+            "output": summary.tokens.output,
+            "cache_read": summary.tokens.cache_read,
+            "cache_write": summary.tokens.cache_write,
+            "cache_write_5m": summary.tokens.cache_write_5m,
+            "cache_write_1h": summary.tokens.cache_write_1h,
+            "reasoning": summary.tokens.reasoning,
+            "extra": summary.tokens.extra,
+            "normalized_total": summary.normalized_total_tokens,
+            "provider_total": summary.provider_total_tokens,
+        },
+        "cost": {
+            "status": usage_cost_status_display(summary),
+            "estimated_usd": summary.estimated_cost_usd,
+        },
+        "quality": usage_quality_display(summary),
+        "event_count": summary.event_count,
     })
 }
 
@@ -813,12 +1119,66 @@ fn usage_cost_display(summary: &UsageSummary) -> String {
     }
 }
 
+fn usage_share(summary: &UsageSummary, total: &UsageSummary) -> String {
+    if total.normalized_total_tokens == 0 {
+        return "-".to_string();
+    }
+    format!(
+        "{}%",
+        summary.normalized_total_tokens.saturating_mul(100) / total.normalized_total_tokens
+    )
+}
+
+fn usage_group_label(group_by: UsageGroupBy) -> &'static str {
+    match group_by {
+        UsageGroupBy::Client => "Client",
+        UsageGroupBy::Day => "Day",
+        UsageGroupBy::Model => "Model",
+    }
+}
+
+fn usage_group_value(group_by: UsageGroupBy, summary: &UsageSummary) -> String {
+    match group_by {
+        UsageGroupBy::Client => summary.client.clone(),
+        UsageGroupBy::Day => summary
+            .local_day
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string()),
+        UsageGroupBy::Model => summary
+            .model
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string()),
+    }
+}
+
+fn usage_period_label(period: &UsagePeriod) -> &'static str {
+    match period {
+        UsagePeriod::Today => "today",
+        UsagePeriod::SevenDays => "7d",
+        UsagePeriod::ThirtyDays => "30d",
+        UsagePeriod::All => "all",
+        UsagePeriod::Custom => "custom",
+    }
+}
+
+fn usage_group_by_label(group_by: UsageGroupBy) -> &'static str {
+    match group_by {
+        UsageGroupBy::Client => "client",
+        UsageGroupBy::Day => "day",
+        UsageGroupBy::Model => "model",
+    }
+}
+
 fn usage_accounting_note() -> &'static str {
     "parsed local usage; not provider billing or exact quota accounting"
 }
 
 fn usage_cost_status_display(summary: &UsageSummary) -> &'static str {
-    match summary.cost_status {
+    usage_cost_status_label(&summary.cost_status)
+}
+
+fn usage_cost_status_label(status: &omx_core::CostStatus) -> &'static str {
+    match status {
         omx_core::CostStatus::ProviderReported => "provider_reported",
         omx_core::CostStatus::Estimated => "estimated",
         omx_core::CostStatus::Missing => "missing",
@@ -827,7 +1187,11 @@ fn usage_cost_status_display(summary: &UsageSummary) -> &'static str {
 }
 
 fn usage_quality_display(summary: &UsageSummary) -> &'static str {
-    match summary.quality {
+    usage_quality_label(&summary.quality)
+}
+
+fn usage_quality_label(quality: &omx_core::UsageDataQuality) -> &'static str {
+    match quality {
         omx_core::UsageDataQuality::Parsed => "parsed",
     }
 }
@@ -866,25 +1230,26 @@ enum ImportKind {
     Profile,
 }
 
-fn use_resolved_target(plugin: &dyn PlatformPlugin, selector: &str) -> Result<UseReport> {
-    let target = resolve_target(plugin, selector)?;
-    Ok(plugin.use_target(&target.target_id)?)
+fn use_resolved_target(plugin: &dyn PlatformPlugin, selector: &str) -> Result<omx_core::UseReport> {
+    Ok(omx_app::use_resolved_target(plugin, selector)?)
 }
 
-fn remove_resolved_target(plugin: &dyn PlatformPlugin, selector: &str) -> Result<RemoveReport> {
-    let target = resolve_target(plugin, selector)?;
-    Ok(plugin.remove_target(&target.target_id)?)
+fn remove_resolved_target(
+    plugin: &dyn PlatformPlugin,
+    selector: &str,
+) -> Result<omx_core::RemoveReport> {
+    Ok(omx_app::remove_resolved_target(plugin, selector)?)
 }
 
-fn resolve_target(plugin: &dyn PlatformPlugin, selector: &str) -> Result<TargetResolution> {
-    Ok(load_target_catalog(plugin)?.resolve(plugin.id(), selector)?)
+fn resolve_target(
+    plugin: &dyn PlatformPlugin,
+    selector: &str,
+) -> Result<omx_core::TargetResolution> {
+    Ok(omx_app::resolve_target(plugin, selector)?)
 }
 
-fn load_target_catalog(plugin: &dyn PlatformPlugin) -> Result<TargetCatalog> {
-    Ok(TargetCatalog::new(
-        plugin.list_accounts()?,
-        plugin.list_configs()?,
-    ))
+fn load_target_catalog(plugin: &dyn PlatformPlugin) -> Result<omx_core::TargetCatalog> {
+    Ok(omx_app::target_catalog(plugin)?)
 }
 
 fn target_choice_from_account(
@@ -942,9 +1307,8 @@ fn target_choice_from_profile(
 }
 
 fn print_aggregated_current(plugin: &dyn PlatformPlugin) -> Result<()> {
-    let account = plugin.current()?;
-    let profile = plugin
-        .list_configs()?
+    let account = omx_app::active_account_status(plugin)?;
+    let profile = omx_app::config_profiles(plugin)?
         .into_iter()
         .find(|profile| profile.active);
 
@@ -992,14 +1356,14 @@ fn print_platform_accounts(plugin: &dyn PlatformPlugin) -> Result<()> {
     }
 
     if capabilities.profiles {
-        let profiles = plugin.list_configs()?;
+        let profiles = omx_app::config_profiles(plugin)?;
         print_platform_profiles(plugin, &profiles);
     }
     Ok(())
 }
 
 fn print_account_section(title_name: &str, plugin: &dyn PlatformPlugin) -> Result<()> {
-    let accounts = plugin.list_accounts()?;
+    let accounts = omx_app::account_statuses(plugin)?;
     print_account_section_from_statuses(title_name, &accounts, None);
     Ok(())
 }
@@ -1123,16 +1487,14 @@ fn account_table_row(status: &AccountStatus, display_number: u32) -> Vec<Cell> {
 }
 
 fn choose_target(plugin: &dyn PlatformPlugin, use_display_selector: bool) -> Result<String> {
-    let accounts = plugin.list_accounts()?;
-    let profiles = plugin.list_configs()?;
-    if accounts.is_empty() && profiles.is_empty() {
+    let catalog = load_target_catalog(plugin)?;
+    if catalog.accounts.is_empty() && catalog.profiles.is_empty() {
         bail!(
             "no saved accounts or profiles for platform `{}`",
             plugin.id()
         );
     }
 
-    let catalog = TargetCatalog::new(accounts, profiles);
     let mut options: Vec<TargetChoice> = catalog
         .accounts
         .iter()
@@ -1673,8 +2035,10 @@ mod tests {
     fn missing_usage_cost_does_not_render_zero_dollars() {
         let summary = UsageSummary {
             client: "codex".to_string(),
+            local_day: None,
             model_provider: None,
             model: None,
+            top_model: None,
             project_path: None,
             session_id: None,
             tokens: UsageTokenBreakdown::default(),
@@ -1691,18 +2055,9 @@ mod tests {
 
     #[test]
     fn usage_json_payload_contains_versioned_empty_no_scan_shape() {
-        let window = UsageWindow {
-            since_unix: 1_782_144_000,
-            until_unix: 1_782_230_400,
-            since_display: "2026-06-23 00:00:00".to_string(),
-            until_display: "2026-06-24 00:00:00".to_string(),
-            timezone: "+08:00".to_string(),
-        };
-
-        let payload = usage_json_payload(&None, &window, &[], &[], 0, 0, true);
+        let payload = usage_json_payload(&test_usage_report(Vec::new(), Vec::new(), true));
 
         assert_eq!(payload["schema_version"], 1);
-        assert_eq!(payload["timezone"], "+08:00");
         assert_eq!(
             payload["notes"]["usage"],
             "parsed local usage; not provider billing or exact quota accounting"
@@ -1713,20 +2068,15 @@ mod tests {
         );
         assert_eq!(payload["window"]["since_unix"], 1_782_144_000);
         assert_eq!(payload["window"]["until_unix"], 1_782_230_400);
+        assert_eq!(payload["totals"]["tokens"]["normalized_total"], 0);
         assert_eq!(payload["scan"]["enabled"], false);
         assert_eq!(payload["clients"].as_array().unwrap().len(), 0);
+        assert_eq!(payload["groups"].as_array().unwrap().len(), 0);
         assert_eq!(payload["diagnostics"].as_array().unwrap().len(), 0);
     }
 
     #[test]
     fn usage_json_payload_redacts_sensitive_diagnostics() {
-        let window = UsageWindow {
-            since_unix: 1_782_144_000,
-            until_unix: 1_782_230_400,
-            since_display: "2026-06-23 00:00:00".to_string(),
-            until_display: "2026-06-24 00:00:00".to_string(),
-            timezone: "+08:00".to_string(),
-        };
         let diagnostics = vec![
             UsageScanDiagnostic {
                 client: Some("codex".to_string()),
@@ -1744,7 +2094,7 @@ mod tests {
             },
         ];
 
-        let payload = usage_json_payload(&None, &window, &[], &diagnostics, 0, 0, false);
+        let payload = usage_json_payload(&test_usage_report(Vec::new(), diagnostics, false));
         let rendered = serde_json::to_string(&payload).unwrap();
 
         assert!(rendered.contains("[redacted sensitive diagnostic]"));
@@ -1753,6 +2103,91 @@ mod tests {
         assert!(!rendered.contains("secret"));
         assert!(!rendered.contains("sk-secret"));
         assert!(!rendered.contains("bye"));
+    }
+
+    #[test]
+    fn usage_json_payload_preserves_partial_coverage() {
+        let summary = UsageSummary {
+            client: "codex".to_string(),
+            local_day: None,
+            model_provider: None,
+            model: None,
+            top_model: Some("gpt-5".to_string()),
+            project_path: None,
+            session_id: None,
+            tokens: UsageTokenBreakdown {
+                input: 2,
+                output: 3,
+                ..UsageTokenBreakdown::default()
+            },
+            normalized_total_tokens: 5,
+            provider_total_tokens: None,
+            estimated_cost_usd: None,
+            cost_status: CostStatus::Missing,
+            quality: UsageDataQuality::Parsed,
+            event_count: 1,
+        };
+        let diagnostics = vec![UsageScanDiagnostic {
+            client: Some("codex".to_string()),
+            source_kind: Some("tokscale-local".to_string()),
+            code: "scan_failed".to_string(),
+            message: "local usage scan failed".to_string(),
+        }];
+        let mut report = test_usage_report(vec![summary], diagnostics, false);
+        report.coverage = UsageCoverage {
+            requested_clients: vec!["codex".to_string()],
+            available_clients: vec!["codex".to_string()],
+            missing_clients: Vec::new(),
+            status: "partial".to_string(),
+        };
+        report.freshness.stale = true;
+
+        let payload = usage_json_payload(&report);
+
+        assert_eq!(payload["coverage"]["status"], "partial");
+        assert_eq!(payload["clients"][0]["client"], "codex");
+        assert_eq!(payload["diagnostics"][0]["code"], "scan_failed");
+    }
+
+    fn test_usage_report(
+        groups: Vec<UsageSummary>,
+        diagnostics: Vec<UsageScanDiagnostic>,
+        no_scan: bool,
+    ) -> UsageReport {
+        UsageReport {
+            query: UsageQuery {
+                client: None,
+                since_unix: Some(1_782_144_000),
+                until_unix: Some(1_782_230_400),
+                period: UsagePeriod::Custom,
+                group_by: UsageGroupBy::Client,
+                details: false,
+            },
+            totals: usage_total(&groups),
+            groups,
+            freshness: UsageFreshness {
+                generated_at_unix: 1,
+                last_scan_at_unix: (!no_scan).then_some(1),
+                stale: no_scan,
+            },
+            coverage: UsageCoverage {
+                requested_clients: Vec::new(),
+                available_clients: Vec::new(),
+                missing_clients: Vec::new(),
+                status: "empty".to_string(),
+            },
+            accounting: UsageAccounting {
+                quality: UsageDataQuality::Parsed,
+                cost_status: CostStatus::Missing,
+                note: usage_accounting_note().to_string(),
+            },
+            diagnostics,
+            scan: UsageReportScan {
+                enabled: !no_scan,
+                scanned_events: 0,
+                inserted_events: 0,
+            },
+        }
     }
 
     #[test]
@@ -1780,21 +2215,21 @@ mod tests {
 
         assert_eq!(
             resolve_target(&plugin, "1").unwrap(),
-            TargetResolution {
+            omx_core::TargetResolution {
                 kind: TargetKind::Account,
                 target_id: "claude-account-1".to_string()
             }
         );
         assert_eq!(
             resolve_target(&plugin, "3").unwrap(),
-            TargetResolution {
+            omx_core::TargetResolution {
                 kind: TargetKind::Profile,
                 target_id: "claude-profile-gateway".to_string()
             }
         );
         assert_eq!(
             resolve_target(&plugin, "gateway").unwrap(),
-            TargetResolution {
+            omx_core::TargetResolution {
                 kind: TargetKind::Profile,
                 target_id: "claude-profile-gateway".to_string()
             }
@@ -1818,7 +2253,7 @@ mod tests {
 
         assert_eq!(
             resolve_target(&plugin, "4").unwrap(),
-            TargetResolution {
+            omx_core::TargetResolution {
                 kind: TargetKind::Profile,
                 target_id: "codex-profile-api-apikey-fun".to_string()
             }

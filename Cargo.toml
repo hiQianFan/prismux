@@ -2,6 +2,8 @@
 resolver = "3"
 members = [
   "crates/omx-core",
+  "crates/omx-app",
+  "crates/omx-menubar-ffi",
   "crates/omx-plugin-codex",
   "crates/omx-plugin-claude",
   "crates/omx-usage-tokscale",

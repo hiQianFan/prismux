@@ -16,6 +16,9 @@ pub trait PlatformPlugin {
     fn pool_summary(&self) -> Result<PlatformPoolSummary>;
     fn current(&self) -> Result<Option<AccountStatus>>;
     fn list_accounts(&self) -> Result<Vec<AccountStatus>>;
+    fn refresh_accounts(&self) -> Result<Vec<AccountStatus>> {
+        self.list_accounts()
+    }
     fn list_configs(&self) -> Result<Vec<ConfigProfile>> {
         Ok(Vec::new())
     }

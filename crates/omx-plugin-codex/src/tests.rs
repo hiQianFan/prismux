@@ -757,7 +757,7 @@ fn use_target_rejects_account_profile_selector_ambiguity() {
 }
 
 #[test]
-fn codex_account_switch_preserves_active_provider_and_live_config() {
+fn codex_account_switch_deactivates_managed_provider_config() {
     let temp = test_temp_dir("active-account-provider-independent");
     let codex_home = temp.join("codex-home");
     let state_root = temp.join("openmux-state");
@@ -786,8 +786,8 @@ fn codex_account_switch_preserves_active_provider_and_live_config() {
         .unwrap();
     plugin.use_target("gateway").unwrap();
 
-    assert!(plugin.current().unwrap().is_some());
-    assert!(plugin.list_accounts().unwrap()[0].active);
+    assert!(plugin.current().unwrap().is_none());
+    assert!(!plugin.list_accounts().unwrap()[0].active);
     assert!(
         plugin
             .list_configs()
@@ -807,7 +807,7 @@ fn codex_account_switch_preserves_active_provider_and_live_config() {
 
     assert_eq!(plugin.current().unwrap().unwrap().account.number, 1);
     assert!(
-        plugin
+        !plugin
             .list_configs()
             .unwrap()
             .into_iter()
@@ -815,10 +815,10 @@ fn codex_account_switch_preserves_active_provider_and_live_config() {
             .unwrap()
             .active
     );
-    assert_eq!(
-        fs::read(codex_home.join("config.toml")).unwrap(),
-        provider_config
-    );
+    let account_text = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+    assert!(!account_text.contains("model_provider = \"openmux-gateway\""));
+    assert!(account_text.contains("[model_providers.openmux-gateway]"));
+    assert!(account_text.contains("[plugins.\"ponytail@ponytail\"]"));
 }
 
 #[test]
@@ -1158,7 +1158,7 @@ fn parses_codex_usage_windows_as_structured_limits() {
 }
 
 #[test]
-fn list_accounts_keeps_last_usage_snapshot_when_refresh_fails() {
+fn list_accounts_uses_cached_usage_without_refreshing_remote_quota() {
     let temp = test_temp_dir("usage-refresh-fallback");
     let codex_home = temp.join("codex-home");
     let state_root = temp.join("openmux-state");
@@ -1207,7 +1207,46 @@ fn list_accounts_keeps_last_usage_snapshot_when_refresh_fails() {
     assert_eq!(usage.source, UsageSource::StoredSnapshot);
     assert_eq!(usage.refreshed_at_unix, Some(1_785_000_000));
     assert_eq!(usage.limits[0].remaining_percent_x100, Some(7_200));
-    assert_eq!(usage.diagnostics[0].code, "auth");
+    assert!(usage.diagnostics.is_empty());
+}
+
+#[test]
+fn refresh_accounts_refreshes_usage_for_every_saved_account() {
+    let temp = test_temp_dir("refresh-all-usage");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    let plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+
+    fs::write(codex_home.join(AUTH_FILE_NAME), br#"{"account":"first"}"#).unwrap();
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("first".to_string()),
+        })
+        .unwrap();
+
+    fs::write(codex_home.join(AUTH_FILE_NAME), br#"{"account":"second"}"#).unwrap();
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("second".to_string()),
+        })
+        .unwrap();
+
+    plugin.switch_to("1").unwrap();
+
+    let accounts = plugin.refresh_accounts().unwrap();
+
+    assert_eq!(accounts.len(), 2);
+    assert!(accounts[0].active);
+    assert!(!accounts[1].active);
+    assert_eq!(
+        accounts[0].usage.as_ref().unwrap().diagnostics[0].code,
+        "auth"
+    );
+    assert_eq!(
+        accounts[1].usage.as_ref().unwrap().diagnostics[0].code,
+        "auth"
+    );
 }
 
 #[test]

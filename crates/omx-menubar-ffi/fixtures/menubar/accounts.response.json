@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "ok": true,
+  "data": {
+    "generated_at_unix": 0,
+    "providers": [
+      "codex"
+    ],
+    "accounts": [],
+    "profiles": [],
+    "active_local_id": null,
+    "active_target_key": null,
+    "active_target_kind": null,
+    "diagnostics": []
+  },
+  "request_id": "accounts-fixture"
+}

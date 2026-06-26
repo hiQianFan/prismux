@@ -1013,6 +1013,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "omx-app"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "omx-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "omx-cli"
 version = "0.1.0"
 dependencies = [
@@ -1023,6 +1035,7 @@ dependencies = [
  "clap",
  "comfy-table",
  "inquire",
+ "omx-app",
  "omx-core",
  "omx-plugin-claude",
  "omx-plugin-codex",
@@ -1039,6 +1052,20 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "omx-menubar-ffi"
+version = "0.1.0"
+dependencies = [
+ "omx-app",
+ "omx-core",
+ "omx-plugin-claude",
+ "omx-plugin-codex",
+ "omx-usage-tokscale",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1067,6 +1094,7 @@ version = "0.1.0"
 dependencies = [
  "omx-core",
  "tempfile",
+ "tokio",
  "tokscale-core",
 ]
 

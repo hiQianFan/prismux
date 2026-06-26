@@ -26,6 +26,8 @@ fn usage_no_scan_json_returns_empty_versioned_payload() {
     assert_eq!(payload["scan"]["enabled"], false);
     assert_eq!(payload["scan"]["scanned_events"], 0);
     assert_eq!(payload["scan"]["inserted_events"], 0);
+    assert_eq!(payload["window"]["period"], "7d");
+    assert_eq!(payload["group_by"], "day");
     assert_eq!(payload["quality"], "parsed");
     assert_eq!(payload["clients"].as_array().unwrap().len(), 0);
     assert_eq!(payload["diagnostics"].as_array().unwrap().len(), 0);
@@ -90,6 +92,8 @@ fn usage_json_missing_local_source_returns_empty_summary_without_fake_usage() {
             "2026-04-30",
             "--until",
             "2026-04-30",
+            "--group-by",
+            "model",
             "--json",
         ],
         Some(&home),
@@ -130,8 +134,6 @@ fn usage_json_scans_codex_fixture_ingests_and_summarizes() {
     assert_eq!(payload["scan"]["inserted_events"], 1);
     assert_eq!(clients.len(), 1);
     assert_eq!(clients[0]["client"], "codex");
-    assert_eq!(clients[0]["model_provider"], "openai");
-    assert_eq!(clients[0]["model"], "gpt-5");
     assert_eq!(clients[0]["tokens"]["input"], 8);
     assert_eq!(clients[0]["tokens"]["cache_read"], 2);
     assert_eq!(clients[0]["tokens"]["output"], 3);
@@ -141,6 +143,78 @@ fn usage_json_scans_codex_fixture_ingests_and_summarizes() {
     assert_eq!(clients[0]["quality"], "parsed");
     assert_eq!(clients[0]["event_count"], 1);
     assert_eq!(payload["diagnostics"].as_array().unwrap().len(), 0);
+
+    fs::remove_dir_all(&home).unwrap();
+}
+
+#[test]
+fn usage_human_default_shows_top_model_and_of_total() {
+    let home = unique_temp_root("openmux-usage-cli-home");
+    write_gemini_session_fixture(&home);
+
+    let output = run_omx_usage_with_home(
+        &[
+            "usage",
+            "gemini",
+            "--since",
+            "2026-04-01",
+            "--until",
+            "2026-04-01",
+        ],
+        Some(&home),
+    );
+    assert_command_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(stdout.contains("Top Model"), "{stdout}");
+    assert!(stdout.contains("In"), "{stdout}");
+    assert!(stdout.contains("Out"), "{stdout}");
+    assert!(stdout.contains("Of Total"), "{stdout}");
+    assert!(stdout.contains("gemini-2.5-pro"), "{stdout}");
+    assert!(!stdout.contains("Share"), "{stdout}");
+
+    fs::remove_dir_all(&home).unwrap();
+}
+
+#[test]
+fn usage_period_conflicts_with_explicit_range() {
+    let output = run_omx_usage(&["usage", "--period", "7d", "--since", "2026-04-01", "--json"]);
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("usage --period cannot be combined with --since or --until")
+    );
+}
+
+#[test]
+fn usage_group_by_day_reports_daily_rows() {
+    let home = unique_temp_root("openmux-usage-cli-home");
+    write_gemini_multi_day_fixture(&home);
+
+    let payload = parse_json_stdout(run_omx_usage_with_home(
+        &[
+            "usage",
+            "gemini",
+            "--since",
+            "2026-04-01",
+            "--until",
+            "2026-04-30",
+            "--group-by",
+            "day",
+            "--json",
+        ],
+        Some(&home),
+    ));
+    let groups = payload["groups"].as_array().unwrap();
+
+    assert_eq!(payload["group_by"], "day");
+    assert_eq!(groups.len(), 2, "{payload}");
+    assert_eq!(payload["totals"]["tokens"]["normalized_total"], 280);
+    assert_eq!(groups[0]["local_day"], "2026-04-01");
+    assert_eq!(groups[0]["tokens"]["normalized_total"], 140);
+    assert_eq!(groups[1]["local_day"], "2026-04-30");
+    assert_eq!(groups[1]["tokens"]["normalized_total"], 140);
 
     fs::remove_dir_all(&home).unwrap();
 }
@@ -158,6 +232,8 @@ fn usage_json_scans_claude_fixture_ingests_and_summarizes() {
             "2026-04-01",
             "--until",
             "2026-04-01",
+            "--group-by",
+            "model",
             "--json",
         ],
         Some(&home),
@@ -197,6 +273,8 @@ fn usage_json_scans_gemini_fixture_ingests_and_summarizes() {
             "2026-04-01",
             "--until",
             "2026-04-01",
+            "--group-by",
+            "model",
             "--json",
         ],
         Some(&home),
@@ -381,12 +459,26 @@ fn usage_scan_diagnostic_does_not_break_account_commands() {
         run_omx_usage_with_home_and_state(&["save", "codex"], Some(&home), &state_root);
     assert_command_success(&save_personal);
 
-    let usage = parse_json_stdout(run_omx_usage_with_home_and_state(
+    let empty_usage = parse_json_stdout(run_omx_usage_with_home_and_state(
+        &["usage", "codex", "--json"],
+        Some(&home),
+        &state_root,
+    ));
+    assert_eq!(empty_usage["scan"]["enabled"], true);
+    assert_eq!(empty_usage["scan"]["scanned_events"], 0);
+    assert_eq!(empty_usage["coverage"]["status"], "empty");
+
+    let usage_diagnostic = parse_json_stdout(run_omx_usage_with_home_and_state(
         &["usage", "cursor", "--json"],
         Some(&home),
         &state_root,
     ));
-    assert_eq!(usage["diagnostics"][0]["code"], "unsupported_client");
+    assert_eq!(
+        usage_diagnostic["diagnostics"][0]["code"],
+        "unsupported_client"
+    );
+    assert_eq!(usage_diagnostic["coverage"]["status"], "unavailable");
+    assert_eq!(usage_diagnostic["coverage"]["missing_clients"][0], "cursor");
 
     let use_work =
         run_omx_usage_with_home_and_state(&["use", "codex", "work"], Some(&home), &state_root);
@@ -406,12 +498,32 @@ fn usage_scan_diagnostic_does_not_break_account_commands() {
     assert!(list_stdout.contains("work"));
     assert!(list_stdout.contains("Codex"));
 
+    let overview = run_omx_usage_with_home_and_state(&["list"], Some(&home), &state_root);
+    assert_command_success(&overview);
+    let overview_stdout = String::from_utf8_lossy(&overview.stdout);
+    assert!(overview_stdout.contains("Overview"));
+    assert!(overview_stdout.contains("Codex"));
+
+    let refresh =
+        run_omx_usage_with_home_and_state(&["refresh", "codex"], Some(&home), &state_root);
+    assert_command_success(&refresh);
+    let refresh_stdout = String::from_utf8_lossy(&refresh.stdout);
+    assert!(refresh_stdout.contains("Codex accounts"));
+
+    let cached_usage = parse_json_stdout(run_omx_usage_with_home_and_state(
+        &["usage", "--json", "--no-scan"],
+        Some(&home),
+        &state_root,
+    ));
+    assert_eq!(cached_usage["schema_version"], 1);
+    assert_eq!(cached_usage["scan"]["enabled"], false);
+
     fs::remove_dir_all(&home).unwrap();
     fs::remove_dir_all(&state_root).unwrap();
 }
 
 #[test]
-fn codex_account_and_provider_remain_active_through_same_use_command() {
+fn codex_account_use_deactivates_managed_provider() {
     let home = unique_temp_root("openmux-codex-account-provider-home");
     let state_root = unique_temp_state_root();
     write_codex_auth(&home, r#"{"account":"work"}"#);
@@ -442,7 +554,8 @@ fn codex_account_and_provider_remain_active_through_same_use_command() {
         Some(&home),
         &state_root,
     ));
-    let provider_config = fs::read(home.join(".codex/config.toml")).unwrap();
+    let provider_config = fs::read_to_string(home.join(".codex/config.toml")).unwrap();
+    assert!(provider_config.contains("model_provider = \"openmux-gateway\""));
 
     assert_command_success(&run_omx_usage_with_home_and_state(
         &["use", "codex", "1"],
@@ -450,16 +563,14 @@ fn codex_account_and_provider_remain_active_through_same_use_command() {
         &state_root,
     ));
 
-    assert_eq!(
-        fs::read(home.join(".codex/config.toml")).unwrap(),
-        provider_config
-    );
+    let account_config = fs::read_to_string(home.join(".codex/config.toml")).unwrap();
+    assert!(!account_config.contains("model_provider = \"openmux-gateway\""));
+    assert!(account_config.contains("[model_providers.openmux-gateway]"));
     let current =
         run_omx_usage_with_home_and_state(&["current", "codex"], Some(&home), &state_root);
     assert_command_success(&current);
     let stdout = String::from_utf8_lossy(&current.stdout);
     assert!(stdout.contains("#1 work"));
-    assert!(stdout.contains("gateway"));
 
     fs::remove_dir_all(&home).unwrap();
     fs::remove_dir_all(&state_root).unwrap();
@@ -588,6 +699,36 @@ fn write_gemini_session_fixture(home: &Path) {
     {
       "id": "msg-1",
       "timestamp": "2026-04-01T10:00:01.000Z",
+      "type": "assistant",
+      "model": "gemini-2.5-pro",
+      "tokens": {
+        "input": 100,
+        "output": 25,
+        "cached": 10,
+        "thoughts": 5
+      }
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+}
+
+fn write_gemini_multi_day_fixture(home: &Path) {
+    write_gemini_session_fixture(home);
+    let chats_dir = home.join(".gemini/tmp/project-2/chats");
+    fs::create_dir_all(&chats_dir).unwrap();
+    fs::write(
+        chats_dir.join("chat-2.json"),
+        r#"{
+  "sessionId": "gemini-session-2",
+  "projectHash": "project-2",
+  "startTime": "2026-04-30T10:00:00.000Z",
+  "lastUpdated": "2026-04-30T10:00:01.000Z",
+  "messages": [
+    {
+      "id": "msg-2",
+      "timestamp": "2026-04-30T10:00:01.000Z",
       "type": "assistant",
       "model": "gemini-2.5-pro",
       "tokens": {

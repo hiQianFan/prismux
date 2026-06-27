@@ -1241,12 +1241,107 @@ fn refresh_accounts_refreshes_usage_for_every_saved_account() {
     assert!(!accounts[1].active);
     assert_eq!(
         accounts[0].usage.as_ref().unwrap().diagnostics[0].code,
-        "auth"
+        "managed_runtime_auth"
     );
     assert_eq!(
         accounts[1].usage.as_ref().unwrap().diagnostics[0].code,
-        "auth"
+        "managed_runtime_auth"
     );
+}
+
+#[test]
+fn refresh_inactive_account_uses_managed_runtime_without_changing_active_auth() {
+    let temp = test_temp_dir("refresh-inactive-managed-runtime");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    let plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+
+    let first_auth = br#"{"account":"first"}"#;
+    let second_auth = br#"{"account":"second"}"#;
+    fs::write(codex_home.join(AUTH_FILE_NAME), first_auth).unwrap();
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("first".to_string()),
+        })
+        .unwrap();
+    fs::write(codex_home.join(AUTH_FILE_NAME), second_auth).unwrap();
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("second".to_string()),
+        })
+        .unwrap();
+    plugin.switch_to("1").unwrap();
+    let active_before = fs::read(codex_home.join(AUTH_FILE_NAME)).unwrap();
+    let second = plugin
+        .state_store()
+        .unwrap()
+        .account_by_selector(plugin.id(), "2")
+        .unwrap()
+        .unwrap();
+    let second_snapshot = PathBuf::from(&second.secret_ref);
+
+    let accounts = plugin.refresh_accounts().unwrap();
+
+    assert_eq!(
+        fs::read(codex_home.join(AUTH_FILE_NAME)).unwrap(),
+        active_before
+    );
+    assert!(accounts[0].active);
+    assert!(!accounts[1].active);
+    assert_eq!(
+        fs::read(plugin.managed_runtime_auth_path(&second).unwrap()).unwrap(),
+        second_auth
+    );
+    assert_eq!(fs::read(second_snapshot).unwrap(), second_auth);
+}
+
+#[test]
+fn inactive_managed_token_refresh_stays_in_managed_scope() {
+    let temp = test_temp_dir("managed-token-refresh-scope");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    let plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+
+    let first_auth = br#"{"account":"first"}"#;
+    let second_snapshot_auth = br#"{"account":"second","refresh":"old"}"#;
+    let second_runtime_auth = br#"{"account":"second","refresh":"new"}"#;
+    fs::write(codex_home.join(AUTH_FILE_NAME), first_auth).unwrap();
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("first".to_string()),
+        })
+        .unwrap();
+    fs::write(codex_home.join(AUTH_FILE_NAME), second_snapshot_auth).unwrap();
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("second".to_string()),
+        })
+        .unwrap();
+    plugin.switch_to("1").unwrap();
+    let active_before = fs::read(codex_home.join(AUTH_FILE_NAME)).unwrap();
+    let second = plugin
+        .state_store()
+        .unwrap()
+        .account_by_selector(plugin.id(), "2")
+        .unwrap()
+        .unwrap();
+    let managed_auth_path = plugin.managed_runtime_auth_path(&second).unwrap();
+    fs::create_dir_all(managed_auth_path.parent().unwrap()).unwrap();
+    fs::write(&managed_auth_path, second_runtime_auth).unwrap();
+
+    plugin.refresh_accounts().unwrap();
+
+    assert_eq!(
+        fs::read(codex_home.join(AUTH_FILE_NAME)).unwrap(),
+        active_before
+    );
+    assert_eq!(
+        fs::read(PathBuf::from(&second.secret_ref)).unwrap(),
+        second_snapshot_auth
+    );
+    assert_eq!(fs::read(managed_auth_path).unwrap(), second_runtime_auth);
 }
 
 #[test]

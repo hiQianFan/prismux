@@ -199,6 +199,17 @@ impl CodexPlugin {
         Ok(self.platform_state_dir()?.join("login"))
     }
 
+    fn managed_runtime_dir(&self, account: &AccountRecord) -> Result<PathBuf> {
+        Ok(self
+            .platform_state_dir()?
+            .join("runtime")
+            .join(&account.local_id))
+    }
+
+    fn managed_runtime_auth_path(&self, account: &AccountRecord) -> Result<PathBuf> {
+        Ok(self.managed_runtime_dir(account)?.join(AUTH_FILE_NAME))
+    }
+
     fn state_store(&self) -> Result<StateStore> {
         StateStore::open(&self.state_root()?)
     }
@@ -381,15 +392,30 @@ impl CodexPlugin {
     }
 
     fn usage_from_snapshot(&self, account: &AccountRecord) -> UsageSnapshot {
-        let Some(auth) = read_file(Path::new(&account.secret_ref))
+        let runtime_auth_path = match self.ensure_managed_runtime_scope(account) {
+            Ok(path) => path,
+            Err(err) => {
+                return self.usage_with_cached_fallback(
+                    account,
+                    UsageDiagnostic {
+                        code: "managed_runtime_unavailable".to_string(),
+                        message: format!(
+                            "managed runtime scope is unavailable for account #{}: {err}",
+                            account.display_number
+                        ),
+                    },
+                );
+            }
+        };
+        let Some(auth) = read_file(&runtime_auth_path)
             .ok()
             .and_then(|bytes| parse_codex_usage_auth(&bytes))
         else {
             return self.usage_with_cached_fallback(
                 account,
                 UsageDiagnostic {
-                    code: "auth".to_string(),
-                    message: "stored auth snapshot is missing ChatGPT access token or account id"
+                    code: "managed_runtime_auth".to_string(),
+                    message: "managed runtime auth is missing ChatGPT access token or account id"
                         .to_string(),
                 },
             );
@@ -424,6 +450,25 @@ impl CodexPlugin {
                 },
             ),
         }
+    }
+
+    fn ensure_managed_runtime_scope(&self, account: &AccountRecord) -> Result<PathBuf> {
+        let runtime_auth_path = self.managed_runtime_auth_path(account)?;
+        if runtime_auth_path.exists() {
+            return Ok(runtime_auth_path);
+        }
+        let snapshot_path = Path::new(&account.secret_ref);
+        let auth_bytes = read_file(snapshot_path)?;
+        if sha256_hex(&auth_bytes) != account.auth_hash {
+            return Err(OpenMuxError::Message(format!(
+                "stored auth snapshot for account #{} failed hash verification",
+                account.display_number
+            )));
+        }
+        let runtime_dir = self.managed_runtime_dir(account)?;
+        create_dir_private(&runtime_dir)?;
+        write_file_atomic_private(&runtime_auth_path, &auth_bytes)?;
+        Ok(runtime_auth_path)
     }
 
     fn usage_with_cached_fallback(

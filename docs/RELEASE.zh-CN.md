@@ -49,9 +49,20 @@ OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=
 
 v0.1 不发布 Linux binary、Windows binary、Homebrew formula、crates.io package、独立签名或 provenance attestation。
 
+## Artifact 能力边界
+
+当前 v0.1 release 仍以 CLI artifact 为主，Menubar 通过 macOS 本地 bundle 构建脚本验证。后续如果拆成独立产物，发布说明必须逐项声明包含能力、平台和依赖：
+
+| Artifact | 包含能力 | 平台 | 依赖 |
+| --- | --- | --- | --- |
+| `CLI-only` | `login`、`save`、`use`、`import`、`alias`、`doctor`、`usage`、JSON/machine output | macOS；后续再评估 Linux/Windows | 已安装的目标 AI tool CLI |
+| `Menubar-only` | dashboard、refresh、显式 activation、last-good snapshot、upgrade-required/unavailable view、CLI handoff 文案 | macOS 14+ Apple Silicon | embedded staticlib、helper binary 或 installed `omx` CLI 之一 |
+| `full bundle` | CLI + Menubar + 共享 state root + compatibility gate | macOS | 已安装的目标 AI tool CLI |
+
+发布包不得暗示未包含的 optional module 可用。缺少 CLI、helper、Menubar 或 future `serve` 模块时，对应前端必须展示 unavailable view 和安装/切换指引；state-changing operation 只能在 `compatibility_view` 通过 schema gate 后启用。
+
 ## 回滚
 
 如果 workflow 在创建 tag 前失败，修复 PR 或 workflow 后再次合并。
 
 如果 release 已创建但 artifact 有问题，删除错误 artifact，发布 patch version，并在 `CHANGELOG.md` 记录问题。
-

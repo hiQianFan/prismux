@@ -2,7 +2,17 @@
 
 ## 总体形态
 
-OpenMux 当前是一个 Rust monorepo/workspace：
+OpenMux 当前是一个 Rust monorepo/workspace。长期产品架构目标是：
+
+```text
+omx-core -> omx-control-plane -> frontends
+```
+
+Phase 1 保留 `crates/omx-app` crate name，把它作为 `omx-control-plane` 的实现载体；代码边界先拆成 `api`、`query`、`mutation`、`runtime`、`mapper`、`diagnostics`、`compatibility` 和 `settings`。后续是否重命名 crate 不阻塞当前验收。
+
+当前 Phase 1 不做 WebKit/browser cookie、Sparkle、WidgetKit、HTTP server、独立分发 artifact、大量 provider registry 或完整 managed account migration。`system_active_target`、`selected_ui_target`、`refresh_scope_target`、`observed_target` 先作为 DTO/model 预留字段，account-scoped runtime 后续再实现。
+
+现有 CLI 形态仍是：
 
 ```text
 omx-cli
@@ -21,15 +31,46 @@ CLI 只负责命令解析和输出展示。跨平台共享概念放在 `omx-core
 - `omx-core`：共享领域对象、错误、报告、账号池 summary、账号状态、登录/保存 options、SQLite `StateStore` 和 `PlatformPlugin` trait。
 - `omx-plugin-codex`：Codex 专属实现，包括 Codex home 解析、临时 `CODEX_HOME` 登录、auth snapshot、provider subject 去重、account/plan metadata 解析、SQLite account/profile 状态和 active auth 切换。
 - `omx-plugin-claude`：Claude Code 专属实现，包括 profile import、settings env patch、macOS Keychain/plaintext `.credentials.json` account snapshot、`oauthAccount` metadata 备份/恢复，以及共享 SQLite account/profile 状态。
+- `omx-app`：Phase 1 control-plane application service，输出 dashboard/provider/target/action/diagnostics/compatibility view model 和 operation result。
+- `omx-menubar-ffi`：Menubar transport 层，只负责 JSON envelope、schema gate、panic-safe error、JSON transport 和 memory free。
 - `omx-cli`：`omx` 命令行前端，消费 core/plugin API，不拥有业务状态。
 
 ## Module Boundaries
 
 `omx-core` 按领域拆分为 `account`、`profile`、`platform`、`plugin`、`report`、`storage` 和 `usage`。plugin crate 不应重复实现私有目录、原子写入、snapshot hash、路径展示和时间戳这类跨平台基础能力。
 
-`omx-cli` 保持薄层：`main.rs` 只启动应用，`app.rs` 负责命令路由和输出展示，`input.rs` 负责 import 内容读取。平台行为必须留在 plugin crate。
+`omx-cli` 保持薄层：`main.rs` 只启动应用，`app.rs` 负责命令路由和输出展示，`input.rs` 负责 import 内容读取。平台行为必须留在 plugin crate。Phase 1 允许 CLI 逐步迁移到 control-plane view model，但 `status/list/save/use/switch` 和 JSON/machine output 只能 additive 演进，不能破坏现有脚本语义。
+
+`omx-app` 的 public control-plane API 使用 provider-agnostic 名称：`dashboard_view`、`provider_view`、`refresh_provider`、`activate_target`、`compatibility_view`。`refresh_all`、`remove_target`、`settings_view`、`update_settings`、`support_report` 在 Phase 1 只保留 contract/DTO 边界，不要求完成全部行为。
+
+Phase 1 调用链盘点：
+
+```text
+omx-cli -> omx-app/api -> provider plugin -> omx-core
+Swift Menubar -> omx-menubar-ffi -> omx-app/api -> provider plugin -> omx-core
+```
+
+业务解释重复点需要继续收敛：CLI overview 仍有 table/human rendering 专用汇总，Swift `DashboardView` 仍有 provider row/status 的视觉层汇总。Phase 1 已把 Menubar FFI transport 改为调用 control-plane API，并把 schema/target/diagnostics/version 字段放在 Rust DTO；后续迁移应继续把 action eligibility、provider health 和 quota health 从 Swift/CLI presentation 中移出。
 
 `omx-plugin-codex` 和 `omx-plugin-claude` 的主流程保留在 `plugin.rs`，测试拆到 `tests.rs`。后续继续扩展 Gemini 或新的 Claude backend 时，应优先复用 core storage、SQLite `StateStore` 和 plugin capability 模型，并把 provider-specific parser/backend 维持在对应 plugin 内。
+
+## Modular Distribution
+
+OpenMux 的长期分发形态允许拆成 `CLI-only`、`Menubar-only` 和 `full bundle`，但所有产物必须共享同一个 state root、control-plane schema、state schema、safe diagnostics 和 provider capability matrix。分发拆分只能改变入口和打包方式，不能引入第二套账号状态或前端自行推断。
+
+| Artifact | 能力 | 平台 | 依赖 |
+| --- | --- | --- | --- |
+| `CLI-only` | `login`、`save`、`use`、`import`、`alias`、`doctor`、`usage` 等高级管理入口 | macOS；后续可扩展 Linux/Windows | 已安装的目标 AI tool CLI |
+| `Menubar-only` | dashboard、refresh、显式 activation、last-good snapshot、CLI handoff 文案 | macOS 14+ Apple Silicon | embedded staticlib 或 helper binary 提供 control-plane runtime |
+| `full bundle` | CLI + Menubar + 共享状态 + compatibility gate | macOS | 已安装的目标 AI tool CLI；bundle 内含前端和 backend runtime |
+
+Menubar 获取 backend/control-plane runtime 的优先模式：
+
+1. `embedded_staticlib`：当前推荐路径，`omx-menubar-ffi` 作为 transport 层，Swift 只收发 JSON envelope，所有 mutation 先通过 schema gate。
+2. `helper_binary`：未来可选 packaging 方式，helper 必须复用同一 state root、control-plane contract、request timeout 和 last-good cache。
+3. `installed_cli`：兜底方式，只能调用文档化的 machine-readable 命令；不得解析 human output。
+
+`compatibility_view` 是独立分发的 gate。它返回 control-plane schema、state schema、minimum backend/frontend version、artifact capability、backend runtime option、optional module status 和 provider capability matrix。不兼容 schema 时只能进入 read-only safe snapshot 或 upgrade-required 状态，不允许执行 state-changing operation。缺失 optional module 时前端必须展示 unavailable view 和安装指导，例如提示安装 `omx` CLI 或切换到 embedded staticlib；不能隐藏入口、静默失败或崩溃。
 
 ## Core Domain
 
@@ -151,6 +192,14 @@ Codex active auth path：
 ```text
 <codex-home>/auth.json
 ```
+
+Codex account-scoped refresh 使用 OpenMux 管理的 runtime scope：
+
+```text
+<data-local-dir>/openmux/platforms/codex/runtime/<account-local-id>/auth.json
+```
+
+该 runtime scope 不是系统 active `CODEX_HOME`，也不复制完整用户配置。首次刷新某个已保存 account 时，OpenMux 会从该 account 的私有 auth snapshot lazy migration 出最小 `auth.json`，校验 snapshot hash 后写入 managed runtime scope。后续 quota/status refresh 优先读取 managed runtime auth；如果该文件已由 refresh 流程轮换，则只保留在对应 account scope，不回写系统 active `auth.json`，也不覆盖原 snapshot。用户显式 `omx use codex <selector>` 或 Menubar activation 时，才走 active auth replacement/promote 路径。
 
 ## Login Flow
 

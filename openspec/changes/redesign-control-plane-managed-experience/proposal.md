@@ -33,14 +33,16 @@ Phase 1 MUST land:
 - Control-plane 首批 API 聚焦 `dashboard_view`、`provider_view`、`refresh_provider`、`activate_target`、`compatibility_view`；其它 API 可以先设计 contract，不阻塞第一阶段验收。
 - `omx-menubar-ffi` 收敛为 transport 层：JSON envelope、schema version、panic-safe error、memory free 和 compatibility gate；不得继续承载业务解释。
 - Runtime 先落最小但正确的地基：request generation、single-flight/coalescing、last-good safe snapshot、freshness/stale metadata、safe diagnostics/redaction。
-- Swift Menubar 先落项目结构和组件状态地基：`Backend`、`State`、`Design`、`Components`、`Features`、`Shell`；把当前 dashboard 迁移进这个结构，而不是先做全量视觉重写。
-- 前端全局组件先落最小闭环：`StatusBanner`、`ProviderSelector`、`TargetRow`、`TargetIdentityView`、`TargetActionView`、`DiagnosticView`、基础 button/badge/meter token。
+- Swift Menubar 先落项目结构和组件状态地基：`Backend`、`State`、`Design`、`Components`、`Features`、`Shell`；建立 design tokens、primitive/shared/target/screen 组件文件与 typed props/callbacks。
+- 前端全局组件先落骨架：`StatusBanner`、`ProviderSelector`、`TargetRow`、`TargetIdentityView`、`TargetActionView`、`DiagnosticView`、基础 button/badge/meter token。
+- **至少一个纵向切片接入 live view**：把 `TargetRow`（及 props）真正接入当前账号列表的一处渲染，证明组件契约可用、props 与真实数据匹配。整体替换 monolith 属 Phase 3，不在 Phase 1 验收范围。
 - 父子组件状态边界必须先落：`MenubarStore` 拥有 backend data、last-good、selection、operation state；子组件只拿 typed props/callbacks，不直接调用 backend，不推断 provider 业务状态。
 - 增加 serialization/contract/smoke tests，覆盖 ready、stale、refresh failed、switch success/failure、backend unavailable、unsupported schema 和敏感字段不泄漏。
-- 保持 CLI 行为稳定：`status`、`list`、`save`、`use/switch` 等当前能力不能因为 control-plane 重构改变语义或破坏 machine output。
+- 保持 CLI 行为稳定：`status`、`list`、`save`、`use/switch` 等当前能力不能因为 control-plane 重构改变语义或破坏 machine output；CLI 消费 control-plane 给定的 status/attention 字段，不自行推断。
 
 Phase 1 SHOULD NOT implement:
 
+- 整体替换 `DashboardView` monolith、移除 Swift 端全部业务推断、视觉/页面切换/a11y 打磨——这些属 Phase 3（见 design.md Decision 1.3）；Phase 1 只建组件骨架并接入一个纵向切片。
 - WebKit scraping、browser cookie import、私有 provider endpoint 或 CodexBar 的 WebKit extras。
 - Sparkle、WidgetKit、自动更新、HTTP server、future widget/desktop API。
 - CLI/Menubar 独立分发 artifact、installer matrix 或完整 release pipeline。
@@ -48,7 +50,7 @@ Phase 1 SHOULD NOT implement:
 - 完整 managed account lazy migration、account-scoped credential refresh persistence；第一阶段只保留模型和 API 预留，避免堵死后续实现。
 - Menubar 内置完整 login/import 流程；第一阶段可提供稳定 CLI handoff 和清晰 recovery action。
 
-Phase 1 的验收标准是：代码边界更清楚、状态更一致、错误更可恢复、UI 组件可持续演进，同时当前用户能继续完成最核心的账号管理工作。
+Phase 1 的验收标准是：代码边界更清楚（Rust 模块真实拆分、FFI 收敛为 transport）、状态更一致、错误更可恢复、组件骨架可用且已有纵向切片验证，同时当前用户能继续完成最核心的账号管理工作。Swift monolith 的整体替换与前端推断清零交由 Phase 3，避免 Phase 1 过载与 P1/P3 职责重叠。
 
 ## Capabilities
 

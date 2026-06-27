@@ -144,6 +144,27 @@ Phase 1 固定选择：
 
 这些选择让长期设计保留方向，但第一阶段验收聚焦最能改善用户体验和可维护性的部分。
 
+### Decision 1.3: Phase 1 与 Phase 3 的职责边界 SHALL be explicit
+
+组件拆分（建文件、定 props/tokens）与 monolith 替换（让 live view 真正消费组件、移除前端业务推断）是**两件不同的工作**，必须分给不同阶段，否则会出现「文件已建但 live UI 仍是 monolith」的半成品状态——这正是首次 Phase 1 实施暴露的问题。
+
+边界固定如下：
+
+**Phase 1 拥有（组件地基 + 纵向验证）：**
+
+- 建立 `Backend/State/Design/Components/Features/Shell` 目录与 typed props/callbacks 定义。
+- 建立 design tokens 与 primitive/shared/target 组件文件。
+- **至少一个纵向切片落地**：把 `TargetRow`（及其 props）真正接入当前账号列表的一处渲染，证明组件契约可用、props 与真实数据匹配，避免组件骨架建好却无人消费、契约与需求脱节。
+- Rust 侧 view model 映射（provider/target/action/status/quota health）已可用，CLI 已消费这些字段。
+
+**Phase 3 拥有（Menubar UX rebuild）：**
+
+- 用 shell/screen/section/shared/primitive 组件**整体替换** `DashboardView` monolith，使其行数显著下降并全面引用新组件。
+- **移除 Swift 前端业务推断**：`status` 字符串比较、`quotaColor()`、alert 计数、active marker 等全部改为消费 control-plane view model 字段（对应原 4.9）。
+- 页面切换状态、provider page、settings menu、视觉一致性、accessibility/reduced-motion、snapshot/smoke 覆盖。
+
+判定「组件拆分完成」以 **live 引用 + monolith 缩小** 为准，而非「新增文件数」。Phase 1 不要求 monolith 被整体替换，但要求纵向切片证明骨架可用；Phase 3 才负责把 monolith 收掉。Rust 模块拆分（`api.rs` → `query/mutation/runtime/mapper`）属于无 UX 耦合的地基整理，仍归 Phase 1 收尾，与本边界无关。
+
 ### Decision 2: `omx-core` 只保留领域与安全操作
 
 `omx-core` SHALL 保留领域对象、StateStore、plugin trait、安全文件操作、usage schema 和错误类型。它不应知道 Menubar 布局、CLI 表格或 Swift 组件。这样 core 可测试、可复用，也不会被某个 frontend 的展示字段污染。
@@ -354,23 +375,39 @@ Diagnostics 使用结构化模型：
 
 ## Migration Plan
 
-1. Phase 1 先保留 `crates/omx-app` crate name，按 control-plane 目录拆分 `api/query/mutation/runtime/mapper/diagnostics/compatibility`，并让 public re-export 清晰。
-2. Phase 1 定义并实现首批 DTO/API：dashboard、provider、target、action、operation、freshness、diagnostics、compatibility；用当前 Codex 数据填充，Claude/Gemini 只保留 additive 扩展位。
-3. Phase 1 将 `omx-menubar-ffi` 限缩为 transport：schema gate、JSON envelope、panic-safe error、memory free；所有业务状态从 control-plane 输出。
-4. Phase 1 实现最小 runtime correctness：generation guard、single-flight/coalescing、last-good safe snapshot、stale/freshness、safe diagnostics/redaction；timeout/backoff/source strategy 可先有模型和基础实现。
-5. Phase 1 重构 Swift Menubar 目录和状态：引入 `Backend/State/Design/Components/Features/Shell`，先迁移当前 dashboard，不做整套视觉重写。
-6. Phase 1 建立全局组件和父子状态边界：`MenubarStore` 管业务状态，`TargetRow`/`StatusBanner`/`ProviderSelector` 等只接收 typed props/callbacks。
-7. Phase 1 让 CLI 的 `status/list` 优先消费 control-plane 字段；保留现有命令行为和 machine output，避免破坏脚本。
-8. Phase 2 再扩展 runtime/settings：完善 source strategy、timeout/backoff、shared settings、diagnostics support report 和更多 failure recovery。
-9. Phase 3 再进行完整 Menubar 体验打磨：统一视觉 token、页面切换状态、provider page、settings menu、accessibility、snapshot/smoke tests。
-10. Phase 4 再实现 Codex account-scoped refresh：managed `CODEX_HOME`、lazy migration、credential refresh persistence、safe activate/promote 和 rollback。
-11. Phase 5 再推进独立分发：CLI-only、Menubar-only、full bundle、installer matrix、compatibility gate 和发布文档。
+Phase 1（地基 + 骨架 + 不回归）：
+
+1. 保留 `crates/omx-app` crate name，按 control-plane 目录拆分 `api/query/mutation/runtime/mapper/diagnostics/compatibility`，让 public re-export 清晰（真实代码搬家，非仅声明模块）。
+2. 定义并实现首批 DTO/API：dashboard、provider、target、action、operation、freshness、diagnostics、compatibility；用当前 Codex 数据填充，Claude/Gemini 只保留 additive 扩展位。
+3. 将 `omx-menubar-ffi` 限缩为 transport：schema gate、JSON envelope、panic-safe error、memory free；所有业务状态从 control-plane 输出。
+4. 实现最小 runtime correctness：generation guard、single-flight/coalescing、last-good safe snapshot、stale/freshness、safe diagnostics/redaction；timeout/backoff/source strategy 可先有模型和基础实现。
+5. 引入 Swift Menubar 目录与状态骨架：`Backend/State/Design/Components/Features/Shell`，建立 design tokens 与 primitive/shared/target/screen 组件文件及 typed props/callbacks。
+6. 纵向验证切片：把 `TargetRow`（及 props）真正接入当前账号列表的一处渲染，证明组件契约可用；不要求整体替换 monolith（替换属 Phase 3）。
+7. 让 CLI 的 `status/list` 消费 control-plane 字段；保留现有命令行为和 machine output，避免破坏脚本。
+
+Phase 2（runtime/settings 深化）：
+
+8. 扩展 runtime/settings：完善 source strategy、timeout/backoff、shared settings、diagnostics support report 和更多 failure recovery。
+
+Phase 3（Menubar UX rebuild，可与 Phase 2 安全并行）：
+
+9. 用 shell/screen/section/shared/primitive 组件**整体替换** `DashboardView` monolith，使其行数显著下降并全面引用新组件。
+10. 移除 Swift 前端业务推断（`status` 比较、`quotaColor()`、alert 计数、active marker 等），全部改为消费 control-plane view model 字段。
+11. 打磨页面切换状态、provider page、settings menu、视觉一致性、accessibility/reduced-motion、snapshot/smoke 覆盖。
+
+Phase 4（managed account）：
+
+12. 实现 Codex account-scoped refresh：managed `CODEX_HOME`、lazy migration、credential refresh persistence、safe activate/promote 和 rollback。
+
+Phase 5（独立分发）：
+
+13. 推进独立分发：CLI-only、Menubar-only、full bundle、installer matrix、compatibility gate 和发布文档。
 
 Implementation phases:
 
-- Phase 1: Foundation first. Land control-plane modules, first API surface, versioned DTO fixtures, FFI transport boundary, generation/last-good/diagnostics basics, Swift state/design/component skeleton, and no-regression CLI/Menubar behavior.
+- Phase 1: Foundation first. Land control-plane modules (real code split, not just declared), first API surface, versioned DTO fixtures, FFI transport boundary, generation/last-good/diagnostics basics, Swift state/design/component skeleton with typed props, **one vertical slice wired into the live account list**, and no-regression CLI/Menubar behavior. Phase 1 does NOT replace the `DashboardView` monolith.
 - Phase 2: Runtime and settings depth. Expand refresh coordinator, source strategy, timeout/backoff, shared settings, support report, and redaction coverage.
-- Phase 3: Menubar UX rebuild. Replace monolithic `DashboardView` with shell/screen/section/shared/primitive components and polish page switching, visual consistency, accessibility, and snapshot coverage.
+- Phase 3: Menubar UX rebuild. Replace the monolithic `DashboardView` with shell/screen/section/shared/primitive components, **remove all Swift business inference in favor of control-plane fields**, and polish page switching, visual consistency, accessibility, and snapshot coverage. May run in parallel with Phase 2 — Phase 3 component wiring and a11y/snapshot work depend on the Phase 1 skeleton, not on Phase 2 source strategy.
 - Phase 4: Managed account experience. Add Codex managed runtime scope, lazy migration, account-scoped refresh, credential refresh persistence, safe activation.
 - Phase 5: Distribution and future surfaces. Move more CLI rendering to control-plane facts, add compatibility gates, document artifact split, and decide whether future HTTP/widget surfaces are worth implementing.
 
@@ -382,3 +419,15 @@ Implementation phases:
 - Menubar 是否需要内置 login/import，还是第一阶段只提供强引导和 CLI command handoff？
 - 独立分发第一目标是 embedded staticlib、helper binary 还是 installed CLI？
 - OpenMux 是否需要 lightweight localhost serve/API；如需要，应复用 control-plane contract 而不是新建数据口径。
+- DTO 类型命名是否从 `Menubar*` 改为 provider-neutral 命名：Phase 1 明确推迟。原因是 JSON 字段已 provider-neutral，Swift DTO 也已解码为 `DashboardReport`/`ProviderView`；Rust 类型重命名会连带 FFI fixtures、CLI、Swift 和测试大面积 churn，但不改变用户行为或 Phase 1 control-plane 边界。
+
+## Phase 1 实施现状（2026-06-27 核对）
+
+正确性地基已落地并通过 `cargo test`/`clippy`/`swift build`：generation guard（Rust + Swift 两端）、last-good snapshot、compatibility gate、统一 redaction、CLI 消费 `dashboard_view`。
+
+2026-06-27 收尾决策：
+
+- `provider_view` 保留为独立 API，但要求 `MenubarQuery.provider` 非空；`dashboard_view` 才表示全局 dashboard。当前返回类型仍复用 `MenubarDashboardReport` 以保持 additive JSON 兼容，后续可在不破坏字段的前提下引入更窄的 `ProviderView` envelope。
+- `Menubar*` Rust 类型名不在 Phase 1 改名；后续若需要 provider-neutral Rust 类型名，应单独做机械迁移并保持 JSON 字段兼容。
+
+判定「拆分完成」以代码搬家 + live 引用为准，而非新增文件——见 Decision 1.2 第 142 行的反模式约束。

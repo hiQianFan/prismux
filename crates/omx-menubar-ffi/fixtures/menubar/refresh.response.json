@@ -1,10 +1,17 @@
 {
   "schema_version": 1,
+  "control_plane_schema_version": 1,
+  "state_schema_version": 1,
+  "minimum_backend_version": "0.1.0",
+  "minimum_frontend_version": "0.1.0",
   "ok": true,
   "data": {
+    "control_plane_schema_version": 1,
+    "state_schema_version": 1,
     "generated_at_unix": 0,
     "provider": "codex",
     "kind": "interactive",
+    "generation": 1,
     "operation": {
       "status": "success",
       "changed": false,
@@ -14,26 +21,56 @@
       "diagnostics": []
     },
     "dashboard": {
+      "control_plane_schema_version": 1,
+      "state_schema_version": 1,
       "generated_at_unix": 0,
       "accounts": {
+        "control_plane_schema_version": 1,
+        "state_schema_version": 1,
         "generated_at_unix": 0,
         "providers": [
-          "codex"
+          "codex",
+          "claude"
         ],
         "accounts": [],
         "profiles": [],
         "active_local_id": null,
         "active_target_key": null,
         "active_target_kind": null,
+        "system_active_target": null,
+        "selected_ui_target": null,
+        "refresh_scope_target": null,
+        "observed_target": null,
         "diagnostics": []
       },
       "active": null,
+      "provider_views": [
+        {
+          "provider": "codex",
+          "display_label": "Codex",
+          "status": "unavailable",
+          "status_text": "Planned",
+          "status_tone": "neutral",
+          "target_count": 0,
+          "diagnostics": []
+        },
+        {
+          "provider": "claude",
+          "display_label": "Claude",
+          "status": "unavailable",
+          "status_text": "Planned",
+          "status_tone": "neutral",
+          "target_count": 0,
+          "diagnostics": []
+        }
+      ],
       "usage": {
         "period": "Today",
         "total_tokens": 0,
         "top_client": null,
         "top_model": null,
         "model_breakdown": [],
+        "hourly_buckets": [],
         "cost_status": "Missing",
         "estimated_cost_usd": null,
         "freshness": {
@@ -42,6 +79,7 @@
         },
         "coverage": {
           "status": "empty",
+          "tone": "warning",
           "requested_clients": [],
           "available_clients": [],
           "missing_clients": []
@@ -56,6 +94,7 @@
             "top_client": null,
             "top_model": null,
             "model_breakdown": [],
+            "hourly_buckets": [],
             "cost_status": "Missing",
             "estimated_cost_usd": null,
             "freshness": {
@@ -64,6 +103,31 @@
             },
             "coverage": {
               "status": "empty",
+              "tone": "warning",
+              "requested_clients": [],
+              "available_clients": [],
+              "missing_clients": []
+            }
+          }
+        },
+        {
+          "provider": "claude",
+          "usage": {
+            "period": "Today",
+            "total_tokens": 0,
+            "top_client": null,
+            "top_model": null,
+            "model_breakdown": [],
+            "hourly_buckets": [],
+            "cost_status": "Missing",
+            "estimated_cost_usd": null,
+            "freshness": {
+              "generated_at_unix": 0,
+              "stale": true
+            },
+            "coverage": {
+              "status": "empty",
+              "tone": "warning",
               "requested_clients": [],
               "available_clients": [],
               "missing_clients": []
@@ -75,15 +139,22 @@
     "refreshed": true,
     "skipped_reason": null,
     "accounts": {
+      "control_plane_schema_version": 1,
+      "state_schema_version": 1,
       "generated_at_unix": 0,
       "providers": [
-        "codex"
+        "codex",
+        "claude"
       ],
       "accounts": [],
       "profiles": [],
       "active_local_id": null,
       "active_target_key": null,
       "active_target_kind": null,
+      "system_active_target": null,
+      "selected_ui_target": null,
+      "refresh_scope_target": null,
+      "observed_target": null,
       "diagnostics": []
     }
   },

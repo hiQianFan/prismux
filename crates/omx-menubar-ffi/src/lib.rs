@@ -1,9 +1,11 @@
 use omx_app::{
-    MenubarQuery, MenubarRefreshCommand, MenubarRemoveCommand, MenubarSwitchCommand,
-    menubar_accounts, menubar_dashboard, menubar_refresh, menubar_remove, menubar_switch,
+    ClientDescriptor, MenubarQuery, MenubarRefreshCommand, MenubarRemoveCommand,
+    MenubarSwitchCommand, activate_target, compatibility_view, dashboard_view, refresh_provider,
+    remove_target,
 };
 use omx_core::{
-    PlatformPlugin, StateStore, UsageScanBudget, UsageScanOptions, storage::state_root,
+    PlatformPlugin, StateStore, UsageScanBudget, UsageScanOptions,
+    storage::{read_file, state_root, write_file_atomic_private},
 };
 use omx_plugin_claude::ClaudePlugin;
 use omx_plugin_codex::CodexPlugin;
@@ -30,6 +32,10 @@ struct RequestEnvelope {
 #[derive(Debug, Serialize)]
 struct ResponseEnvelope {
     schema_version: u32,
+    control_plane_schema_version: u32,
+    state_schema_version: u32,
+    minimum_backend_version: String,
+    minimum_frontend_version: String,
     ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<Value>,
@@ -98,6 +104,10 @@ fn call_request(request_json: &str) -> String {
     match result {
         Ok(data) => encode(ResponseEnvelope {
             schema_version: SCHEMA_VERSION,
+            control_plane_schema_version: omx_app::compatibility::CONTROL_PLANE_SCHEMA_VERSION,
+            state_schema_version: omx_app::compatibility::STATE_SCHEMA_VERSION,
+            minimum_backend_version: omx_app::compatibility::MIN_BACKEND_VERSION.to_string(),
+            minimum_frontend_version: omx_app::compatibility::MIN_FRONTEND_VERSION.to_string(),
             ok: true,
             data: Some(data),
             error: None,
@@ -119,29 +129,82 @@ fn dispatch(request: RequestEnvelope) -> Result<Value, (&'static str, String)> {
     match request.op.as_str() {
         "accounts" => {
             let query: MenubarQuery = payload_or_default(request.payload)?;
-            json_value(menubar_accounts(&plugins, query))
+            json_value(omx_app::menubar_accounts(&plugins, query))
         }
         "dashboard" => {
             let query: MenubarQuery = payload_or_default(request.payload)?;
             refresh_usage_cache(store.as_ref(), query.provider.as_deref());
-            json_value(menubar_dashboard(&plugins, query, store.as_ref()))
+            match json_value(dashboard_view(&plugins, query, store.as_ref())) {
+                Ok(value) => {
+                    persist_dashboard_snapshot(&value);
+                    Ok(value)
+                }
+                Err(err) => load_dashboard_snapshot().ok_or(err),
+            }
         }
         "switch" => {
             let command: MenubarSwitchCommand = payload(request.payload)?;
             refresh_usage_cache(store.as_ref(), Some(&command.provider));
-            json_value(menubar_switch(&plugins, command, store.as_ref()))
+            json_value(activate_target(&plugins, command, store.as_ref()))
         }
         "refresh" => {
             let command: MenubarRefreshCommand = payload(request.payload)?;
             refresh_usage_cache(store.as_ref(), Some(&command.provider));
-            json_value(menubar_refresh(&plugins, command, store.as_ref()))
+            json_value(refresh_provider(&plugins, command, store.as_ref()))
         }
         "remove" => {
             let command: MenubarRemoveCommand = payload(request.payload)?;
             refresh_usage_cache(store.as_ref(), Some(&command.provider));
-            json_value(menubar_remove(&plugins, command, store.as_ref()))
+            json_value(remove_target(&plugins, command, store.as_ref()))
+        }
+        "compatibility" => {
+            let client: ClientDescriptor = payload_or_default(request.payload)?;
+            json_value(Ok(compatibility_view(client)))
         }
         _ => Err(("unknown_op", "unknown menubar operation".to_string())),
+    }
+}
+
+fn snapshot_path() -> omx_core::Result<std::path::PathBuf> {
+    Ok(state_root()?
+        .join("control-plane")
+        .join("dashboard.last-good.json"))
+}
+
+fn persist_dashboard_snapshot(value: &Value) {
+    if let Ok(path) = snapshot_path()
+        && let Ok(bytes) = serde_json::to_vec(value)
+    {
+        let _ = write_file_atomic_private(&path, &bytes);
+    }
+}
+
+fn load_dashboard_snapshot() -> Option<Value> {
+    let path = snapshot_path().ok()?;
+    let bytes = read_file(&path).ok()?;
+    let mut value: Value = serde_json::from_slice(&bytes).ok()?;
+    mark_stale(&mut value);
+    Some(value)
+}
+
+fn mark_stale(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            if let Some(freshness) = object.get_mut("freshness")
+                && let Value::Object(freshness) = freshness
+            {
+                freshness.insert("stale".to_string(), Value::Bool(true));
+            }
+            for value in object.values_mut() {
+                mark_stale(value);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                mark_stale(value);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -194,6 +257,10 @@ fn error_envelope(
 ) -> String {
     encode(ResponseEnvelope {
         schema_version: SCHEMA_VERSION,
+        control_plane_schema_version: omx_app::compatibility::CONTROL_PLANE_SCHEMA_VERSION,
+        state_schema_version: omx_app::compatibility::STATE_SCHEMA_VERSION,
+        minimum_backend_version: omx_app::compatibility::MIN_BACKEND_VERSION.to_string(),
+        minimum_frontend_version: omx_app::compatibility::MIN_FRONTEND_VERSION.to_string(),
         ok: false,
         data: None,
         error: Some(ResponseError {
@@ -206,7 +273,7 @@ fn error_envelope(
 
 fn encode(response: ResponseEnvelope) -> String {
     serde_json::to_string(&response).unwrap_or_else(|_| {
-        "{\"schema_version\":1,\"ok\":false,\"error\":{\"code\":\"encode_error\",\"message\":\"failed to encode response\"}}".to_string()
+        "{\"schema_version\":1,\"control_plane_schema_version\":1,\"state_schema_version\":1,\"minimum_backend_version\":\"0.1.0\",\"minimum_frontend_version\":\"0.1.0\",\"ok\":false,\"error\":{\"code\":\"encode_error\",\"message\":\"failed to encode response\"}}".to_string()
     })
 }
 
@@ -215,23 +282,7 @@ fn cstring(value: String) -> CString {
 }
 
 fn sanitize(message: &str) -> String {
-    let lower = message.to_ascii_lowercase();
-    let sensitive = [
-        "access_token",
-        "refresh_token",
-        "api_key",
-        "authorization:",
-        "bearer ",
-        "auth payload",
-        "raw response",
-        "raw log",
-        "sk-",
-    ];
-    if sensitive.iter().any(|marker| lower.contains(marker)) {
-        "[redacted sensitive diagnostic]".to_string()
-    } else {
-        message.to_string()
-    }
+    omx_app::diagnostics::redaction::redact(message)
 }
 
 #[cfg(test)]
@@ -356,6 +407,85 @@ mod tests {
         assert_eq!(payload["ok"], true);
         assert_eq!(payload["data"]["accounts"]["providers"][0], "codex");
         assert_eq!(payload["data"]["accounts"]["providers"][1], "claude");
+    }
+
+    #[test]
+    fn ffi_dashboard_matches_control_plane_for_same_state_root() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", temp.path());
+            std::env::set_var("OMUX_STATE_ROOT", temp.path());
+            std::env::set_var("CODEX_HOME", temp.path().join("codex-home"));
+            std::env::set_var("CLAUDE_CONFIG_DIR", temp.path().join("claude-home"));
+        }
+
+        let plugins = default_plugins();
+        let direct =
+            omx_app::dashboard_view(&plugins, omx_app::MenubarQuery::default(), None).unwrap();
+        let ffi: Value = serde_json::from_str(&call_json(
+            r#"{"schema_version":1,"op":"dashboard","payload":{}}"#,
+        ))
+        .unwrap();
+
+        unsafe {
+            restore_env("HOME", previous_home);
+            std::env::remove_var("OMUX_STATE_ROOT");
+            std::env::remove_var("CODEX_HOME");
+            std::env::remove_var("CLAUDE_CONFIG_DIR");
+        }
+
+        let ffi_providers = ffi["data"]["accounts"]["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(ffi["ok"], true);
+        assert_eq!(ffi_providers, direct.accounts.providers);
+        assert_eq!(
+            ffi["data"]["accounts"]["accounts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            direct.accounts.accounts.len()
+        );
+        assert_eq!(
+            ffi["data"]["accounts"]["profiles"]
+                .as_array()
+                .unwrap()
+                .len(),
+            direct.accounts.profiles.len()
+        );
+    }
+
+    #[test]
+    fn dashboard_falls_back_to_last_good_snapshot() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("OMUX_STATE_ROOT", temp.path());
+            std::env::set_var("CODEX_HOME", temp.path().join("codex-home"));
+        }
+
+        let live: Value = serde_json::from_str(&call_json(
+            r#"{"schema_version":1,"op":"dashboard","payload":{"provider":"codex"}}"#,
+        ))
+        .unwrap();
+        let fallback: Value = serde_json::from_str(&call_json(
+            r#"{"schema_version":1,"op":"dashboard","payload":{"provider":"missing"}}"#,
+        ))
+        .unwrap();
+
+        unsafe {
+            std::env::remove_var("OMUX_STATE_ROOT");
+            std::env::remove_var("CODEX_HOME");
+        }
+
+        assert_eq!(live["ok"], true);
+        assert_eq!(fallback["ok"], true);
+        assert_eq!(fallback["data"]["accounts"]["providers"][0], "codex");
     }
 
     #[test]

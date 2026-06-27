@@ -1187,6 +1187,15 @@ impl StateStore {
         } else {
             "NULL"
         };
+        let local_hour_expr = format!(
+            "strftime('%Y-%m-%dT%H', occurred_at_unix + {}, 'unixepoch')",
+            query.local_day_offset_seconds
+        );
+        let select_local_hour = if query.group_by_local_hour {
+            local_hour_expr.as_str()
+        } else {
+            "NULL"
+        };
         let select_model_provider = if query.group_by_model_provider {
             "model_provider"
         } else {
@@ -1230,7 +1239,8 @@ impl StateStore {
                    SUM(CASE WHEN cost_status = 'provider_reported' THEN 1 ELSE 0 END),
                    SUM(CASE WHEN cost_status = 'estimated' THEN 1 ELSE 0 END),
                    SUM(CASE WHEN cost_status = 'missing' THEN 1 ELSE 0 END),
-                   COUNT(*)
+                   COUNT(*),
+                   {select_local_hour}
             FROM usage_events
             WHERE 1 = 1
             "#
@@ -1269,6 +1279,10 @@ impl StateStore {
         if query.group_by_local_day {
             sql.push_str(", ");
             sql.push_str(&local_day_expr);
+        }
+        if query.group_by_local_hour {
+            sql.push_str(", ");
+            sql.push_str(&local_hour_expr);
         }
         if query.group_by_model_provider {
             sql.push_str(", model_provider");
@@ -1943,12 +1957,14 @@ fn usage_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageSumm
     let estimated_count = sum_u64(row, 19)?;
     let missing_count = sum_u64(row, 20)?;
     let event_count = sum_u64(row, 21)?;
+    let local_hour: Option<String> = row.get(22)?;
     let estimated_cost_usd = (cost_count > 0).then_some(cost_sum);
     let cost_status =
         aggregate_cost_status(provider_reported_count, estimated_count, missing_count);
     Ok(UsageSummary {
         client,
         local_day,
+        local_hour,
         model_provider,
         model,
         top_model: None,
@@ -2937,6 +2953,46 @@ mod tests {
                 .map(|summary| summary.normalized_total_tokens)
                 .sum::<u64>(),
             56
+        );
+    }
+
+    #[test]
+    fn usage_summary_groups_by_local_hour() {
+        let state_root = env::temp_dir().join(format!(
+            "openmux-state-store-usage-hour-{}",
+            unix_now_nanos()
+        ));
+        fs::create_dir_all(&state_root).unwrap();
+        let store = StateStore::open(&state_root).unwrap();
+        // 2026-04-03 12:00:01 and 12:59:59 fall in the same hour; 13:00:01 is the next.
+        let mut first = usage_event("codex", "hour-a", CostStatus::Missing, None);
+        first.occurred_at_unix = 1_775_174_401;
+        let mut second = usage_event("codex", "hour-a2", CostStatus::Missing, None);
+        second.occurred_at_unix = first.occurred_at_unix + 3_500;
+        let mut third = usage_event("codex", "hour-b", CostStatus::Missing, None);
+        third.occurred_at_unix = first.occurred_at_unix + 3_700;
+
+        store.insert_usage_event(&first, 10).unwrap();
+        store.insert_usage_event(&second, 20).unwrap();
+        store.insert_usage_event(&third, 30).unwrap();
+
+        let by_hour = store
+            .usage_summaries_by(UsageSummaryQuery {
+                client: Some("codex".to_string()),
+                group_by_local_hour: true,
+                local_day_offset_seconds: 0,
+                ..UsageSummaryQuery::default()
+            })
+            .unwrap();
+
+        assert_eq!(by_hour.len(), 2);
+        assert_eq!(by_hour[0].local_hour.as_deref(), Some("2026-04-03T00"));
+        assert_eq!(by_hour[0].event_count, 2);
+        assert_eq!(by_hour[1].local_hour.as_deref(), Some("2026-04-03T01"));
+        assert_eq!(by_hour[1].event_count, 1);
+        assert_eq!(
+            by_hour[0].normalized_total_tokens,
+            2 * by_hour[1].normalized_total_tokens
         );
     }
 

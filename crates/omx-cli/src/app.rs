@@ -179,6 +179,8 @@ pub fn run() -> Result<()> {
                 print_platform_accounts(find_plugin(&plugins, &platform)?)?;
             } else {
                 print_section("Overview");
+                let dashboard =
+                    omx_app::dashboard_view(&plugins, omx_app::MenubarQuery::default(), None)?;
                 let mut table = view_table();
                 table.set_header(vec![
                     header_cell("Platform"),
@@ -190,26 +192,52 @@ pub fn run() -> Result<()> {
                     header_cell("Status"),
                 ]);
                 for plugin in visible_plugins(&plugins) {
-                    let accounts = omx_app::account_statuses(plugin)?;
-                    let profiles = omx_app::config_profiles(plugin)?;
-                    let active = accounts.iter().find(|status| status.active);
-                    let active_profile = profiles.iter().find(|profile| profile.active);
-                    let active_label = match (active, active_profile) {
-                        (Some(account), Some(profile)) => {
-                            format!("{} + {}", account_label(&account.account), profile.name)
-                        }
-                        (Some(account), None) => account_label(&account.account),
-                        (None, Some(profile)) => profile.name.clone(),
-                        (None, None) => "-".to_string(),
-                    };
+                    let accounts = dashboard
+                        .accounts
+                        .accounts
+                        .iter()
+                        .filter(|account| account.provider == plugin.id())
+                        .collect::<Vec<_>>();
+                    let profiles = dashboard
+                        .accounts
+                        .profiles
+                        .iter()
+                        .filter(|profile| profile.provider == plugin.id())
+                        .collect::<Vec<_>>();
+                    let active_label = accounts
+                        .iter()
+                        .find(|account| account.active)
+                        .map(|account| account.display_label.clone())
+                        .or_else(|| {
+                            profiles
+                                .iter()
+                                .find(|profile| profile.active)
+                                .map(|profile| profile.display_label.clone())
+                        })
+                        .unwrap_or_else(|| "-".to_string());
+                    let attention = dashboard
+                        .provider_views
+                        .iter()
+                        .find(|view| view.provider == plugin.id())
+                        .filter(|view| {
+                            matches!(
+                                view.status,
+                                omx_app::MenubarAccountStatus::Limited
+                                    | omx_app::MenubarAccountStatus::Exhausted
+                                    | omx_app::MenubarAccountStatus::Stale
+                                    | omx_app::MenubarAccountStatus::Unavailable
+                            )
+                        })
+                        .map(|_| 1)
+                        .unwrap_or_default();
                     table.add_row(vec![
                         Cell::new(plugin.name()).add_attribute(Attribute::Bold),
                         active_account_cell(active_label),
                         Cell::new(accounts.len()),
                         Cell::new(profiles.len()),
-                        usage_cell(&summarize_cli_availability(&accounts)),
-                        usage_cell(&summarize_window_availability(&accounts, 18_000)),
-                        pool_status_cell(attention_count(&accounts)),
+                        usage_cell(&menubar_overall_availability(&accounts)),
+                        usage_cell(&menubar_window_availability(&accounts, 18_000)),
+                        pool_status_cell(attention),
                     ]);
                 }
                 println!("{table}");
@@ -299,18 +327,34 @@ pub fn run() -> Result<()> {
         }
         Command::Status => {
             print_section("Platform status");
+            let dashboard =
+                omx_app::dashboard_view(&plugins, omx_app::MenubarQuery::default(), None)?;
             let mut table = view_table();
             table.set_header(vec![
                 header_cell("Platform"),
                 header_cell("ID"),
+                header_cell("Targets"),
                 header_cell("Config"),
                 header_cell("Auth"),
             ]);
             for plugin in visible_plugins(&plugins) {
                 let install = plugin.detect()?;
+                let target_count = dashboard
+                    .accounts
+                    .accounts
+                    .iter()
+                    .filter(|account| account.provider == plugin.id())
+                    .count()
+                    + dashboard
+                        .accounts
+                        .profiles
+                        .iter()
+                        .filter(|profile| profile.provider == plugin.id())
+                        .count();
                 table.add_row(vec![
                     Cell::new(install.platform.name).add_attribute(Attribute::Bold),
                     muted_cell(install.platform.id),
+                    Cell::new(target_count),
                     path_cell(install.config_path.as_deref()),
                     path_cell(install.auth_path.as_deref()),
                 ]);
@@ -1531,6 +1575,7 @@ impl fmt::Display for TargetChoice {
     }
 }
 
+#[cfg(test)]
 fn summarize_cli_availability(accounts: &[AccountStatus]) -> String {
     let usage_percentages: Vec<f64> = accounts
         .iter()
@@ -1551,6 +1596,37 @@ fn summarize_cli_availability(accounts: &[AccountStatus]) -> String {
     average_percent(summary_percentages.into_iter())
 }
 
+fn menubar_overall_availability(accounts: &[&omx_app::MenubarAccount]) -> String {
+    average_percent(accounts.iter().filter_map(|account| {
+        account
+            .quota
+            .as_ref()
+            .and_then(|quota| quota.primary_window.as_ref())
+            .and_then(|window| window.remaining_percent_x100)
+            .map(|percent| percent as f64 / 100.0)
+    }))
+}
+
+fn menubar_window_availability(
+    accounts: &[&omx_app::MenubarAccount],
+    window_seconds: u64,
+) -> String {
+    average_percent(accounts.iter().filter_map(|account| {
+        account
+            .quota
+            .as_ref()
+            .and_then(|quota| {
+                quota
+                    .windows
+                    .iter()
+                    .find(|window| window.window_seconds == Some(window_seconds))
+            })
+            .and_then(|window| window.remaining_percent_x100)
+            .map(|percent| percent as f64 / 100.0)
+    }))
+}
+
+#[cfg(test)]
 fn summarize_window_availability(accounts: &[AccountStatus], window_seconds: u64) -> String {
     let percentages: Vec<u32> = accounts
         .iter()
@@ -1568,18 +1644,6 @@ fn summarize_window_availability(accounts: &[AccountStatus], window_seconds: u64
             .into_iter()
             .map(|percent| percent as f64 / 100.0),
     )
-}
-
-fn attention_count(accounts: &[AccountStatus]) -> usize {
-    accounts
-        .iter()
-        .filter(|status| {
-            matches!(
-                status.availability.state,
-                omx_core::AvailabilityState::Limited | omx_core::AvailabilityState::Exhausted
-            )
-        })
-        .count()
 }
 
 fn find_window_limit(usage: &UsageSnapshot, window_seconds: u64) -> Option<&UsageLimit> {
@@ -2036,6 +2100,7 @@ mod tests {
         let summary = UsageSummary {
             client: "codex".to_string(),
             local_day: None,
+            local_hour: None,
             model_provider: None,
             model: None,
             top_model: None,
@@ -2110,6 +2175,7 @@ mod tests {
         let summary = UsageSummary {
             client: "codex".to_string(),
             local_day: None,
+            local_hour: None,
             model_provider: None,
             model: None,
             top_model: Some("gpt-5".to_string()),

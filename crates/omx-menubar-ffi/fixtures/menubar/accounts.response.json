@@ -1,7 +1,13 @@
 {
   "schema_version": 1,
+  "control_plane_schema_version": 1,
+  "state_schema_version": 1,
+  "minimum_backend_version": "0.1.0",
+  "minimum_frontend_version": "0.1.0",
   "ok": true,
   "data": {
+    "control_plane_schema_version": 1,
+    "state_schema_version": 1,
     "generated_at_unix": 0,
     "providers": [
       "codex"
@@ -11,6 +17,10 @@
     "active_local_id": null,
     "active_target_key": null,
     "active_target_kind": null,
+    "system_active_target": null,
+    "selected_ui_target": null,
+    "refresh_scope_target": null,
+    "observed_target": null,
     "diagnostics": []
   },
   "request_id": "accounts-fixture"

@@ -345,6 +345,7 @@ impl UsageEvent {
 pub struct UsageSummary {
     pub client: String,
     pub local_day: Option<String>,
+    pub local_hour: Option<String>,
     pub model_provider: Option<String>,
     pub model: Option<String>,
     pub top_model: Option<String>,
@@ -365,6 +366,7 @@ pub struct UsageSummaryQuery {
     pub since_unix: Option<i64>,
     pub until_unix: Option<i64>,
     pub group_by_local_day: bool,
+    pub group_by_local_hour: bool,
     pub local_day_offset_seconds: i32,
     pub model_provider: Option<String>,
     pub model: Option<String>,
@@ -448,6 +450,7 @@ impl UsageSummary {
         Self {
             client: client.into(),
             local_day: None,
+            local_hour: None,
             model_provider: None,
             model: None,
             top_model: None,

@@ -6,6 +6,7 @@ struct DashboardView: View {
     @AppStorage("dev.openmux.menubar.trayDisplayMode") private var trayDisplayMode = "text"
     @AppStorage("dev.openmux.menubar.backgroundRefreshCadence") private var refreshCadence = 300
     @Environment(\.colorScheme) private var colorScheme
+    @Namespace private var selectorAnimation
 
     private let width: CGFloat = 392
     private let height: CGFloat = 640
@@ -17,12 +18,12 @@ struct DashboardView: View {
                 loadingView
             case .failed(let lastGood, let message):
                 if let lastGood {
-                    content(lastGood, stale: true, errorMessage: message)
+                    content(lastGood, stale: true)
                 } else {
                     failedView(message)
                 }
             case .ready(let report, let stale):
-                content(report, stale: stale, errorMessage: store.statusMessage)
+                content(report, stale: stale)
             }
         }
         .frame(width: width, height: height)
@@ -68,7 +69,7 @@ struct DashboardView: View {
         .padding()
     }
 
-    private func content(_ report: DashboardReport, stale: Bool, errorMessage: String?) -> some View {
+    private func content(_ report: DashboardReport, stale: Bool) -> some View {
         let providers = providerNames(report)
         let currentProvider = store.selectedProvider.flatMap { providers.contains($0) ? $0 : nil }
 
@@ -82,19 +83,11 @@ struct DashboardView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    if let errorMessage {
-                        banner(errorMessage, color: statusColor(store.statusKind))
-                    }
-
-                    if let currentProvider {
-                        providerPage(provider: currentProvider, report: report)
-                    } else {
-                        overview(report)
-                    }
+                    page(for: currentProvider, report: report)
                 }
                 .padding()
                 .id(currentProvider ?? "overview")
-                .transition(.opacity.combined(with: .move(edge: .trailing)))
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
             Divider()
@@ -193,16 +186,21 @@ struct DashboardView: View {
     private func providerSelector(providers: [String], selected: String?) -> some View {
         HStack(spacing: 4) {
             selectorButton("Overview", active: selected == nil) {
-                store.selectedProvider = nil
+                withAnimation(.smooth(duration: 0.2)) {
+                    store.selectedProvider = nil
+                }
             }
 
             ForEach(providers, id: \.self) { provider in
                 selectorButton(provider.capitalized, active: selected == provider) {
-                    store.selectedProvider = provider
+                    withAnimation(.smooth(duration: 0.2)) {
+                        store.selectedProvider = provider
+                    }
                 }
             }
         }
         .padding(4)
+        .frame(maxWidth: .infinity)
         .background(selectorBackground, in: Capsule())
     }
 
@@ -222,9 +220,25 @@ struct DashboardView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity)
-            .background(active ? selectorActive : Color.clear, in: Capsule())
+            .background {
+                if active {
+                    Capsule()
+                        .fill(selectorActive)
+                        .matchedGeometryEffect(id: "selectedProviderTab", in: selectorAnimation)
+                }
+            }
+            .contentShape(Capsule())
         }
         .buttonStyle(SegmentedFeedbackButtonStyle(active: active))
+    }
+
+    @ViewBuilder
+    private func page(for provider: String?, report: DashboardReport) -> some View {
+        if let provider {
+            providerPage(provider: provider, report: report)
+        } else {
+            overview(report)
+        }
     }
 
     private func overview(_ report: DashboardReport) -> some View {
@@ -360,7 +374,7 @@ struct DashboardView: View {
                         }
 
                         HStack(spacing: 0) {
-                            ProviderMiniColumn(label: "Current", value: activeTargetLabel(accounts: accounts, profiles: profiles, report: report), color: activeTargetLabel(accounts: accounts, profiles: profiles, report: report) == "-" ? secondaryText : .green)
+                            ProviderMiniColumn(label: "Current", value: activeTargetLabel(accounts: accounts, profiles: profiles), color: activeTargetLabel(accounts: accounts, profiles: profiles) == "-" ? secondaryText : .green)
                             verticalRule
                             ProviderMiniColumn(label: "Accounts", value: "\(accounts.count)", color: primaryText)
                             verticalRule
@@ -389,8 +403,8 @@ struct DashboardView: View {
     private func providerPage(provider: String, report: DashboardReport) -> some View {
         let accounts = accounts(for: provider, in: report)
         let profiles = profiles(for: provider, in: report)
-        let active = activeAccount(accounts, report: report)
-        let activeProfile = activeProfile(profiles, report: report)
+        let active = activeAccount(accounts)
+        let activeProfile = activeProfile(profiles)
 
         let usage = providerUsage(provider, in: report)
 
@@ -438,10 +452,9 @@ struct DashboardView: View {
             }
 
             ForEach(accounts) { account in
-                let isActive = isActiveTarget(accountKey: account.accountKey, kind: account.targetKind, report: report)
                 AccountTargetRow(
                     account: account,
-                    active: isActive,
+                    active: account.active,
                     switching: store.switchingLocalId == account.id,
                     deleting: store.deletingLocalId == account.id,
                     refreshing: store.refreshingProvider != nil,
@@ -465,10 +478,9 @@ struct DashboardView: View {
             }
 
             ForEach(profiles) { profile in
-                let isActive = isActiveTarget(accountKey: profile.accountKey, kind: profile.targetKind, report: report)
                 ProfileTargetRow(
                     profile: profile,
-                    active: isActive,
+                    active: profile.active,
                     switching: store.switchingLocalId == profile.id,
                     deleting: store.deletingLocalId == profile.id,
                     refreshing: store.refreshingProvider != nil,
@@ -555,16 +567,6 @@ struct DashboardView: View {
                 .buttonStyle(CompactCommandButtonStyle())
         }
         .padding()
-    }
-
-    private func banner(_ message: String, color: Color) -> some View {
-        Text(message)
-            .font(.caption)
-            .foregroundStyle(color)
-            .lineLimit(3)
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
 
     @ViewBuilder
@@ -670,26 +672,19 @@ struct DashboardView: View {
         return timeAgo(UInt64(max(0, timestamp)))
     }
 
-    private func isActiveTarget(accountKey: String, kind: String, report: DashboardReport) -> Bool {
-        if let activeKey = report.accounts.activeTargetKey {
-            return accountKey == activeKey
-        }
-        return false
+    private func activeAccount(_ accounts: [MenubarAccount]) -> MenubarAccount? {
+        accounts.first(where: \.active)
     }
 
-    private func activeAccount(_ accounts: [MenubarAccount], report: DashboardReport) -> MenubarAccount? {
-        accounts.first { isActiveTarget(accountKey: $0.accountKey, kind: $0.targetKind, report: report) }
+    private func activeProfile(_ profiles: [MenubarProfile]) -> MenubarProfile? {
+        profiles.first(where: \.active)
     }
 
-    private func activeProfile(_ profiles: [MenubarProfile], report: DashboardReport) -> MenubarProfile? {
-        profiles.first { isActiveTarget(accountKey: $0.accountKey, kind: $0.targetKind, report: report) }
-    }
-
-    private func activeTargetLabel(accounts: [MenubarAccount], profiles: [MenubarProfile], report: DashboardReport) -> String {
-        if let account = activeAccount(accounts, report: report) {
+    private func activeTargetLabel(accounts: [MenubarAccount], profiles: [MenubarProfile]) -> String {
+        if let account = activeAccount(accounts) {
             return account.shortLabel
         }
-        if let profile = activeProfile(profiles, report: report) {
+        if let profile = activeProfile(profiles) {
             return profile.displayLabel
         }
         return "-"
@@ -790,15 +785,6 @@ struct DashboardView: View {
             return .orange
         }
         return .green
-    }
-
-    private func statusColor(_ status: String?) -> Color {
-        switch status {
-        case "success": return .green
-        case "skipped": return .orange
-        case "failed": return .red
-        default: return .orange
-        }
     }
 
     private func lowestQuota(_ accounts: [MenubarAccount]) -> UInt32? {

@@ -13,8 +13,6 @@ public final class AppStore: ObservableObject {
     @Published private(set) var deletingLocalId: String?
     @Published private(set) var confirmingDeleteTargetId: String?
     @Published private(set) var refreshingProvider: String?
-    @Published private(set) var statusMessage: String?
-    @Published private(set) var statusKind: String?
     @Published var selectedProvider: String?
 
     var trayTitle: String {
@@ -72,14 +70,11 @@ public final class AppStore: ObservableObject {
             await request(.refresh(provider: provider, kind: kind))
         }
         refreshingProvider = nil
-        await load()
     }
 
     func switchAccount(_ account: MenubarAccount) async {
         guard switchingLocalId == nil else { return }
         switchingLocalId = account.id
-        statusMessage = nil
-        statusKind = nil
         await request(.switchTarget(provider: account.provider, targetKind: account.targetKind, localId: account.localId))
         switchingLocalId = nil
     }
@@ -87,8 +82,6 @@ public final class AppStore: ObservableObject {
     func switchProfile(_ profile: MenubarProfile) async {
         guard switchingLocalId == nil else { return }
         switchingLocalId = profile.id
-        statusMessage = nil
-        statusKind = nil
         await request(.switchTarget(provider: profile.provider, targetKind: profile.targetKind, localId: profile.localId))
         switchingLocalId = nil
     }
@@ -130,18 +123,13 @@ public final class AppStore: ObservableObject {
             guard currentGeneration == generation else { return }
             if let report = envelope.data?.dashboard {
                 lastGood = report
-                statusMessage = envelope.data?.operation?.message
-                statusKind = envelope.data?.operation?.status
                 state = .ready(report, stale: false)
             } else {
-                statusMessage = "Backend returned no dashboard."
-                statusKind = "failed"
+                state = .failed(lastGood: lastGood, message: "Backend returned no dashboard.")
             }
         } catch {
             guard currentGeneration == generation else { return }
             let message = userFacingMessage(error)
-            statusMessage = message
-            statusKind = "failed"
             state = .failed(lastGood: lastGood, message: message)
         }
     }

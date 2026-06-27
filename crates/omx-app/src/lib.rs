@@ -294,16 +294,25 @@ pub fn menubar_accounts(
     }
     sort_accounts(&mut accounts);
     sort_profiles(&mut profiles);
-    let active_accounts = accounts.iter().filter(|account| account.active).count();
-    let active_profiles = profiles.iter().filter(|profile| profile.active).count();
-    if active_accounts + active_profiles > 1 {
-        diagnostics.push(MenubarDiagnostic {
-            code: "multiple_active_targets".to_string(),
-            message: "provider reported multiple active targets; using one active target"
-                .to_string(),
-        });
-        normalize_active_targets(&mut accounts, &mut profiles);
+    for provider in &providers {
+        let active_accounts = accounts
+            .iter()
+            .filter(|account| account.provider == *provider && account.active)
+            .count();
+        let active_profiles = profiles
+            .iter()
+            .filter(|profile| profile.provider == *provider && profile.active)
+            .count();
+        if active_accounts + active_profiles > 1 {
+            diagnostics.push(MenubarDiagnostic {
+                code: "multiple_active_targets".to_string(),
+                message: format!(
+                    "`{provider}` reported multiple active targets; using one active target"
+                ),
+            });
+        }
     }
+    normalize_active_targets(&mut accounts, &mut profiles);
     let active_account = accounts.iter().find(|account| account.active);
     let active_profile = profiles.iter().find(|profile| profile.active);
     let active_local_id = active_account
@@ -373,14 +382,8 @@ pub fn menubar_switch(
     let active_before = active_target(plugin.id(), &before_catalog);
     let target = resolve_menubar_target(plugin.id(), &before_catalog, &command)?;
     plugin.use_target(&target.target_id)?;
-    let dashboard = menubar_dashboard(
-        plugins,
-        MenubarQuery {
-            provider: Some(command.provider.clone()),
-        },
-        store,
-    )?;
-    let active_after = active_target_from_report(&dashboard.accounts);
+    let dashboard = menubar_dashboard(plugins, MenubarQuery { provider: None }, store)?;
+    let active_after = active_target_for_provider_from_report(plugin.id(), &dashboard.accounts);
     let changed = active_before.as_ref().map(|target| &target.account_key)
         != active_after.as_ref().map(|target| &target.account_key);
     Ok(MenubarSwitchReport {
@@ -426,14 +429,8 @@ pub fn menubar_remove(
         },
     )?;
     plugin.remove_target(&target.target_id)?;
-    let dashboard = menubar_dashboard(
-        plugins,
-        MenubarQuery {
-            provider: Some(command.provider.clone()),
-        },
-        store,
-    )?;
-    let active_after = active_target_from_report(&dashboard.accounts);
+    let dashboard = menubar_dashboard(plugins, MenubarQuery { provider: None }, store)?;
+    let active_after = active_target_for_provider_from_report(plugin.id(), &dashboard.accounts);
     let accounts = dashboard.accounts.clone();
     Ok(MenubarRemoveReport {
         generated_at_unix: unix_now(),
@@ -487,14 +484,8 @@ pub fn menubar_refresh(
             });
         }
     }
-    let dashboard = menubar_dashboard(
-        plugins,
-        MenubarQuery {
-            provider: Some(command.provider.clone()),
-        },
-        store,
-    )?;
-    let active = active_target_from_report(&dashboard.accounts);
+    let dashboard = menubar_dashboard(plugins, MenubarQuery { provider: None }, store)?;
+    let active = active_target_for_provider_from_report(&command.provider, &dashboard.accounts);
     let refreshed = refreshed && operation_status == MenubarOperationStatus::Success;
     let operation = MenubarOperationResult {
         status: operation_status,
@@ -611,11 +602,14 @@ fn active_target(provider: &str, catalog: &TargetCatalog) -> Option<MenubarActiv
         })
 }
 
-fn active_target_from_report(report: &MenubarAccountsReport) -> Option<MenubarActiveTarget> {
+fn active_target_for_provider_from_report(
+    provider: &str,
+    report: &MenubarAccountsReport,
+) -> Option<MenubarActiveTarget> {
     report
         .accounts
         .iter()
-        .find(|account| account.active)
+        .find(|account| account.provider == provider && account.active)
         .map(|account| MenubarActiveTarget {
             provider: account.provider.clone(),
             target_kind: MenubarTargetKind::Account,
@@ -627,7 +621,7 @@ fn active_target_from_report(report: &MenubarAccountsReport) -> Option<MenubarAc
             report
                 .profiles
                 .iter()
-                .find(|profile| profile.active)
+                .find(|profile| profile.provider == provider && profile.active)
                 .map(|profile| MenubarActiveTarget {
                     provider: profile.provider.clone(),
                     target_kind: MenubarTargetKind::Profile,
@@ -958,27 +952,44 @@ fn sort_profiles(profiles: &mut [MenubarProfile]) {
 }
 
 fn normalize_active_targets(accounts: &mut [MenubarAccount], profiles: &mut [MenubarProfile]) {
-    if let Some(active_profile_key) = profiles
+    let providers = accounts
         .iter()
-        .find(|profile| profile.active)
-        .map(|profile| profile.account_key.clone())
-    {
-        for account in accounts {
-            account.active = false;
-        }
-        for profile in profiles {
-            profile.active = profile.account_key == active_profile_key;
-        }
-        return;
-    }
+        .map(|account| account.provider.clone())
+        .chain(profiles.iter().map(|profile| profile.provider.clone()))
+        .collect::<std::collections::HashSet<_>>();
 
-    if let Some(active_account_key) = accounts
-        .iter()
-        .find(|account| account.active)
-        .map(|account| account.account_key.clone())
-    {
-        for account in accounts {
-            account.active = account.account_key == active_account_key;
+    for provider in providers {
+        if let Some(active_profile_key) = profiles
+            .iter()
+            .find(|profile| profile.provider == provider && profile.active)
+            .map(|profile| profile.account_key.clone())
+        {
+            for account in accounts
+                .iter_mut()
+                .filter(|account| account.provider == provider)
+            {
+                account.active = false;
+            }
+            for profile in profiles
+                .iter_mut()
+                .filter(|profile| profile.provider == provider)
+            {
+                profile.active = profile.account_key == active_profile_key;
+            }
+            continue;
+        }
+
+        if let Some(active_account_key) = accounts
+            .iter()
+            .find(|account| account.provider == provider && account.active)
+            .map(|account| account.account_key.clone())
+        {
+            for account in accounts
+                .iter_mut()
+                .filter(|account| account.provider == provider)
+            {
+                account.active = account.account_key == active_account_key;
+            }
         }
     }
 }
@@ -1096,6 +1107,41 @@ mod tests {
         );
         assert!(!report.accounts[0].active);
         assert!(report.profiles[0].active);
+    }
+
+    #[test]
+    fn accounts_report_keeps_one_active_target_per_provider() {
+        let plugins = vec![
+            Box::new(FakePlugin::new(vec![account(1, true, None)])) as Box<dyn PlatformPlugin>,
+            Box::new(
+                FakePlugin::new(vec![account_for_provider("claude", 1, true, None)])
+                    .with_provider("claude"),
+            ) as Box<dyn PlatformPlugin>,
+        ];
+
+        let report = menubar_accounts(&plugins, MenubarQuery::default()).unwrap();
+
+        assert_eq!(
+            report
+                .accounts
+                .iter()
+                .filter(|account| account.active)
+                .count(),
+            2
+        );
+        assert!(
+            report
+                .accounts
+                .iter()
+                .any(|account| account.provider == "codex" && account.active)
+        );
+        assert!(
+            report
+                .accounts
+                .iter()
+                .any(|account| account.provider == "claude" && account.active)
+        );
+        assert!(report.diagnostics.is_empty());
     }
 
     #[test]
@@ -1400,6 +1446,7 @@ mod tests {
     }
 
     struct FakePlugin {
+        provider: &'static str,
         accounts: Vec<AccountStatus>,
         profiles: Vec<ConfigProfile>,
         switched: Arc<StdMutex<Option<String>>>,
@@ -1412,6 +1459,7 @@ mod tests {
     impl FakePlugin {
         fn new(accounts: Vec<AccountStatus>) -> Self {
             Self {
+                provider: "codex",
                 accounts,
                 profiles: Vec::new(),
                 switched: Arc::new(StdMutex::new(None)),
@@ -1424,6 +1472,7 @@ mod tests {
 
         fn unavailable(message: &str) -> Self {
             Self {
+                provider: "codex",
                 accounts: Vec::new(),
                 profiles: Vec::new(),
                 switched: Arc::new(StdMutex::new(None)),
@@ -1432,6 +1481,11 @@ mod tests {
                 refresh_error: None,
                 switch_error: None,
             }
+        }
+
+        fn with_provider(mut self, provider: &'static str) -> Self {
+            self.provider = provider;
+            self
         }
 
         fn with_switched(mut self, switched: Arc<StdMutex<Option<String>>>) -> Self {
@@ -1462,7 +1516,7 @@ mod tests {
 
     impl PlatformPlugin for FakePlugin {
         fn id(&self) -> &'static str {
-            "codex"
+            self.provider
         }
 
         fn name(&self) -> &'static str {
@@ -1551,12 +1605,16 @@ mod tests {
     }
 
     fn profile(number: u32, active: bool) -> ConfigProfile {
+        profile_for_provider("codex", number, active)
+    }
+
+    fn profile_for_provider(provider: &str, number: u32, active: bool) -> ConfigProfile {
         ConfigProfile {
             platform: PlatformInfo {
-                id: "codex".to_string(),
-                name: "Codex".to_string(),
+                id: provider.to_string(),
+                name: provider.to_string(),
             },
-            local_id: format!("codex-profile-{number}"),
+            local_id: format!("{provider}-profile-{number}"),
             name: format!("profile {number}"),
             active,
             config_path: format!("/tmp/profile-{number}.toml"),
@@ -1569,10 +1627,19 @@ mod tests {
     }
 
     fn account(number: u32, active: bool, diagnostic: Option<&str>) -> AccountStatus {
+        account_for_provider("codex", number, active, diagnostic)
+    }
+
+    fn account_for_provider(
+        provider: &str,
+        number: u32,
+        active: bool,
+        diagnostic: Option<&str>,
+    ) -> AccountStatus {
         AccountStatus {
             account: AccountRef {
-                platform: "codex".to_string(),
-                local_id: format!("codex-account-{number}"),
+                platform: provider.to_string(),
+                local_id: format!("{provider}-account-{number}"),
                 number,
                 alias: Some(format!("acct-{number}")),
             },

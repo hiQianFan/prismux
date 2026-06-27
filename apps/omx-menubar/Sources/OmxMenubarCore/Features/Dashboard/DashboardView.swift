@@ -3,114 +3,70 @@ import SwiftUI
 
 struct DashboardView: View {
     @ObservedObject var store: AppStore
+    let report: DashboardReport
+    let stale: Bool
+
     @AppStorage("dev.openmux.menubar.trayDisplayMode") private var trayDisplayMode = "text"
     @AppStorage("dev.openmux.menubar.backgroundRefreshCadence") private var refreshCadence = 300
     @Environment(\.colorScheme) private var colorScheme
-    @Namespace private var selectorAnimation
-
-    private let width: CGFloat = 392
-    private let height: CGFloat = 640
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        Group {
-            switch store.state {
-            case .loading:
-                loadingView
-            case .failed(let lastGood, let message):
-                if let lastGood {
-                    content(lastGood, stale: true)
-                } else {
-                    failedView(message)
-                }
-            case .ready(let report, let stale):
-                content(report, stale: stale)
-            }
-        }
-        .frame(width: width, height: height)
-        .background(shellBackground)
-        .animation(.smooth(duration: 0.18), value: store.selectedProvider)
-        .animation(.smooth(duration: 0.16), value: store.refreshingProvider)
-        .animation(.smooth(duration: 0.16), value: store.switchingLocalId)
-        .animation(.smooth(duration: 0.16), value: store.deletingLocalId)
-        .animation(.smooth(duration: 0.16), value: store.confirmingDeleteTargetId)
-    }
-
-    private var loadingView: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            headerSkeleton
-            Card {
-                ProgressView()
-                Text("Loading dashboard")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .padding()
-    }
-
-    private func failedView(_ message: String) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("OpenMux")
-                .font(.title3.bold())
-            Card {
-                Text("Backend unavailable")
-                    .font(.headline)
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(4)
-                Button("Retry") { Task { await store.load() } }
-                    .buttonStyle(CompactCommandButtonStyle())
-            }
-            Spacer()
-            footer(providers: [], selectedProvider: nil)
-        }
-        .padding()
+        content(report, stale: stale)
     }
 
     private func content(_ report: DashboardReport, stale: Bool) -> some View {
         let providers = providerNames(report)
         let currentProvider = store.selectedProvider.flatMap { providers.contains($0) ? $0 : nil }
+        // Carousel index: 0 = Overview, n = providers[n-1]. One source of truth
+        // for the slide offset so day/provider transitions are directional.
+        let pages: [String?] = [nil] + providers.map { Optional($0) }
+        let selectedIndex = currentProvider.flatMap { pages.firstIndex(of: $0) } ?? 0
 
         return VStack(alignment: .leading, spacing: 0) {
             header(report, stale: stale)
-            providerSelector(providers: providers, selected: currentProvider)
-                .padding(.horizontal)
-                .padding(.bottom, 10)
+            ProviderTabBar(
+                providers: providers,
+                selected: currentProvider,
+                onSelect: { provider in store.selectedProvider = provider }
+            )
+            .padding(.horizontal)
+            .padding(.bottom, 10)
 
             Divider()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    page(for: currentProvider, report: report)
-                }
-                .padding()
-                .id(currentProvider ?? "overview")
-                .transition(.opacity.combined(with: .move(edge: .top)))
-            }
+            carousel(pages: pages, selectedIndex: selectedIndex, report: report)
 
             Divider()
             footer(providers: providers, selectedProvider: currentProvider)
         }
     }
 
-    private var headerSkeleton: some View {
-        HStack(alignment: .center, spacing: 12) {
-            headerIcon(provider: "openmux", stale: false)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("OpenMux")
-                    .font(.title3.bold())
-                Text("Loading...")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+    /// Horizontal carousel of pages, offset by the selected index. Each page
+    /// scrolls independently. The slide direction falls out of the index delta
+    /// for free — no transition-direction bookkeeping.
+    @ViewBuilder
+    private func carousel(pages: [String?], selectedIndex: Int, report: DashboardReport) -> some View {
+        GeometryReader { proxy in
+            let pageWidth = proxy.size.width
+            HStack(spacing: 0) {
+                ForEach(Array(pages.enumerated()), id: \.offset) { _, provider in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 12) {
+                            page(for: provider, report: report)
+                        }
+                        .padding()
+                    }
+                    .frame(width: pageWidth)
+                }
             }
-
-            Spacer()
+            .frame(width: pageWidth, alignment: .leading)
+            .offset(x: -CGFloat(selectedIndex) * pageWidth)
+            .animation(reduceMotion ? nil : .smooth(duration: 0.28), value: selectedIndex)
+            .clipped()
         }
-        .padding()
     }
+
 
     private func header(_ report: DashboardReport, stale: Bool) -> some View {
         HStack(alignment: .center, spacing: 12) {
@@ -149,6 +105,7 @@ struct DashboardView: View {
                 .buttonStyle(IconFeedbackButtonStyle())
                 .disabled(store.refreshingProvider != nil)
                 .help("Refresh status")
+                .accessibilityLabel("Refresh status")
 
                 Menu {
                     Picker("Tray display", selection: $trayDisplayMode) {
@@ -167,6 +124,7 @@ struct DashboardView: View {
                 .menuIndicator(.hidden)
                 .buttonStyle(IconFeedbackButtonStyle())
                 .help("Settings")
+                .accessibilityLabel("Settings")
             }
         }
         .padding()
@@ -183,220 +141,53 @@ struct DashboardView: View {
         }
     }
 
-    private func providerSelector(providers: [String], selected: String?) -> some View {
-        HStack(spacing: 4) {
-            selectorButton("Overview", active: selected == nil) {
-                withAnimation(.smooth(duration: 0.2)) {
-                    store.selectedProvider = nil
-                }
-            }
-
-            ForEach(providers, id: \.self) { provider in
-                selectorButton(provider.capitalized, active: selected == provider) {
-                    withAnimation(.smooth(duration: 0.2)) {
-                        store.selectedProvider = provider
-                    }
-                }
-            }
-        }
-        .padding(4)
-        .frame(maxWidth: .infinity)
-        .background(selectorBackground, in: Capsule())
-    }
-
-    private func selectorButton(_ title: String, active: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                if title != "Overview" {
-                    Circle()
-                        .fill(providerColor(title))
-                        .frame(width: 6, height: 6)
-                }
-                Text(title)
-                    .lineLimit(1)
-            }
-            .font(.caption.weight(active ? .semibold : .regular))
-            .foregroundStyle(active ? primaryText : secondaryText)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity)
-            .background {
-                if active {
-                    Capsule()
-                        .fill(selectorActive)
-                        .matchedGeometryEffect(id: "selectedProviderTab", in: selectorAnimation)
-                }
-            }
-            .contentShape(Capsule())
-        }
-        .buttonStyle(SegmentedFeedbackButtonStyle(active: active))
-    }
-
     @ViewBuilder
     private func page(for provider: String?, report: DashboardReport) -> some View {
         if let provider {
-            providerPage(provider: provider, report: report)
+            ProviderPage(provider: provider) {
+                providerPage(provider: provider, report: report)
+            }
         } else {
-            overview(report)
+            OverviewPage {
+                overview(report)
+            }
         }
     }
 
     private func overview(_ report: DashboardReport) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            poolSummary(report)
-            providerSummaries(report)
-            usageSummary(report.usage, title: "Token Usage", subtitle: "Local parsed usage across providers")
-        }
-    }
-
-    private func poolSummary(_ report: DashboardReport) -> some View {
-        let accounts = report.accounts.accounts
-        let profiles = report.accounts.profiles
         let providers = providerNames(report)
-        let activeProviders = Set(
-            accounts.filter(\.active).map(\.provider)
-                + profiles.filter(\.active).map(\.provider)
-        ).count
-        let stale = accounts.filter { $0.status == "stale" || $0.diagnostic != nil }.count
-            + profiles.filter { $0.status == "stale" || $0.diagnostic != nil }.count
-        let lowest = lowestQuotaSummary(accounts)
-
-        return Card {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "person.2.fill")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.purple)
-                    .frame(width: 26)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("All Accounts")
-                        .font(.headline)
-                    Text("Whole-pool aggregation")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        return VStack(alignment: .leading, spacing: 12) {
+            Card(title: "Providers") {
+                if providers.isEmpty {
+                    emptyState("No providers reported by backend.")
                 }
-            }
-
-            HStack(spacing: 0) {
-                OverviewStat(value: "\(providers.count)", label: "Providers")
-                verticalRule
-                OverviewStat(value: "\(accounts.count)", label: "Accounts")
-                verticalRule
-                OverviewStat(value: "\(profiles.count)", label: "Profiles")
-                verticalRule
-                OverviewStat(value: "\(stale)", label: "Stale", color: stale > 0 ? .orange : .green)
-                verticalRule
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "shield.lefthalf.filled")
-                            .font(.caption)
-                        Text("Lowest quota")
-                            .font(.caption)
+                ForEach(providers, id: \.self) { provider in
+                    let accounts = accounts(for: provider, in: report)
+                    let profiles = profiles(for: provider, in: report)
+                    let view = providerView(provider, in: report)
+                    let activeLabel = activeTargetLabel(accounts: accounts, profiles: profiles)
+                    OverviewProviderRow(
+                        provider: provider,
+                        activeTarget: activeLabel == "-" ? nil : activeLabel,
+                        accountCount: accounts.count,
+                        profileCount: profiles.count,
+                        lowestQuotaPercent: lowestQuota(accounts).map { Int($0) / 100 },
+                        statusText: view?.statusText ?? "Unknown",
+                        statusTone: view.map { toneColor($0.statusTone) } ?? .secondary,
+                        onTap: { store.selectedProvider = provider }
+                    )
+                    if provider != providers.last {
+                        Divider().opacity(0.4)
                     }
-                    .foregroundStyle(.secondary)
-
-                    Text(lowest?.percent ?? "Unknown")
-                        .font(.title3.monospacedDigit().bold())
-                        .foregroundStyle(lowest == nil ? secondaryText : quotaColor(lowest?.raw))
-                    Text(lowest?.label ?? "No quota data")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(.top, 4)
-
-            HStack(spacing: 6) {
-                Image(systemName: "clock")
-                    .font(.caption)
-                Text("Last refreshed \(timeAgo(report.generatedAtUnix))")
-                if stale > 0 {
-                    Text("·")
-                    Text("Some data may be stale")
-                        .foregroundStyle(.orange)
-                } else if activeProviders > 0 {
-                    Text("·")
-                    Text("\(activeProviders) active provider\(activeProviders == 1 ? "" : "s")")
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-    }
-
-    private func providerSummaries(_ report: DashboardReport) -> some View {
-        Card {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "square.stack.3d.up.fill")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.purple)
-                    .frame(width: 26)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Providers")
-                        .font(.headline)
-                    Text("Current selection and health")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             }
 
-            let providers = providerNames(report)
-            if providers.isEmpty {
-                emptyState("No providers reported by backend.")
-            }
-
-            ForEach(providers, id: \.self) { provider in
-                let accounts = accounts(for: provider, in: report)
-                let profiles = profiles(for: provider, in: report)
-                Button {
-                    store.selectedProvider = provider
-                } label: {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 10) {
-                            providerBadge(provider)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(provider.capitalized)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(primaryText)
-                                Text(providerSecondaryText(accounts: accounts, profiles: profiles))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            Spacer()
-                            StatusPill(
-                                text: providerStatusText(accounts: accounts, profiles: profiles),
-                                color: providerStatusColor(accounts: accounts, profiles: profiles)
-                            )
-                            Image(systemName: "chevron.right")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        HStack(spacing: 0) {
-                            ProviderMiniColumn(label: "Current", value: activeTargetLabel(accounts: accounts, profiles: profiles), color: activeTargetLabel(accounts: accounts, profiles: profiles) == "-" ? secondaryText : .green)
-                            verticalRule
-                            ProviderMiniColumn(label: "Accounts", value: "\(accounts.count)", color: primaryText)
-                            verticalRule
-                            ProviderMiniColumn(label: "Profiles", value: "\(profiles.count)", color: primaryText)
-                            verticalRule
-                            ProviderMiniColumn(
-                                label: accounts.isEmpty ? "State" : "Updated",
-                                value: accounts.isEmpty ? "Planned" : providerUpdatedLabel(accounts: accounts, fallback: report.generatedAtUnix),
-                                color: accounts.isEmpty ? secondaryText : primaryText
-                            )
-                        }
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(PanelRowButtonStyle())
-                .padding(.vertical, 7)
-
-                if provider != providers.last {
-                    Divider()
-                        .opacity(0.45)
-                }
-            }
+            UsageCard(
+                usage: report.usage,
+                title: "Token Usage",
+                period: store.usagePeriod,
+                onSelectPeriod: { store.usagePeriod = $0 }
+            )
         }
     }
 
@@ -409,19 +200,24 @@ struct DashboardView: View {
         let usage = providerUsage(provider, in: report)
 
         return VStack(alignment: .leading, spacing: 12) {
-            providerOverview(provider: provider, accounts: accounts, profiles: profiles, active: active, activeProfile: activeProfile, usage: usage)
+            providerOverview(provider: provider, accounts: accounts, profiles: profiles, active: active, activeProfile: activeProfile, usage: usage, report: report)
             accountTargets(provider: provider, accounts: accounts, report: report)
             profileTargets(provider: provider, profiles: profiles, report: report)
-            usageSummary(usage, title: "\(provider.capitalized) Token Usage", subtitle: "Provider local usage, not account quota")
+            UsageCard(
+                usage: usage,
+                title: "\(provider.capitalized) Token Usage",
+                accent: ProviderStyle.color(provider),
+                period: store.usagePeriod,
+                onSelectPeriod: { store.usagePeriod = $0 }
+            )
             diagnostics(provider: provider, report: report, accounts: accounts)
         }
     }
 
-    private func providerOverview(provider: String, accounts: [MenubarAccount], profiles: [MenubarProfile], active: MenubarAccount?, activeProfile: MenubarProfile?, usage: UsageSummary) -> some View {
+    private func providerOverview(provider: String, accounts: [MenubarAccount], profiles: [MenubarProfile], active: MenubarAccount?, activeProfile: MenubarProfile?, usage: UsageSummary, report: DashboardReport) -> some View {
         let targetLabel = active?.shortLabel ?? activeProfile?.displayLabel
         let lowest = lowestQuota(accounts).map { "\(Int($0) / 100)%" } ?? "unknown"
-        let alerts = accounts.filter { $0.status != "healthy" || $0.diagnostic != nil }.count
-            + profiles.filter { $0.status != "healthy" || $0.diagnostic != nil }.count
+        let alerts = providerView(provider, in: report).map { isProviderAttention($0) ? 1 : 0 } ?? 0
 
         return Card(title: "\(provider.capitalized) Overview") {
             HStack(spacing: 8) {
@@ -494,42 +290,6 @@ struct DashboardView: View {
         }
     }
 
-    private func usageSummary(_ usage: UsageSummary, title: String, subtitle: String) -> some View {
-        Card {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "chart.bar.fill")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 26)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title)
-                        .font(.headline)
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text("Today")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.purple)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color.purple.opacity(0.12), in: Capsule())
-            }
-
-            HStack(spacing: 0) {
-                UsageMetric(value: tokenText(usage.totalTokens), label: "tokens", detail: "Today", color: primaryText)
-                verticalRule
-                UsageMetric(value: topModelLabel(usage), label: "Top model", detail: usage.topClient ?? "Local", color: primaryText)
-                verticalRule
-                UsageMetric(value: coverageLabel(usage), label: "Coverage", detail: "Local parsed", color: usageColor(usage))
-            }
-
-            ModelUsageBars(models: usage.modelBreakdown)
-                .frame(height: 116)
-        }
-    }
-
     private func diagnostics(provider: String, report: DashboardReport, accounts: [MenubarAccount]) -> some View {
         let providerDiagnostics = report.accounts.diagnostics + accounts.compactMap(\.diagnostic)
         return Card(title: "Diagnostics") {
@@ -538,14 +298,7 @@ struct DashboardView: View {
             }
 
             ForEach(Array(providerDiagnostics.enumerated()), id: \.offset) { _, diagnostic in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(diagnostic.code)
-                        .font(.caption.weight(.semibold))
-                    Text(diagnostic.message)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                }
+                DiagnosticView(diagnostic: diagnostic)
             }
         }
     }
@@ -633,6 +386,18 @@ struct DashboardView: View {
         report.providerUsage.first { $0.provider == provider }?.usage ?? report.usage
     }
 
+    private func providerView(_ provider: String, in report: DashboardReport) -> ProviderView? {
+        report.providerViews?.first { $0.provider == provider }
+    }
+
+    private func providerAttentionCount(_ report: DashboardReport) -> Int {
+        (report.providerViews ?? []).filter(isProviderAttention).count
+    }
+
+    private func isProviderAttention(_ view: ProviderView) -> Bool {
+        view.statusTone == "warning" || view.statusTone == "danger"
+    }
+
     private var verticalRule: some View {
         Rectangle()
             .fill(Color.primary.opacity(0.12))
@@ -648,13 +413,6 @@ struct DashboardView: View {
         }
         guard let lowest = candidates.min(by: { $0.0 < $1.0 }) else { return nil }
         return (lowest.0, "\(Int(lowest.0) / 100)%", lowest.1)
-    }
-
-    private func quotaColor(_ raw: UInt32?) -> Color {
-        guard let raw else { return secondaryText }
-        if raw <= 1_500 { return .red }
-        if raw <= 4_000 { return .orange }
-        return .green
     }
 
     private func timeAgo(_ timestamp: UInt64) -> String {
@@ -698,30 +456,6 @@ struct DashboardView: View {
         return timeAgo(fallback)
     }
 
-    private func providerStatusText(accounts: [MenubarAccount], profiles: [MenubarProfile]) -> String {
-        guard !accounts.isEmpty || !profiles.isEmpty else { return "Planned" }
-        if accounts.contains(where: { $0.status == "exhausted" || $0.status == "unavailable" })
-            || profiles.contains(where: { $0.status == "exhausted" || $0.status == "unavailable" })
-        {
-            return "Alert"
-        }
-        if accounts.contains(where: { $0.status == "limited" || $0.status == "stale" || $0.diagnostic != nil })
-            || profiles.contains(where: { $0.status == "limited" || $0.status == "stale" || $0.diagnostic != nil })
-        {
-            return "Stale"
-        }
-        return "OK"
-    }
-
-    private func providerStatusColor(accounts: [MenubarAccount], profiles: [MenubarProfile]) -> Color {
-        switch providerStatusText(accounts: accounts, profiles: profiles) {
-        case "OK": return .green
-        case "Planned": return .secondary
-        case "Alert": return .red
-        default: return .orange
-        }
-    }
-
     private func providerSecondaryText(accounts: [MenubarAccount], profiles: [MenubarProfile]) -> String {
         if accounts.isEmpty, profiles.isEmpty {
             return "No accounts"
@@ -747,44 +481,6 @@ struct DashboardView: View {
             return String(format: "%.1fk", Double(tokens) / 1_000.0)
         }
         return "\(tokens)"
-    }
-
-    private func usageColor(_ usage: UsageSummary) -> Color {
-        usage.coverage.status == "complete" ? .green : .orange
-    }
-
-    private func providerSummaryText(accounts: [MenubarAccount], profiles: [MenubarProfile]) -> String {
-        let active = accounts.first(where: \.active)?.shortLabel
-            ?? profiles.first(where: \.active)?.displayLabel
-            ?? "no active target"
-        return "\(active) · \(accounts.count) accounts · \(profiles.count) profiles"
-    }
-
-    private func providerHealth(accounts: [MenubarAccount], profiles: [MenubarProfile]) -> String {
-        guard !accounts.isEmpty || !profiles.isEmpty else { return "empty" }
-        if let lowest = lowestQuota(accounts) {
-            return "\(Int(lowest) / 100)%"
-        }
-        if accounts.contains(where: { $0.diagnostic != nil || $0.status != "healthy" })
-            || profiles.contains(where: { $0.diagnostic != nil || $0.status != "healthy" })
-        {
-            return "alert"
-        }
-        return "ok"
-    }
-
-    private func providerHealthColor(accounts: [MenubarAccount], profiles: [MenubarProfile]) -> Color {
-        if accounts.contains(where: { $0.status == "exhausted" || $0.status == "unavailable" })
-            || profiles.contains(where: { $0.status == "exhausted" || $0.status == "unavailable" })
-        {
-            return .red
-        }
-        if accounts.contains(where: { $0.status == "limited" || $0.status == "stale" || $0.diagnostic != nil })
-            || profiles.contains(where: { $0.status == "limited" || $0.status == "stale" || $0.diagnostic != nil })
-        {
-            return .orange
-        }
-        return .green
     }
 
     private func lowestQuota(_ accounts: [MenubarAccount]) -> UInt32? {
@@ -826,6 +522,9 @@ struct DashboardView: View {
         omx login \(provider)
         omx import \(provider) --file provider.toml
         omx alias \(provider) <selector> <alias>
+        omx doctor \(provider)
+        omx save \(provider) --alias recovery
+        omx use \(provider) <selector>
         omx remove \(provider) <selector>
         """
         NSPasteboard.general.clearContents()
@@ -833,20 +532,8 @@ struct DashboardView: View {
         NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Utilities/Terminal.app"))
     }
 
-    private var shellBackground: Color {
-        colorScheme == .dark ? Color(red: 0.18, green: 0.16, blue: 0.34) : Color(nsColor: .windowBackgroundColor)
-    }
-
     private var cardBackground: Color {
         colorScheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.82)
-    }
-
-    private var selectorBackground: Color {
-        colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.05)
-    }
-
-    private var selectorActive: Color {
-        colorScheme == .dark ? Color.white.opacity(0.14) : Color.white
     }
 
     private var headerIconBackground: Color {
@@ -869,9 +556,18 @@ struct DashboardView: View {
         default: return .purple
         }
     }
+
+    private func toneColor(_ tone: String?) -> Color {
+        switch tone {
+        case .some("success"): return .green
+        case .some("warning"): return .orange
+        case .some("danger"): return .red
+        default: return .secondary
+        }
+    }
 }
 
-private struct IconFeedbackButtonStyle: ButtonStyle {
+struct IconFeedbackButtonStyle: ButtonStyle {
     var tint: Color = .primary
 
     func makeBody(configuration: Configuration) -> some View {
@@ -899,20 +595,6 @@ private struct CompactCommandButtonStyle: ButtonStyle {
             cornerRadius: 6
         )
         .font(.caption.weight(.semibold))
-    }
-}
-
-private struct SegmentedFeedbackButtonStyle: ButtonStyle {
-    let active: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .background(
-                Color.primary.opacity(!active && configuration.isPressed ? 0.08 : 0),
-                in: Capsule()
-            )
-            .scaleEffect(configuration.isPressed ? 0.985 : 1)
-            .animation(.smooth(duration: 0.12), value: configuration.isPressed)
     }
 }
 
@@ -963,7 +645,7 @@ private struct PressableChrome: View {
     }
 }
 
-private struct TargetRowFeedback: ViewModifier {
+struct TargetRowFeedback: ViewModifier {
     let active: Bool
     let accent: Color
 
@@ -1195,363 +877,5 @@ private struct ModelUsageBars: View {
         if lower.contains("gemini") { return .blue }
         if lower.contains("gpt") || lower.contains("codex") { return .green }
         return [.purple, .pink, .teal, .indigo][index % 4]
-    }
-}
-
-private struct AccountTargetRow: View {
-    let account: MenubarAccount
-    let active: Bool
-    let switching: Bool
-    let deleting: Bool
-    let refreshing: Bool
-    let confirmingDelete: Bool
-    let primary: QuotaWindow?
-    let secondary: QuotaWindow?
-    let accent: Color
-    let switchAction: () -> Void
-    let requestDeleteConfirmation: () -> Void
-    let cancelDeleteConfirmation: () -> Void
-    let deleteAction: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .center, spacing: 12) {
-                HStack(spacing: 6) {
-                    Text("#\(account.displayNumber)")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                    Text(account.shortLabel)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .help(account.accountLabel ?? account.shortLabel)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .clipped()
-
-                ActionRail(
-                    active: active,
-                    switching: switching,
-                    deleting: deleting,
-                    refreshing: refreshing,
-                    activeLabel: "Current account",
-                    switchLabel: "Use this account",
-                    deleteLabel: "Delete account target",
-                    switchAction: switchAction,
-                    requestDeleteConfirmation: requestDeleteConfirmation,
-                    deleteConfirmationBinding: deleteConfirmationBinding,
-                    deletePopover: {
-                        DeleteConfirmPopover(
-                            title: "Delete \(account.shortLabel)?",
-                            message: "Removes the OpenMux target and its managed snapshot.",
-                            deleteAction: deleteAction,
-                            cancelAction: cancelDeleteConfirmation
-                        )
-                    }
-                )
-            }
-
-            AccountMetaLine(plan: account.plan ?? account.status, refreshedAtUnix: account.quota?.refreshedAtUnix)
-            if let diagnostic = account.diagnostic {
-                Text("\(diagnostic.code): \(diagnostic.message)")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-            UsageRailView(quota: account.quota, primary: primary, secondary: secondary, accent: accent)
-        }
-        .padding(.vertical, 9)
-        .modifier(TargetRowFeedback(active: active, accent: accent))
-        .accessibilityElement(children: .combine)
-    }
-
-    private var deleteConfirmationBinding: Binding<Bool> {
-        Binding(
-            get: { confirmingDelete },
-            set: { isPresented in
-                if isPresented {
-                    requestDeleteConfirmation()
-                } else {
-                    cancelDeleteConfirmation()
-                }
-            }
-        )
-    }
-}
-
-private struct AccountMetaLine: View {
-    let plan: String
-    let refreshedAtUnix: Int64?
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(plan)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 8)
-            Text(refreshTime)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .frame(width: 76, alignment: .trailing)
-        }
-    }
-
-    private var refreshTime: String {
-        guard let refreshedAtUnix else { return "-" }
-        return shortDateTimeLabel(refreshedAtUnix)
-    }
-}
-
-private struct ProfileTargetRow: View {
-    let profile: MenubarProfile
-    let active: Bool
-    let switching: Bool
-    let deleting: Bool
-    let refreshing: Bool
-    let confirmingDelete: Bool
-    let switchAction: () -> Void
-    let requestDeleteConfirmation: () -> Void
-    let cancelDeleteConfirmation: () -> Void
-    let deleteAction: () -> Void
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(profile.displayNumber > 0 ? "#\(profile.displayNumber)" : "Profile")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                    Text(profile.displayLabel)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .help(profile.displayLabel)
-                }
-                Text(profile.secondaryLabel)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .clipped()
-
-            ActionRail(
-                active: active,
-                switching: switching,
-                deleting: deleting,
-                refreshing: refreshing,
-                activeLabel: "Current profile",
-                switchLabel: "Use this profile",
-                deleteLabel: "Delete profile target",
-                switchAction: switchAction,
-                requestDeleteConfirmation: requestDeleteConfirmation,
-                deleteConfirmationBinding: deleteConfirmationBinding,
-                deletePopover: {
-                    DeleteConfirmPopover(
-                        title: "Delete \(profile.displayLabel)?",
-                        message: "Removes the OpenMux profile target and its managed secret if owned by OpenMux.",
-                        deleteAction: deleteAction,
-                        cancelAction: cancelDeleteConfirmation
-                    )
-                }
-            )
-        }
-        .padding(.vertical, 7)
-        .modifier(TargetRowFeedback(active: active, accent: .accentColor))
-        .accessibilityElement(children: .combine)
-    }
-
-    private var deleteConfirmationBinding: Binding<Bool> {
-        Binding(
-            get: { confirmingDelete },
-            set: { isPresented in
-                if isPresented {
-                    requestDeleteConfirmation()
-                } else {
-                    cancelDeleteConfirmation()
-                }
-            }
-        )
-    }
-}
-
-private struct ActionRail<DeletePopover: View>: View {
-    let active: Bool
-    let switching: Bool
-    let deleting: Bool
-    let refreshing: Bool
-    let activeLabel: String
-    let switchLabel: String
-    let deleteLabel: String
-    let switchAction: () -> Void
-    let requestDeleteConfirmation: () -> Void
-    let deleteConfirmationBinding: Binding<Bool>
-    let deletePopover: () -> DeletePopover
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Button {
-                switchAction()
-            } label: {
-                Image(systemName: active ? "checkmark.circle.fill" : switching ? "hourglass" : "arrow.right.circle")
-                    .foregroundStyle(active ? .green : .secondary)
-                    .frame(width: 28, height: 28)
-            }
-            .disabled(active || switching || refreshing || deleting)
-            .buttonStyle(IconFeedbackButtonStyle(tint: active ? .green : .secondary))
-            .help(active ? activeLabel : switching ? "Switching" : switchLabel)
-            .accessibilityLabel(active ? activeLabel : switchLabel)
-
-            Button {
-                requestDeleteConfirmation()
-            } label: {
-                Image(systemName: deleting ? "hourglass" : "trash")
-                    .frame(width: 28, height: 28)
-            }
-            .disabled(deleting || refreshing)
-            .buttonStyle(IconFeedbackButtonStyle(tint: .red))
-            .help(deleteLabel)
-            .accessibilityLabel(deleteLabel)
-            .popover(isPresented: deleteConfirmationBinding, arrowEdge: .trailing, content: deletePopover)
-        }
-        .frame(width: 60, alignment: .trailing)
-    }
-}
-
-private struct DeleteConfirmPopover: View {
-    let title: String
-    let message: String
-    let deleteAction: () -> Void
-    let cancelAction: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.headline)
-            Text(message)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack {
-                Spacer()
-                Button("Cancel", action: cancelAction)
-                    .keyboardShortcut(.cancelAction)
-                Button("Delete", role: .destructive, action: deleteAction)
-                    .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(12)
-        .frame(width: 260)
-    }
-}
-
-private func clockLabel(_ timestamp: Int64) -> String {
-    Date(timeIntervalSince1970: TimeInterval(timestamp))
-        .formatted(date: .omitted, time: .shortened)
-}
-
-private func shortDateTimeLabel(_ timestamp: Int64) -> String {
-    let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
-    let formatter = DateFormatter()
-    formatter.dateFormat = "MM-dd HH:mm"
-    return formatter.string(from: date)
-}
-
-private func resetLabel(_ window: QuotaWindow?) -> String {
-    guard let timestamp = window?.resetAtUnix else { return "-" }
-    return shortDateTimeLabel(timestamp)
-}
-
-private struct UsageRailView: View {
-    let quota: Quota?
-    let primary: QuotaWindow?
-    let secondary: QuotaWindow?
-    let accent: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            QuotaProgressLine(window: primary, fallbackLabel: "5h", color: accent)
-            QuotaProgressLine(window: secondary, fallbackLabel: "7d", color: .blue)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .help(helpText)
-        .accessibilityLabel(helpText)
-    }
-
-    private var refreshedLabel: String {
-        guard let timestamp = quota?.refreshedAtUnix else { return "refreshed -" }
-        return "refreshed \(shortDateTimeLabel(timestamp))"
-    }
-
-    private var helpText: String {
-        "\(lineHelp(primary, fallbackLabel: "5h")); \(lineHelp(secondary, fallbackLabel: "weekly")); \(refreshedLabel)"
-    }
-
-    private func lineHelp(_ window: QuotaWindow?, fallbackLabel: String) -> String {
-        "\(window?.label ?? fallbackLabel) \(percentText(window)), \(resetLabel(window))"
-    }
-
-    private func percentText(_ window: QuotaWindow?) -> String {
-        guard let remaining = window?.remainingPercentX100 else { return "--" }
-        return "\(Int(remaining) / 100)%"
-    }
-}
-
-private struct QuotaProgressLine: View {
-    let window: QuotaWindow?
-    let fallbackLabel: String
-    let color: Color
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .frame(width: 28, alignment: .leading)
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(Color.primary.opacity(0.12))
-                    Capsule()
-                        .fill(color)
-                        .frame(width: max(3, proxy.size.width * fraction))
-                }
-            }
-            .frame(height: 6)
-            Text(percentText)
-                .font(.caption2.monospacedDigit().weight(.semibold))
-                .frame(width: 34, alignment: .trailing)
-            Text(resetLabel(window))
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .frame(width: 76, alignment: .trailing)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .clipped()
-    }
-
-    private var label: String {
-        let raw = window?.label ?? fallbackLabel
-        return raw.lowercased().contains("week") ? "7d" : raw
-    }
-
-    private var fraction: Double {
-        guard let remaining = window?.remainingPercentX100 else { return 0 }
-        return max(0, min(1, Double(remaining) / 10_000.0))
-    }
-
-    private var percentText: String {
-        guard let remaining = window?.remainingPercentX100 else { return "--" }
-        return "\(Int(remaining) / 100)%"
     }
 }

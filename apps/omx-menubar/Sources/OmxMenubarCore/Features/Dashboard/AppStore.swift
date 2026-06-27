@@ -2,26 +2,25 @@ import Foundation
 
 @MainActor
 public final class AppStore: ObservableObject {
-    enum State {
-        case loading
-        case ready(DashboardReport, stale: Bool)
-        case failed(lastGood: DashboardReport?, message: String)
-    }
-
-    @Published private(set) var state: State = .loading
+    @Published private(set) var state: MenubarState = .loading
     @Published private(set) var switchingLocalId: String?
     @Published private(set) var deletingLocalId: String?
     @Published private(set) var confirmingDeleteTargetId: String?
     @Published private(set) var refreshingProvider: String?
     @Published var selectedProvider: String?
+    /// Usage-card period selector. Shared across the overview and provider
+    /// pages so the chart granularity stays consistent as you switch tabs.
+    @Published var usagePeriod: UsagePeriod = .today
 
     var trayTitle: String {
         switch state {
         case .loading:
             return "OpenMux"
-        case .failed(let lastGood, _):
+        case .failed(let lastGood, _), .backendUnavailable(let lastGood, _):
             guard let report = lastGood else { return "OpenMux !" }
             return "\(aggregateTraySignal(report)) stale"
+        case .upgradeRequired:
+            return "OpenMux upgrade"
         case .ready(let report, let stale):
             let signal = aggregateTraySignal(report)
             return stale ? "\(signal) stale" : signal
@@ -130,7 +129,7 @@ public final class AppStore: ObservableObject {
         } catch {
             guard currentGeneration == generation else { return }
             let message = userFacingMessage(error)
-            state = .failed(lastGood: lastGood, message: message)
+            state = .backendUnavailable(lastGood: lastGood, message: message)
         }
     }
 
@@ -147,9 +146,9 @@ public final class AppStore: ObservableObject {
         switch state {
         case .ready(let report, _):
             return providerNames(from: report)
-        case .failed(let lastGood, _):
+        case .failed(let lastGood, _), .backendUnavailable(let lastGood, _):
             return lastGood.map(providerNames(from:)) ?? []
-        case .loading:
+        case .loading, .upgradeRequired:
             return []
         }
     }
@@ -172,8 +171,8 @@ public final class AppStore: ObservableObject {
             return "\(urgent.0) \(Int(urgent.1) / 100)%"
         }
 
-        let troubled = accounts.filter { account in
-            account.status != "healthy" || account.diagnostic != nil
+        let troubled = (report.providerViews ?? []).filter { view in
+            view.statusTone == "warning" || view.statusTone == "danger"
         }.count
         if troubled > 0 {
             return "\(troubled) alerts"
@@ -195,6 +194,7 @@ public final class AppStore: ObservableObject {
         switch payload {
         case .dashboard: return "dashboard"
         case .accounts: return "accounts"
+        case .compatibility: return "compatibility"
         case .refresh: return "refresh"
         case .switchTarget: return "switch"
         case .removeTarget: return "remove"

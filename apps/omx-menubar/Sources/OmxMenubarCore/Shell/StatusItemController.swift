@@ -24,7 +24,7 @@ public final class StatusItemController: NSObject, NSPopoverDelegate {
         popover.behavior = .transient
         popover.delegate = self
         popover.contentSize = NSSize(width: 390, height: 560)
-        popover.contentViewController = NSHostingController(rootView: DashboardView(store: store))
+        popover.contentViewController = NSHostingController(rootView: DashboardScreen(store: store))
 
         statusItem.button?.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "OpenMux")
         statusItem.button?.target = self

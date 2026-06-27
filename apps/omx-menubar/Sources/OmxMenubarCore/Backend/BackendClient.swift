@@ -21,6 +21,7 @@ struct BackendRequest: Encodable, Sendable {
 enum Payload: Encodable, Sendable {
     case dashboard(provider: String?)
     case accounts(provider: String?)
+    case compatibility
     case refresh(provider: String, kind: String)
     case switchTarget(provider: String, targetKind: String, localId: String)
     case removeTarget(provider: String, targetKind: String, localId: String)
@@ -30,6 +31,9 @@ enum Payload: Encodable, Sendable {
         switch self {
         case .dashboard(let provider), .accounts(let provider):
             try container.encodeIfPresent(provider, forKey: .provider)
+        case .compatibility:
+            try container.encode(1, forKey: .controlPlaneSchemaVersion)
+            try container.encode(1, forKey: .stateSchemaVersion)
         case .refresh(let provider, let kind):
             try container.encode(provider, forKey: .provider)
             try container.encode(kind, forKey: .kind)
@@ -43,6 +47,8 @@ enum Payload: Encodable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case provider
+        case controlPlaneSchemaVersion = "control_plane_schema_version"
+        case stateSchemaVersion = "state_schema_version"
         case kind
         case targetKind = "target_kind"
         case localId = "local_id"
@@ -51,12 +57,20 @@ enum Payload: Encodable, Sendable {
 
 public struct BackendEnvelope: Decodable, Sendable {
     public let schemaVersion: Int
+    public let controlPlaneSchemaVersion: Int?
+    public let stateSchemaVersion: Int?
+    public let minimumBackendVersion: String?
+    public let minimumFrontendVersion: String?
     public let ok: Bool
     public let data: BackendData?
     public let error: BackendError?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
+        case controlPlaneSchemaVersion = "control_plane_schema_version"
+        case stateSchemaVersion = "state_schema_version"
+        case minimumBackendVersion = "minimum_backend_version"
+        case minimumFrontendVersion = "minimum_frontend_version"
         case ok
         case data
         case error

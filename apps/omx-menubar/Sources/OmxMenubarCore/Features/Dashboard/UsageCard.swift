@@ -1,28 +1,44 @@
+import Charts
 import SwiftUI
 
 /// Token-usage card with a Today / 7d / 30d toggle. The hourly buckets from the
 /// backend are the single source of truth; Today renders 24 hourly bars and
 /// 7d/30d roll the same series up into daily bars (see `UsageSeries`).
+///
+/// On the Overview the bars are stacked by provider (one color segment each);
+/// on a provider page there is a single `accent`-colored series.
 struct UsageCard: View {
     let usage: UsageSummary
     let title: String
     /// Today-only model breakdown, shown under the Today tab only.
     var accent: Color = .purple
+    /// When non-empty, bars are stacked per provider instead of single-color.
+    var providerUsage: [ProviderUsageSummary] = []
     let period: UsagePeriod
     let onSelectPeriod: (UsagePeriod) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var buckets: [HourlyBucket] { usage.hourlyBuckets ?? [] }
-    private var bars: [UsageBar] { UsageSeries.bars(from: buckets, period: period) }
+    private var stacked: Bool { !providerUsage.isEmpty }
+
+    private var bars: [UsageBar] {
+        if stacked {
+            let series = providerUsage.map {
+                (provider: $0.provider, buckets: $0.usage.hourlyBuckets ?? [])
+            }
+            return UsageSeries.stackedBars(from: series, period: period)
+        }
+        return UsageSeries.bars(from: usage.hourlyBuckets ?? [], period: period)
+    }
+
     private var total: UInt64 { UsageSeries.total(bars) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: OmxTokens.Spacing.md) {
             header
 
-            UsageBarChart(bars: bars, accent: accent, period: period)
-                .frame(height: 92)
+            UsageBarChart(bars: bars, accent: accent, period: period, stacked: stacked)
+                .frame(height: 96)
                 .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: period)
 
             footer
@@ -37,23 +53,29 @@ struct UsageCard: View {
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                Text(tokenText(total) + " tokens · " + period.label)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                    Text(tokenText(total) + " tokens · " + period.label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                PeriodToggle(period: period, onSelect: onSelectPeriod)
             }
-            Spacer()
-            PeriodToggle(period: period, onSelect: onSelectPeriod)
+            if stacked {
+                ProviderLegend(providers: providerUsage.map(\.provider))
+            }
         }
     }
 
     @ViewBuilder
     private var footer: some View {
+        // model_breakdown is today-scoped data — only honest under Today.
+        // 7d/30d intentionally have no footer line; the bars and hover carry it.
         if period == .today {
-            // model_breakdown is today-scoped data — only honest under Today.
             if usage.modelBreakdown.isEmpty {
                 Text("No model usage today")
                     .font(.caption2)
@@ -61,11 +83,6 @@ struct UsageCard: View {
             } else {
                 ModelLegend(models: usage.modelBreakdown, accent: accent)
             }
-        } else {
-            let active = bars.filter { $0.tokens > 0 }.count
-            Text("\(active) of \(bars.count) days with usage")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
     }
 
@@ -117,63 +134,118 @@ private struct PeriodToggle: View {
     }
 }
 
-/// The bars themselves. Today = 24 hourly bars; 7d/30d = one bar per day.
+/// Stacked usage bars via Swift Charts. Today = 24 hourly bars; 7d/30d = one
+/// bar per day. The x-axis only labels the first and last bucket; hovering a
+/// bar reveals its time and per-provider breakdown.
 private struct UsageBarChart: View {
     let bars: [UsageBar]
     let accent: Color
     let period: UsagePeriod
+    let stacked: Bool
 
-    private var maxTokens: UInt64 { max(1, bars.map(\.tokens).max() ?? 1) }
+    @State private var selectedId: String?
+
     private var hasUsage: Bool { bars.contains { $0.tokens > 0 } }
+
+    private var selectedBar: UsageBar? {
+        selectedId.flatMap { id in bars.first { $0.id == id } }
+    }
 
     var body: some View {
         if !hasUsage {
             emptyState
         } else {
-            GeometryReader { proxy in
-                let spacing: CGFloat = period == .thirtyDays ? 2 : 3
-                let count = bars.count
-                let barWidth = max(2, (proxy.size.width - spacing * CGFloat(count - 1)) / CGFloat(count))
-                HStack(alignment: .bottom, spacing: spacing) {
-                    ForEach(bars) { bar in
-                        barColumn(bar, width: barWidth, maxHeight: proxy.size.height)
+            VStack(spacing: 4) {
+                chart
+                axisFooter
+            }
+        }
+    }
+
+    /// Head/tail time labels under the chart, left/right aligned so neither
+    /// clips at the plot edge (an in-chart AxisMark centers on the edge bar and
+    /// gets truncated). The middle is left to hover.
+    private var axisFooter: some View {
+        HStack {
+            Text(bars.first?.label ?? "")
+            Spacer()
+            Text(bars.last?.label ?? "")
+        }
+        .font(.system(size: 9))
+        .foregroundStyle(.secondary)
+    }
+
+    private var chart: some View {
+        Chart {
+            ForEach(bars) { bar in
+                // Faint placeholder track for every slot — keeps empty hours/days
+                // visible so the time axis reads as continuous instead of
+                // collapsing the gaps.
+                if bar.tokens == 0 {
+                    BarMark(
+                        x: .value("Time", bar.id),
+                        y: .value("Tokens", emptyTrackTokens),
+                        width: barWidth
+                    )
+                    .foregroundStyle(Color.primary.opacity(0.06))
+                    .cornerRadius(2)
+                } else if stacked {
+                    ForEach(bar.segments.filter { $0.tokens > 0 }) { segment in
+                        BarMark(
+                            x: .value("Time", bar.id),
+                            y: .value("Tokens", segment.tokens),
+                            width: barWidth
+                        )
+                        .foregroundStyle(ProviderStyle.color(segment.provider))
+                        .cornerRadius(2)
                     }
+                } else {
+                    BarMark(
+                        x: .value("Time", bar.id),
+                        y: .value("Tokens", bar.tokens),
+                        width: barWidth
+                    )
+                    .foregroundStyle(accent.opacity(bar.isCurrent ? 1 : 0.7))
+                    .cornerRadius(2)
                 }
             }
-        }
-    }
 
-    private func barColumn(_ bar: UsageBar, width: CGFloat, maxHeight: CGFloat) -> some View {
-        let fraction = Double(bar.tokens) / Double(maxTokens)
-        let barHeight = bar.tokens == 0 ? 2 : max(3, CGFloat(fraction) * (maxHeight - 14))
-        return VStack(spacing: 3) {
-            Spacer(minLength: 0)
-            RoundedRectangle(cornerRadius: 2)
-                .fill(bar.tokens == 0 ? Color.primary.opacity(0.08) : accent.opacity(bar.isCurrent ? 1 : 0.6))
-                .frame(width: width, height: barHeight)
-            if showLabel(bar) {
-                Text(bar.label)
-                    .font(.system(size: 7))
-                    .foregroundStyle(bar.isCurrent ? Color.primary : .secondary)
-                    .lineLimit(1)
-                    .fixedSize()
+            // Selection: a faint rule anchors the tooltip to the hovered bar.
+            // `overflowResolution` keeps the popup inside the chart instead of
+            // pinning it center-top, so it follows the bar and never clips.
+            if let bar = selectedBar {
+                RuleMark(x: .value("Time", bar.id))
+                    .foregroundStyle(Color.primary.opacity(0.12))
+                    .lineStyle(StrokeStyle(lineWidth: 1))
+                    .annotation(
+                        position: .top,
+                        spacing: 2,
+                        overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))
+                    ) {
+                        HoverTooltip(bar: bar, period: period, stacked: stacked)
+                    }
             }
         }
-        .frame(maxHeight: .infinity, alignment: .bottom)
-        .accessibilityLabel("\(bar.label): \(bar.tokens) tokens")
+        // Headroom above the tallest bar so the .top annotation has room to sit
+        // without covering bars.
+        .chartYScale(domain: 0...Double(max(1, bars.map(\.tokens).max() ?? 1)) * 1.25)
+        .chartXSelection(value: $selectedId)
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .chartLegend(.hidden)
+        .accessibilityLabel(Text("\(period.label) token usage"))
     }
 
-    /// Avoid label crowding: every bar for short series, every Nth otherwise.
-    private func showLabel(_ bar: UsageBar) -> Bool {
-        switch period {
-        case .today:
-            guard let hour = Int(bar.label) else { return false }
-            return hour % 6 == 0 || bar.isCurrent
-        case .sevenDays:
-            return true
-        case .thirtyDays:
-            return bar.isCurrent
-        }
+    /// Ratio width leaves an even gap between bars at any count, so Today (24),
+    /// 7d (7) and 30d (30) all read with consistent spacing instead of fusing
+    /// into a solid block or floating far apart.
+    private var barWidth: MarkDimension {
+        .ratio(0.6)
+    }
+
+    /// Tiny stub height for empty slots — visible as a track, not as usage.
+    private var emptyTrackTokens: Double {
+        Double(max(1, bars.map(\.tokens).max() ?? 1)) * 0.02
     }
 
     private var emptyState: some View {
@@ -182,6 +254,74 @@ private struct UsageBarChart: View {
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// Floating readout for the hovered bar: its time and per-provider tokens.
+private struct HoverTooltip: View {
+    let bar: UsageBar
+    let period: UsagePeriod
+    let stacked: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(timeLabel)
+                .font(.caption2.weight(.semibold))
+            if stacked {
+                ForEach(bar.segments.filter { $0.tokens > 0 }) { segment in
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(ProviderStyle.color(segment.provider))
+                            .frame(width: 6, height: 6)
+                        Text("\(segment.provider.capitalized) \(tokenText(segment.tokens))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Text("Total \(tokenText(bar.tokens))")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.1), lineWidth: 1)
+        )
+        .fixedSize()
+    }
+
+    private var timeLabel: String {
+        // Today's bar.label is "HH"; days already carry a readable date label.
+        period == .today ? "\(bar.label):00" : bar.fullLabel
+    }
+
+    private func tokenText(_ tokens: UInt64) -> String {
+        if tokens >= 1_000_000 { return String(format: "%.1fM", Double(tokens) / 1_000_000) }
+        if tokens >= 1_000 { return String(format: "%.1fk", Double(tokens) / 1_000) }
+        return "\(tokens)"
+    }
+}
+
+/// Provider color key shown above the stacked Overview chart.
+private struct ProviderLegend: View {
+    let providers: [String]
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ForEach(providers, id: \.self) { provider in
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(ProviderStyle.color(provider))
+                        .frame(width: 6, height: 6)
+                    Text(provider.capitalized)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
     }
 }
 

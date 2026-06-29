@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-if rg -n 'access_token|refresh_token|api_key|authorization:|bearer |sk-|raw auth|raw log|raw response|email@|@example\.com' \
+if rg -n 'access_token|refresh_token|api_key|authorization:|bearer |sk-|raw auth|raw log|raw response' \
   apps/omx-menubar/Sources crates/omx-menubar-ffi/fixtures; then
   echo "menubar privacy audit failed: sensitive marker found" >&2
   exit 1

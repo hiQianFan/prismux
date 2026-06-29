@@ -27,15 +27,28 @@ public enum UsagePeriod: String, CaseIterable, Identifiable {
     }
 }
 
+/// One provider's slice of a stacked bar.
+public struct UsageSegment: Identifiable, Equatable {
+    public let provider: String
+    public let tokens: UInt64
+    public var id: String { provider }
+}
+
 /// One bar in the usage chart — an hour (Today) or a day (7d/30d).
 public struct UsageBar: Identifiable, Equatable {
     /// Stable key: "YYYY-MM-DDTHH" for hours, "YYYY-MM-DD" for days.
     public let id: String
-    /// Short axis label, e.g. "09" for 9am, "Mon" / "6/27" for days.
+    /// Short axis label for the head/tail marks: "09" for 9am, "6/27" for days.
     public let label: String
+    /// Richer label for the hover tooltip: "09:00" handled by the view for
+    /// hours, "Sat 6/27" for days.
+    public let fullLabel: String
     public let tokens: UInt64
     /// True for the bucket representing the current hour/day (highlight).
     public let isCurrent: Bool
+    /// Per-provider breakdown for stacked bars. Empty for single-series bars
+    /// (the provider page), where the whole bar is one accent color.
+    public let segments: [UsageSegment]
 }
 
 /// Pure rollup of the backend's hourly buckets into chart bars for a period.
@@ -46,6 +59,7 @@ public struct UsageBar: Identifiable, Equatable {
 public enum UsageSeries {
     /// Build the bars for `period` from `buckets`, anchored at `now`.
     /// Missing hours/days are filled with zero so the axis is continuous.
+    /// Single series — no per-provider segments (used by the provider page).
     public static func bars(
         from buckets: [HourlyBucket],
         period: UsagePeriod,
@@ -57,6 +71,39 @@ public enum UsageSeries {
             return hourlyBars(from: buckets, now: now, calendar: calendar)
         case .sevenDays, .thirtyDays:
             return dailyBars(from: buckets, dayCount: period.dayCount, now: now, calendar: calendar)
+        }
+    }
+
+    /// Build stacked bars from several providers' buckets. Each bar's `tokens`
+    /// is the sum of its `segments`. Reuses the single-series rollup per
+    /// provider, then aligns them on the shared bar skeleton (same ids).
+    public static func stackedBars(
+        from series: [(provider: String, buckets: [HourlyBucket])],
+        period: UsagePeriod,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> [UsageBar] {
+        let combined = series.flatMap { $0.buckets }
+        let base = bars(from: combined, period: period, now: now, calendar: calendar)
+
+        // provider → (bar id → tokens)
+        let perProvider: [(provider: String, byId: [String: UInt64])] = series.map { entry in
+            let bars = bars(from: entry.buckets, period: period, now: now, calendar: calendar)
+            return (entry.provider, Dictionary(uniqueKeysWithValues: bars.map { ($0.id, $0.tokens) }))
+        }
+
+        return base.map { bar in
+            let segments = perProvider.map { entry in
+                UsageSegment(provider: entry.provider, tokens: entry.byId[bar.id] ?? 0)
+            }
+            return UsageBar(
+                id: bar.id,
+                label: bar.label,
+                fullLabel: bar.fullLabel,
+                tokens: bar.tokens,
+                isCurrent: bar.isCurrent,
+                segments: segments
+            )
         }
     }
 
@@ -86,8 +133,10 @@ public enum UsageSeries {
             UsageBar(
                 id: "\(todayKey)T\(twoDigits(hour))",
                 label: twoDigits(hour),
+                fullLabel: "\(twoDigits(hour)):00",
                 tokens: byHour[hour] ?? 0,
-                isCurrent: hour == currentHour
+                isCurrent: hour == currentHour,
+                segments: []
             )
         }
     }
@@ -116,9 +165,11 @@ public enum UsageSeries {
             let key = dayKey(date, calendar: calendar)
             return UsageBar(
                 id: key,
-                label: dayLabel(date, dayCount: dayCount, calendar: calendar),
+                label: dayLabel(date, calendar: calendar),
+                fullLabel: dayFullLabel(date, calendar: calendar),
                 tokens: byDay[key] ?? 0,
-                isCurrent: offset == 0
+                isCurrent: offset == 0,
+                segments: []
             )
         }
     }
@@ -141,17 +192,22 @@ public enum UsageSeries {
         return "\(y)-\(twoDigits(m))-\(twoDigits(d))"
     }
 
-    private static func dayLabel(_ date: Date, dayCount: Int, calendar: Calendar) -> String {
+    /// Axis label for a day's head/tail mark — always a concrete date ("6/27").
+    /// Weekday symbols ("1,2,3,4") carry no date and were the old bug.
+    private static func dayLabel(_ date: Date, calendar: Calendar) -> String {
         let c = calendar.dateComponents([.month, .day], from: date)
         guard let m = c.month, let d = c.day else { return "" }
-        // 7d: short weekday is friendlier; 30d: numeric m/d to stay compact.
-        if dayCount <= 7 {
-            let weekday = calendar.component(.weekday, from: date)
-            let symbols = calendar.veryShortWeekdaySymbols
-            if weekday >= 1, weekday <= symbols.count {
-                return symbols[weekday - 1]
-            }
-        }
         return "\(m)/\(d)"
+    }
+
+    /// Tooltip label: weekday + date, e.g. "Sat 6/27".
+    private static func dayFullLabel(_ date: Date, calendar: Calendar) -> String {
+        let weekday = calendar.component(.weekday, from: date)
+        let symbols = calendar.shortWeekdaySymbols
+        let day = dayLabel(date, calendar: calendar)
+        if weekday >= 1, weekday <= symbols.count {
+            return "\(symbols[weekday - 1]) \(day)"
+        }
+        return day
     }
 }

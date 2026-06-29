@@ -174,12 +174,22 @@ public struct Quota: Decodable, Sendable {
     public let refreshedAtUnix: Int64?
     public let primaryWindow: QuotaWindow?
     public let windows: [QuotaWindow]
+    public let resetCredits: ResetCredits?
 
     enum CodingKeys: String, CodingKey {
         case summary
         case refreshedAtUnix = "refreshed_at_unix"
         case primaryWindow = "primary_window"
         case windows
+        case resetCredits = "reset_credits"
+    }
+}
+
+public struct ResetCredits: Decodable, Sendable {
+    public let availableCount: UInt32
+
+    enum CodingKeys: String, CodingKey {
+        case availableCount = "available_count"
     }
 }
 
@@ -297,5 +307,190 @@ public struct ActiveTarget: Decodable, Sendable {
         case localId = "local_id"
         case accountKey = "account_key"
         case displayLabel = "display_label"
+    }
+}
+
+public struct SettingsView: Codable, Sendable {
+    public var schemaVersion: UInt32
+    public var general: GeneralSettings
+    public var providers: [ProviderSettings]
+    public var privacy: PrivacySettings
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case general
+        case providers
+        case privacy
+    }
+}
+
+public struct GeneralSettings: Codable, Sendable {
+    public var refreshCadenceSeconds: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case refreshCadenceSeconds = "refresh_cadence_seconds"
+    }
+}
+
+public struct PrivacySettings: Codable, Sendable {
+    public var hidePersonalIdentifiers: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case hidePersonalIdentifiers = "hide_personal_identifiers"
+    }
+}
+
+public struct ProviderSettings: Codable, Identifiable, Sendable {
+    public var id: String { provider }
+
+    public var provider: String
+    public var displayLabel: String
+    public var enabled: Bool
+    public var status: ProviderSettingsStatus
+    public var sourcePreference: SourcePreference
+    public var sourceOptions: [SettingsPickerOption]
+    public var diagnostics: [SettingsDiagnostic]
+
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case displayLabel = "display_label"
+        case enabled
+        case status
+        case sourcePreference = "source_preference"
+        case sourceOptions = "source_options"
+        case diagnostics
+    }
+}
+
+public struct ProviderSettingsStatus: Codable, Sendable {
+    public var status: String
+    public var statusText: String
+    public var statusTone: String
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case statusText = "status_text"
+        case statusTone = "status_tone"
+    }
+}
+
+public struct SettingsPickerOption: Codable, Identifiable, Sendable {
+    public var id: SourcePreference { value }
+
+    public var value: SourcePreference
+    public var label: String
+    public var disabledReason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case value
+        case label
+        case disabledReason = "disabled_reason"
+    }
+}
+
+public struct SettingsDiagnostic: Codable, Sendable {
+    public var code: String
+    public var message: String
+    public var recoveryAction: String?
+
+    enum CodingKeys: String, CodingKey {
+        case code
+        case message
+        case recoveryAction = "recovery_action"
+    }
+}
+
+public enum SourcePreference: String, Codable, Sendable {
+    case auto
+    case localOnly = "local_only"
+    case remoteOnly = "remote_only"
+}
+
+public struct AboutView: Decodable, Sendable {
+    public let schemaVersion: UInt32
+    public let appVersion: String
+    public let controlPlaneSchemaVersion: UInt32
+    public let stateSchemaVersion: UInt32
+    public let settingsSchemaVersion: UInt32
+    public let runtime: AboutRuntime
+    public let stateRoot: AboutPath
+    public let settingsPath: AboutPath
+    public let links: [AboutLink]
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case appVersion = "app_version"
+        case controlPlaneSchemaVersion = "control_plane_schema_version"
+        case stateSchemaVersion = "state_schema_version"
+        case settingsSchemaVersion = "settings_schema_version"
+        case runtime
+        case stateRoot = "state_root"
+        case settingsPath = "settings_path"
+        case links
+    }
+}
+
+public struct AboutRuntime: Decodable, Sendable {
+    public let mode: String
+    public let statusText: String
+
+    enum CodingKeys: String, CodingKey {
+        case mode
+        case statusText = "status_text"
+    }
+}
+
+public struct AboutPath: Decodable, Sendable {
+    public let display: String
+    public let revealPath: String?
+
+    enum CodingKeys: String, CodingKey {
+        case display
+        case revealPath = "reveal_path"
+    }
+}
+
+public struct AboutLink: Decodable, Identifiable, Sendable {
+    public var id: String { url }
+
+    public let label: String
+    public let url: String
+}
+
+public struct SupportReport: Decodable, Sendable {
+    public let schemaVersion: UInt32
+    public let appVersion: String
+    public let controlPlaneSchemaVersion: UInt32
+    public let stateSchemaVersion: UInt32
+    public let settingsSchemaVersion: UInt32
+    public let redactionStatus: String
+    public let diagnostics: [SupportDiagnostic]
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case appVersion = "app_version"
+        case controlPlaneSchemaVersion = "control_plane_schema_version"
+        case stateSchemaVersion = "state_schema_version"
+        case settingsSchemaVersion = "settings_schema_version"
+        case redactionStatus = "redaction_status"
+        case diagnostics
+    }
+}
+
+public struct SupportDiagnostic: Decodable, Sendable {
+    public let code: String
+    public let severity: String
+    public let userMessage: String
+    public let recoveryAction: String?
+    public let source: String
+    public let redactionStatus: String
+
+    enum CodingKeys: String, CodingKey {
+        case code
+        case severity
+        case userMessage = "user_message"
+        case recoveryAction = "recovery_action"
+        case source
+        case redactionStatus = "redaction_status"
     }
 }

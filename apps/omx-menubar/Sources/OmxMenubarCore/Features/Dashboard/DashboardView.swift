@@ -5,9 +5,9 @@ struct DashboardView: View {
     @ObservedObject var store: AppStore
     let report: DashboardReport
     let stale: Bool
+    let onOpenSettings: (MenubarSettingsTab) -> Void
 
-    @AppStorage("dev.openmux.menubar.trayDisplayMode") private var trayDisplayMode = "text"
-    @AppStorage("dev.openmux.menubar.backgroundRefreshCadence") private var refreshCadence = 300
+    @AppStorage("dev.openmux.menubar.hidePersonalIdentifiers") private var hidePersonalIdentifiers = false
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -34,6 +34,16 @@ struct DashboardView: View {
             .padding(.bottom, 10)
 
             Divider()
+
+            if let notice = store.operationNotice {
+                StatusBanner(props: StatusBannerProps(
+                    severity: notice.severity,
+                    title: notice.title,
+                    message: notice.message
+                ))
+                .padding(.horizontal)
+                .padding(.top, 10)
+            }
 
             carousel(pages: pages, selectedIndex: selectedIndex, report: report)
 
@@ -107,21 +117,11 @@ struct DashboardView: View {
                 .help("Refresh status")
                 .accessibilityLabel("Refresh status")
 
-                Menu {
-                    Picker("Tray display", selection: $trayDisplayMode) {
-                        Text("Text").tag("text")
-                        Text("Icon only").tag("icon_only")
-                    }
-                    Picker("Background refresh", selection: $refreshCadence) {
-                        Text("5 min").tag(300)
-                        Text("15 min").tag(900)
-                        Text("30 min").tag(1800)
-                    }
+                Button {
+                    onOpenSettings(.general)
                 } label: {
                     Image(systemName: "gearshape")
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
                 .buttonStyle(IconFeedbackButtonStyle())
                 .help("Settings")
                 .accessibilityLabel("Settings")
@@ -185,6 +185,7 @@ struct DashboardView: View {
             UsageCard(
                 usage: report.usage,
                 title: "Token Usage",
+                providerUsage: report.providerUsage,
                 period: store.usagePeriod,
                 onSelectPeriod: { store.usagePeriod = $0 }
             )
@@ -215,7 +216,7 @@ struct DashboardView: View {
     }
 
     private func providerOverview(provider: String, accounts: [MenubarAccount], profiles: [MenubarProfile], active: MenubarAccount?, activeProfile: MenubarProfile?, usage: UsageSummary, report: DashboardReport) -> some View {
-        let targetLabel = active?.shortLabel ?? activeProfile?.displayLabel
+        let targetLabel = activeTargetLabel(account: active, profile: activeProfile)
         let lowest = lowestQuota(accounts).map { "\(Int($0) / 100)%" } ?? "unknown"
         let alerts = providerView(provider, in: report).map { isProviderAttention($0) ? 1 : 0 } ?? 0
 
@@ -253,12 +254,17 @@ struct DashboardView: View {
                     active: account.active,
                     switching: store.switchingLocalId == account.id,
                     deleting: store.deletingLocalId == account.id,
+                    resetting: store.resettingLocalId == account.id,
                     refreshing: store.refreshingProvider != nil,
                     confirmingDelete: store.confirmingDeleteTargetId == account.id,
+                    confirmingReset: store.confirmingResetTargetId == account.id,
                     primary: quotaWindow(account, preferred: .short),
                     secondary: quotaWindow(account, preferred: .weekly),
                     accent: providerColor(account.provider),
                     switchAction: { Task { await store.switchAccount(account) } },
+                    requestResetConfirmation: { store.confirmReset(account.id) },
+                    cancelResetConfirmation: { store.cancelResetConfirmation() },
+                    resetAction: { Task { await store.resetAccountUsageLimit(account) } },
                     requestDeleteConfirmation: { store.confirmDelete(account.id) },
                     cancelDeleteConfirmation: { store.cancelDeleteConfirmation() },
                     deleteAction: { Task { await store.deleteAccount(account) } }
@@ -440,12 +446,22 @@ struct DashboardView: View {
 
     private func activeTargetLabel(accounts: [MenubarAccount], profiles: [MenubarProfile]) -> String {
         if let account = activeAccount(accounts) {
-            return account.shortLabel
+            return hidePersonalIdentifiers ? "#\(account.displayNumber) Account" : account.shortLabel
         }
         if let profile = activeProfile(profiles) {
-            return profile.displayLabel
+            return hidePersonalIdentifiers ? "#\(profile.displayNumber) Profile" : profile.displayLabel
         }
         return "-"
+    }
+
+    private func activeTargetLabel(account: MenubarAccount?, profile: MenubarProfile?) -> String? {
+        if let account {
+            return hidePersonalIdentifiers ? "#\(account.displayNumber) Account" : account.shortLabel
+        }
+        if let profile {
+            return hidePersonalIdentifiers ? "#\(profile.displayNumber) Profile" : profile.displayLabel
+        }
+        return nil
     }
 
     private func providerUpdatedLabel(accounts: [MenubarAccount], fallback: UInt64) -> String {

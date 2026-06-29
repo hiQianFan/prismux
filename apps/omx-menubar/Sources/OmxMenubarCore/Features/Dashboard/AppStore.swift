@@ -6,7 +6,10 @@ public final class AppStore: ObservableObject {
     @Published private(set) var switchingLocalId: String?
     @Published private(set) var deletingLocalId: String?
     @Published private(set) var confirmingDeleteTargetId: String?
+    @Published private(set) var resettingLocalId: String?
+    @Published private(set) var confirmingResetTargetId: String?
     @Published private(set) var refreshingProvider: String?
+    @Published private(set) var operationNotice: OperationNotice?
     @Published var selectedProvider: String?
     /// Usage-card period selector. Shared across the overview and provider
     /// pages so the chart granularity stays consistent as you switch tabs.
@@ -101,12 +104,33 @@ public final class AppStore: ObservableObject {
         deletingLocalId = nil
     }
 
+    func resetAccountUsageLimit(_ account: MenubarAccount) async {
+        guard resettingLocalId == nil else { return }
+        confirmingResetTargetId = nil
+        resettingLocalId = account.id
+        await request(.consumeResetCredit(
+            provider: account.provider,
+            targetKind: account.targetKind,
+            localId: account.localId,
+            idempotencyKey: UUID().uuidString
+        ))
+        resettingLocalId = nil
+    }
+
     func confirmDelete(_ targetId: String) {
         confirmingDeleteTargetId = targetId
     }
 
     func cancelDeleteConfirmation() {
         confirmingDeleteTargetId = nil
+    }
+
+    func confirmReset(_ targetId: String) {
+        confirmingResetTargetId = targetId
+    }
+
+    func cancelResetConfirmation() {
+        confirmingResetTargetId = nil
     }
 
     private func request(_ payload: Payload) async {
@@ -120,6 +144,9 @@ public final class AppStore: ObservableObject {
                 requestId: UUID().uuidString
             ))
             guard currentGeneration == generation else { return }
+            if let operation = envelope.data?.operation {
+                operationNotice = OperationNotice(operation: operation)
+            }
             if let report = envelope.data?.dashboard {
                 lastGood = report
                 state = .ready(report, stale: false)
@@ -195,9 +222,35 @@ public final class AppStore: ObservableObject {
         case .dashboard: return "dashboard"
         case .accounts: return "accounts"
         case .compatibility: return "compatibility"
+        case .settingsView: return "settings_view"
+        case .updateSettings: return "update_settings"
+        case .aboutView: return "about_view"
+        case .supportReport: return "support_report"
         case .refresh: return "refresh"
         case .switchTarget: return "switch"
         case .removeTarget: return "remove"
+        case .consumeResetCredit: return "consume_reset_credit"
+        }
+    }
+}
+
+struct OperationNotice: Equatable {
+    let title: String
+    let message: String
+    let severity: StatusBannerProps.Severity
+
+    init(operation: OperationResult) {
+        self.message = operation.message
+        switch operation.status {
+        case "failed":
+            self.title = "Operation failed"
+            self.severity = .error
+        case "skipped":
+            self.title = "Operation skipped"
+            self.severity = .warning
+        default:
+            self.title = "Operation complete"
+            self.severity = .info
         }
     }
 }

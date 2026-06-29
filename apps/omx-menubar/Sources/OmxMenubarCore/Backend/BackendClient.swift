@@ -22,9 +22,14 @@ enum Payload: Encodable, Sendable {
     case dashboard(provider: String?)
     case accounts(provider: String?)
     case compatibility
+    case settingsView
+    case updateSettings(SettingsView)
+    case aboutView
+    case supportReport(includeDebugSummary: Bool, recentDiagnostics: [String])
     case refresh(provider: String, kind: String)
     case switchTarget(provider: String, targetKind: String, localId: String)
     case removeTarget(provider: String, targetKind: String, localId: String)
+    case consumeResetCredit(provider: String, targetKind: String, localId: String, idempotencyKey: String)
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
@@ -34,6 +39,13 @@ enum Payload: Encodable, Sendable {
         case .compatibility:
             try container.encode(1, forKey: .controlPlaneSchemaVersion)
             try container.encode(1, forKey: .stateSchemaVersion)
+        case .settingsView, .aboutView:
+            break
+        case .updateSettings(let view):
+            try container.encode(view, forKey: .view)
+        case .supportReport(let includeDebugSummary, let recentDiagnostics):
+            try container.encode(includeDebugSummary, forKey: .includeDebugSummary)
+            try container.encode(recentDiagnostics, forKey: .recentDiagnostics)
         case .refresh(let provider, let kind):
             try container.encode(provider, forKey: .provider)
             try container.encode(kind, forKey: .kind)
@@ -42,6 +54,11 @@ enum Payload: Encodable, Sendable {
             try container.encode(provider, forKey: .provider)
             try container.encode(targetKind, forKey: .targetKind)
             try container.encode(localId, forKey: .localId)
+        case .consumeResetCredit(let provider, let targetKind, let localId, let idempotencyKey):
+            try container.encode(provider, forKey: .provider)
+            try container.encode(targetKind, forKey: .targetKind)
+            try container.encode(localId, forKey: .localId)
+            try container.encode(idempotencyKey, forKey: .idempotencyKey)
         }
     }
 
@@ -49,9 +66,13 @@ enum Payload: Encodable, Sendable {
         case provider
         case controlPlaneSchemaVersion = "control_plane_schema_version"
         case stateSchemaVersion = "state_schema_version"
+        case view
+        case includeDebugSummary = "include_debug_summary"
+        case recentDiagnostics = "recent_diagnostics"
         case kind
         case targetKind = "target_kind"
         case localId = "local_id"
+        case idempotencyKey = "idempotency_key"
     }
 }
 
@@ -81,6 +102,9 @@ public enum BackendData: Decodable, Sendable {
     case dashboard(DashboardReport)
     case accounts(AccountsReport)
     case operation(OperationData)
+    case settings(SettingsView)
+    case about(AboutView)
+    case support(SupportReport)
 
     public var dashboard: DashboardReport? {
         if case .operation(let operation) = self {
@@ -108,6 +132,30 @@ public enum BackendData: Decodable, Sendable {
         }
     }
 
+    public var settings: SettingsView? {
+        if case .settings(let settings) = self {
+            settings
+        } else {
+            nil
+        }
+    }
+
+    public var about: AboutView? {
+        if case .about(let about) = self {
+            about
+        } else {
+            nil
+        }
+    }
+
+    public var support: SupportReport? {
+        if case .support(let report) = self {
+            report
+        } else {
+            nil
+        }
+    }
+
     public init(from decoder: Decoder) throws {
         if let operation = try? OperationData(from: decoder) {
             self = .operation(operation)
@@ -117,6 +165,18 @@ public enum BackendData: Decodable, Sendable {
             self = .dashboard(dashboard)
             return
         }
+        if let settings = try? SettingsView(from: decoder) {
+            self = .settings(settings)
+            return
+        }
+        if let about = try? AboutView(from: decoder) {
+            self = .about(about)
+            return
+        }
+        if let support = try? SupportReport(from: decoder) {
+            self = .support(support)
+            return
+        }
         self = .accounts(try AccountsReport(from: decoder))
     }
 }
@@ -124,6 +184,35 @@ public enum BackendData: Decodable, Sendable {
 public struct OperationData: Decodable, Sendable {
     public let operation: OperationResult
     public let dashboard: DashboardReport
+    public let outcome: ResetCreditOutcome?
+}
+
+public enum ResetCreditOutcome: Decodable, Equatable, Sendable {
+    case reset(windowsReset: UInt32)
+    case nothingToReset
+    case noCredit
+    case alreadyRedeemed
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case windowsReset = "windows_reset"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(String.self, forKey: .status) {
+        case "reset":
+            self = .reset(windowsReset: try container.decodeIfPresent(UInt32.self, forKey: .windowsReset) ?? 0)
+        case "nothing_to_reset":
+            self = .nothingToReset
+        case "no_credit":
+            self = .noCredit
+        case "already_redeemed":
+            self = .alreadyRedeemed
+        default:
+            throw DecodingError.dataCorruptedError(forKey: .status, in: container, debugDescription: "Unknown reset credit outcome")
+        }
+    }
 }
 
 public struct BackendError: Decodable, Error, Sendable {

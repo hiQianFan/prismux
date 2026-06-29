@@ -15,9 +15,13 @@ enum ProviderStyle {
 
     static func color(_ provider: String) -> Color {
         switch provider.lowercased() {
-        case "codex": return .green
-        case "claude": return .orange
-        case "gemini": return .blue
+        // Official brand colors: Codex/ChatGPT green #10A37F, Claude/Anthropic
+        // "book cloth" terracotta #CC785C, Gemini Google blue #4285F4. These
+        // are desaturated brand tones that sit together far more calmly than
+        // the old system green+orange.
+        case "codex": return Color(red: 0.063, green: 0.639, blue: 0.498) // #10A37F
+        case "claude": return Color(red: 0.800, green: 0.471, blue: 0.361) // #CC785C
+        case "gemini": return Color(red: 0.259, green: 0.522, blue: 0.957) // #4285F4
         default: return .purple
         }
     }

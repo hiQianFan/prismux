@@ -2,6 +2,7 @@ import SwiftUI
 
 struct DashboardScreen: View {
     @ObservedObject var store: AppStore
+    var onOpenSettings: (MenubarSettingsTab) -> Void = { _ in }
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -15,14 +16,14 @@ struct DashboardScreen: View {
                 loadingView
             case .failed(let lastGood, let message), .backendUnavailable(let lastGood, let message):
                 if let lastGood {
-                    DashboardView(store: store, report: lastGood, stale: true)
+                    DashboardView(store: store, report: lastGood, stale: true, onOpenSettings: onOpenSettings)
                 } else {
                     failedView(message)
                 }
             case .upgradeRequired(let message):
                 failedView(message)
             case .ready(let report, let stale):
-                DashboardView(store: store, report: report, stale: stale)
+                DashboardView(store: store, report: report, stale: stale, onOpenSettings: onOpenSettings)
             }
         }
         .frame(width: width, height: height)

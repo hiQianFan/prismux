@@ -7,6 +7,7 @@ public final class StatusItemController: NSObject, NSPopoverDelegate {
     private let statusItem: NSStatusItem
     private let popover: NSPopover
     private let store: AppStore
+    private let settingsWindowController = MenubarSettingsWindowController()
     private var cancellables: Set<AnyCancellable> = []
     private var refreshTimer: Timer?
     private var globalMouseMonitor: Any?
@@ -24,7 +25,11 @@ public final class StatusItemController: NSObject, NSPopoverDelegate {
         popover.behavior = .transient
         popover.delegate = self
         popover.contentSize = NSSize(width: 390, height: 560)
-        popover.contentViewController = NSHostingController(rootView: DashboardScreen(store: store))
+        popover.contentViewController = NSHostingController(
+            rootView: DashboardScreen(store: store) { [weak self] tab in
+                self?.settingsWindowController.show(tab: tab)
+            }
+        )
 
         statusItem.button?.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "OpenMux")
         statusItem.button?.target = self

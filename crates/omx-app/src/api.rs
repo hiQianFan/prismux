@@ -3,8 +3,8 @@ pub use crate::compatibility::{
 };
 pub use crate::dto::*;
 pub use crate::mutation::{
-    activate_target, menubar_refresh, menubar_remove, menubar_switch, refresh_all,
-    refresh_provider, remove_target,
+    activate_target, consume_reset_credit, menubar_refresh, menubar_remove, menubar_switch,
+    refresh_all, refresh_provider, remove_target,
 };
 pub use crate::query::{
     account_statuses, active_account_status, config_profiles, dashboard_view, menubar_accounts,
@@ -21,8 +21,8 @@ mod tests {
         AccountRef, AccountStatus, Availability, AvailabilityState, ConfigProfile, CostStatus,
         DoctorReport, ImportConfigOptions, ImportedConfig, LoginOptions, OpenMuxError,
         PlatformCapabilities, PlatformInfo, PlatformInstall, PlatformPlugin, PlatformPoolSummary,
-        Result, SaveOptions, SwitchReport, UsageDataQuality, UsageEvent, UsageEventSource,
-        UsageSnapshot, UsageTokenBreakdown, storage::unix_now,
+        ResetCreditOutcome, Result, SaveOptions, SwitchReport, UsageDataQuality, UsageEvent,
+        UsageEventSource, UsageResetCredits, UsageSnapshot, UsageTokenBreakdown, storage::unix_now,
     };
     use std::sync::{
         Arc, Mutex as StdMutex,
@@ -108,6 +108,25 @@ mod tests {
                 .any(|account| account.provider == "claude" && account.active)
         );
         assert!(report.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn accounts_report_maps_reset_credit_metadata() {
+        let mut status = account(1, true, None);
+        status.usage.as_mut().unwrap().reset_credits =
+            Some(UsageResetCredits { available_count: 2 });
+        let plugins = vec![Box::new(FakePlugin::new(vec![status])) as Box<dyn PlatformPlugin>];
+
+        let report = menubar_accounts(&plugins, MenubarQuery::default()).unwrap();
+
+        assert_eq!(
+            report.accounts[0]
+                .quota
+                .as_ref()
+                .and_then(|quota| quota.reset_credits.as_ref())
+                .map(|credits| credits.available_count),
+            Some(2)
+        );
     }
 
     #[test]
@@ -308,6 +327,68 @@ mod tests {
     }
 
     #[test]
+    fn consume_reset_credit_reports_outcome_and_refreshes_provider() {
+        let _guard = TEST_OPERATION_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let refresh_count = Arc::new(AtomicUsize::new(0));
+        let plugins = vec![Box::new(
+            FakePlugin::new(vec![account(1, true, None)])
+                .with_reset_outcome(ResetCreditOutcome::Reset { windows_reset: 2 })
+                .with_refresh_count(refresh_count.clone()),
+        ) as Box<dyn PlatformPlugin>];
+
+        let report = consume_reset_credit(
+            &plugins,
+            MenubarConsumeResetCreditCommand {
+                provider: "codex".to_string(),
+                local_id: "codex-account-1".to_string(),
+                idempotency_key: "attempt-1".to_string(),
+                target_kind: Some(MenubarTargetKind::Account),
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(report.operation.status, MenubarOperationStatus::Success);
+        assert_eq!(
+            report.outcome,
+            Some(MenubarResetCreditOutcome::Reset { windows_reset: 2 })
+        );
+        assert_eq!(refresh_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn consume_reset_credit_failure_returns_safe_operation_result() {
+        let _guard = TEST_OPERATION_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let plugins = vec![Box::new(
+            FakePlugin::new(vec![account(1, true, None)])
+                .with_reset_error("Authorization: Bearer secret-token"),
+        ) as Box<dyn PlatformPlugin>];
+
+        let report = consume_reset_credit(
+            &plugins,
+            MenubarConsumeResetCreditCommand {
+                provider: "codex".to_string(),
+                local_id: "codex-account-1".to_string(),
+                idempotency_key: "attempt-1".to_string(),
+                target_kind: Some(MenubarTargetKind::Account),
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(report.operation.status, MenubarOperationStatus::Failed);
+        assert_eq!(report.outcome, None);
+        assert_eq!(
+            report.operation.diagnostics[0].message,
+            "[redacted sensitive diagnostic]"
+        );
+    }
+
+    #[test]
     fn accounts_report_keeps_safe_diagnostic_when_plugin_is_unavailable() {
         let plugins = vec![
             Box::new(FakePlugin::unavailable("access_token leaked")) as Box<dyn PlatformPlugin>
@@ -475,6 +556,8 @@ mod tests {
         list_error: Option<String>,
         refresh_error: Option<String>,
         switch_error: Option<String>,
+        reset_outcome: Option<ResetCreditOutcome>,
+        reset_error: Option<String>,
     }
 
     impl FakePlugin {
@@ -488,6 +571,8 @@ mod tests {
                 list_error: None,
                 refresh_error: None,
                 switch_error: None,
+                reset_outcome: None,
+                reset_error: None,
             }
         }
 
@@ -501,6 +586,8 @@ mod tests {
                 list_error: Some(message.to_string()),
                 refresh_error: None,
                 switch_error: None,
+                reset_outcome: None,
+                reset_error: None,
             }
         }
 
@@ -531,6 +618,16 @@ mod tests {
 
         fn with_switch_error(mut self, message: &str) -> Self {
             self.switch_error = Some(message.to_string());
+            self
+        }
+
+        fn with_reset_outcome(mut self, outcome: ResetCreditOutcome) -> Self {
+            self.reset_outcome = Some(outcome);
+            self
+        }
+
+        fn with_reset_error(mut self, message: &str) -> Self {
+            self.reset_error = Some(message.to_string());
             self
         }
     }
@@ -612,6 +709,19 @@ mod tests {
             })
         }
 
+        fn consume_reset_credit(
+            &self,
+            _selector: &str,
+            _idempotency_key: &str,
+        ) -> Result<ResetCreditOutcome> {
+            if let Some(message) = self.reset_error.as_ref() {
+                return Err(OpenMuxError::Message(message.clone()));
+            }
+            self.reset_outcome.clone().ok_or_else(|| {
+                OpenMuxError::Message("reset credit outcome not configured".to_string())
+            })
+        }
+
         fn list_configs(&self) -> Result<Vec<ConfigProfile>> {
             Ok(self.profiles.clone())
         }
@@ -689,6 +799,7 @@ mod tests {
                     display: "80%".to_string(),
                 },
                 limits: Vec::new(),
+                reset_credits: None,
                 diagnostics: diagnostic
                     .map(|message| {
                         vec![omx_core::UsageDiagnostic {

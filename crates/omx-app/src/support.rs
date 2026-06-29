@@ -45,9 +45,16 @@ pub enum DiagnosticSeverity {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SupportDebugSummary {
-    pub provider_order: Vec<String>,
     pub refresh_cadence_seconds: u64,
     pub enabled_provider_count: usize,
+    pub privacy_hide_personal_identifiers: bool,
+    pub provider_source_preferences: Vec<ProviderSourcePreferenceSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderSourcePreferenceSummary {
+    pub provider: String,
+    pub source_preference: String,
 }
 
 pub fn support_report(command: SupportReportCommand) -> SupportReport {
@@ -67,13 +74,26 @@ pub fn support_report(command: SupportReportCommand) -> SupportReport {
     let debug_summary = command.include_debug_summary.then(|| {
         let settings = settings.unwrap_or_else(crate::settings::default_settings_view);
         SupportDebugSummary {
-            provider_order: settings.provider_order,
-            refresh_cadence_seconds: settings.refresh_cadence_seconds,
+            refresh_cadence_seconds: settings.general.refresh_cadence_seconds,
             enabled_provider_count: settings
                 .providers
                 .iter()
                 .filter(|provider| provider.enabled)
                 .count(),
+            privacy_hide_personal_identifiers: settings.privacy.hide_personal_identifiers,
+            provider_source_preferences: settings
+                .providers
+                .iter()
+                .map(|provider| ProviderSourcePreferenceSummary {
+                    provider: provider.provider.clone(),
+                    source_preference: match provider.source_preference {
+                        crate::settings::SourcePreference::Auto => "auto",
+                        crate::settings::SourcePreference::LocalOnly => "local_only",
+                        crate::settings::SourcePreference::RemoteOnly => "remote_only",
+                    }
+                    .to_string(),
+                })
+                .collect(),
         }
     });
     SupportReport {

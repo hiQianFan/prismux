@@ -4,6 +4,14 @@ use crate::{
     RemoveReport, Result, SaveOptions, SwitchReport, UseReport,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResetCreditOutcome {
+    Reset { windows_reset: u32 },
+    NothingToReset,
+    NoCredit,
+    AlreadyRedeemed,
+}
+
 pub trait PlatformPlugin {
     fn id(&self) -> &'static str;
     fn name(&self) -> &'static str;
@@ -31,6 +39,16 @@ pub trait PlatformPlugin {
     fn remove_target(&self, _selector: &str) -> Result<RemoveReport> {
         Err(OpenMuxError::Message(format!(
             "{} does not support removing managed targets yet",
+            self.name()
+        )))
+    }
+    fn consume_reset_credit(
+        &self,
+        _selector: &str,
+        _idempotency_key: &str,
+    ) -> Result<ResetCreditOutcome> {
+        Err(OpenMuxError::Message(format!(
+            "{} does not support reset credits",
             self.name()
         )))
     }

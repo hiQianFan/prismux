@@ -35,6 +35,7 @@ pub struct UsageSnapshot {
     pub refreshed_at_unix: Option<i64>,
     pub summary: Availability,
     pub limits: Vec<UsageLimit>,
+    pub reset_credits: Option<UsageResetCredits>,
     pub diagnostics: Vec<UsageDiagnostic>,
 }
 
@@ -45,9 +46,15 @@ impl UsageSnapshot {
             refreshed_at_unix: None,
             summary: Availability::unknown(),
             limits: Vec::new(),
+            reset_credits: None,
             diagnostics: vec![diagnostic],
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UsageResetCredits {
+    pub available_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

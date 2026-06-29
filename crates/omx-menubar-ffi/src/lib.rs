@@ -1,7 +1,8 @@
 use omx_app::{
-    ClientDescriptor, MenubarQuery, MenubarRefreshCommand, MenubarRemoveCommand,
-    MenubarSwitchCommand, activate_target, compatibility_view, dashboard_view, refresh_provider,
-    remove_target,
+    ClientDescriptor, MenubarConsumeResetCreditCommand, MenubarQuery, MenubarRefreshCommand,
+    MenubarRemoveCommand, MenubarSwitchCommand, SupportReportCommand, UpdateSettingsCommand,
+    about_view, activate_target, compatibility_view, consume_reset_credit, dashboard_view,
+    refresh_provider, remove_target, settings_view, support_report, update_settings,
 };
 use omx_core::{
     PlatformPlugin, StateStore, UsageScanBudget, UsageScanOptions,
@@ -157,9 +158,25 @@ fn dispatch(request: RequestEnvelope) -> Result<Value, (&'static str, String)> {
             refresh_usage_cache(store.as_ref(), Some(&command.provider));
             json_value(remove_target(&plugins, command, store.as_ref()))
         }
+        "consume_reset_credit" => {
+            let command: MenubarConsumeResetCreditCommand = payload(request.payload)?;
+            refresh_usage_cache(store.as_ref(), Some(&command.provider));
+            json_value(consume_reset_credit(&plugins, command, store.as_ref()))
+        }
         "compatibility" => {
             let client: ClientDescriptor = payload_or_default(request.payload)?;
             json_value(Ok(compatibility_view(client)))
+        }
+        "settings_view" => json_value(settings_view()),
+        "update_settings" => {
+            let command: UpdateSettingsCommand = payload(request.payload)?;
+            json_value(update_settings(command))
+        }
+        "about_view" => json_value(about_view()),
+        "support_report" => {
+            let command: SupportReportCommand = payload_or_default(request.payload)?;
+            serde_json::to_value(support_report(command))
+                .map_err(|_| ("encode_error", "failed to encode response".to_string()))
         }
         _ => Err(("unknown_op", "unknown menubar operation".to_string())),
     }

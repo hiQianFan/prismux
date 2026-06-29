@@ -1,3 +1,4 @@
+pub mod about;
 pub mod api;
 pub mod compatibility;
 pub mod diagnostics;
@@ -9,6 +10,7 @@ pub mod runtime;
 pub mod settings;
 pub mod support;
 
+pub use about::{AboutView, about_view};
 pub use api::*;
 pub use compatibility::{ClientDescriptor, CompatibilityResult, compatibility_view};
 pub use runtime::{

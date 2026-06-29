@@ -1,23 +1,60 @@
-use omx_core::{OpenMuxError, Result};
+use omx_core::{
+    OpenMuxError, Result,
+    storage::{read_file, state_root, write_file_atomic_private},
+};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SettingsView {
     pub schema_version: u32,
-    pub provider_order: Vec<String>,
+    pub general: GeneralSettings,
     pub providers: Vec<ProviderSettings>,
+    pub privacy: PrivacySettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GeneralSettings {
     pub refresh_cadence_seconds: u64,
-    pub display_preference: DisplayPreference,
-    pub debug_recovery: DebugRecoverySettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrivacySettings {
+    pub hide_personal_identifiers: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderSettings {
     pub provider: String,
+    pub display_label: String,
     pub enabled: bool,
+    pub status: ProviderSettingsStatus,
     pub source_preference: SourcePreference,
+    pub source_options: Vec<SettingsPickerOption>,
+    pub diagnostics: Vec<SettingsDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderSettingsStatus {
+    pub status: String,
+    pub status_text: String,
+    pub status_tone: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SettingsPickerOption {
+    pub value: SourcePreference,
+    pub label: String,
+    pub disabled_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SettingsDiagnostic {
+    pub code: String,
+    pub message: String,
+    pub recovery_action: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -29,55 +66,117 @@ pub enum SourcePreference {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum DisplayPreference {
-    Compact,
-    Detailed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DebugRecoverySettings {
-    pub include_debug_summary_in_support_report: bool,
-    pub allow_destructive_recovery_actions: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpdateSettingsCommand {
     pub view: SettingsView,
 }
 
 pub fn default_settings_view() -> SettingsView {
-    let providers = ["codex", "claude"]
-        .into_iter()
-        .map(|provider| ProviderSettings {
-            provider: provider.to_string(),
-            enabled: true,
-            source_preference: SourcePreference::Auto,
-        })
-        .collect::<Vec<_>>();
     SettingsView {
         schema_version: SETTINGS_SCHEMA_VERSION,
-        provider_order: providers
-            .iter()
-            .map(|provider| provider.provider.clone())
-            .collect(),
-        providers,
-        refresh_cadence_seconds: 300,
-        display_preference: DisplayPreference::Compact,
-        debug_recovery: DebugRecoverySettings {
-            include_debug_summary_in_support_report: false,
-            allow_destructive_recovery_actions: false,
+        general: GeneralSettings {
+            refresh_cadence_seconds: 300,
+        },
+        providers: [
+            ("codex", "Codex", true, "ready", "Ready", "success"),
+            (
+                "claude",
+                "Claude",
+                true,
+                "planned",
+                "Planned provider",
+                "secondary",
+            ),
+        ]
+        .into_iter()
+        .map(
+            |(provider, display_label, enabled, status, status_text, status_tone)| {
+                ProviderSettings {
+                    provider: provider.to_string(),
+                    display_label: display_label.to_string(),
+                    enabled,
+                    status: ProviderSettingsStatus {
+                        status: status.to_string(),
+                        status_text: status_text.to_string(),
+                        status_tone: status_tone.to_string(),
+                    },
+                    source_preference: SourcePreference::Auto,
+                    source_options: source_options(),
+                    diagnostics: Vec::new(),
+                }
+            },
+        )
+        .collect(),
+        privacy: PrivacySettings {
+            hide_personal_identifiers: false,
         },
     }
 }
 
 pub fn settings_view() -> Result<SettingsView> {
-    Ok(default_settings_view())
+    let path = settings_path()?;
+    let bytes = match read_file(&path) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(default_settings_view()),
+    };
+    let view: SettingsView = serde_json::from_slice(&bytes).map_err(|err| {
+        OpenMuxError::Message(format!(
+            "{} contains invalid settings JSON: {err}",
+            omx_core::storage::display_path(&path)
+        ))
+    })?;
+    validate_settings(&view)?;
+    Ok(normalize_settings(view))
 }
 
 pub fn update_settings(command: UpdateSettingsCommand) -> Result<SettingsView> {
     validate_settings(&command.view)?;
-    Ok(command.view)
+    let view = normalize_settings(command.view);
+    let bytes = serde_json::to_vec_pretty(&view)
+        .map_err(|err| OpenMuxError::Message(format!("failed to encode settings: {err}")))?;
+    write_file_atomic_private(&settings_path()?, &bytes)?;
+    Ok(view)
+}
+
+pub fn settings_storage_path() -> Result<PathBuf> {
+    settings_path()
+}
+
+fn settings_path() -> Result<PathBuf> {
+    Ok(state_root()?.join("control-plane").join("settings.json"))
+}
+
+fn normalize_settings(mut view: SettingsView) -> SettingsView {
+    let defaults = default_settings_view();
+    for provider in &mut view.providers {
+        if provider.display_label.trim().is_empty() {
+            provider.display_label = provider.provider.clone();
+        }
+        provider.source_options = source_options();
+        if provider.status.status.trim().is_empty()
+            && let Some(default) = defaults
+                .providers
+                .iter()
+                .find(|default| default.provider == provider.provider)
+        {
+            provider.status = default.status.clone();
+        }
+    }
+    view
+}
+
+fn source_options() -> Vec<SettingsPickerOption> {
+    vec![
+        SettingsPickerOption {
+            value: SourcePreference::Auto,
+            label: "Auto".to_string(),
+            disabled_reason: None,
+        },
+        SettingsPickerOption {
+            value: SourcePreference::LocalOnly,
+            label: "Local only".to_string(),
+            disabled_reason: None,
+        },
+    ]
 }
 
 fn validate_settings(view: &SettingsView) -> Result<()> {
@@ -87,19 +186,33 @@ fn validate_settings(view: &SettingsView) -> Result<()> {
             view.schema_version
         )));
     }
-    if view.refresh_cadence_seconds < 30 {
+    if view.general.refresh_cadence_seconds < 30 {
         return Err(OpenMuxError::Message(
             "refresh cadence must be at least 30 seconds".to_string(),
         ));
     }
-    for provider in &view.provider_order {
-        if !view
-            .providers
-            .iter()
-            .any(|settings| settings.provider == *provider)
-        {
+    if view.providers.is_empty() {
+        return Err(OpenMuxError::Message(
+            "settings must include at least one provider".to_string(),
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for provider in &view.providers {
+        if provider.provider.trim().is_empty() {
+            return Err(OpenMuxError::Message(
+                "settings provider id must not be empty".to_string(),
+            ));
+        }
+        if !seen.insert(provider.provider.as_str()) {
             return Err(OpenMuxError::Message(format!(
-                "provider order references unknown provider `{provider}`"
+                "duplicate settings provider `{}`",
+                provider.provider
+            )));
+        }
+        if provider.source_preference == SourcePreference::RemoteOnly {
+            return Err(OpenMuxError::Message(format!(
+                "remote_only is not supported for provider `{}`",
+                provider.provider
             )));
         }
     }
@@ -109,15 +222,85 @@ fn validate_settings(view: &SettingsView) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omx_core::storage::unix_now_nanos;
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    struct EnvGuard {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set_state_root(path: &std::path::Path) -> Self {
+            let previous = std::env::var_os("OMUX_STATE_ROOT");
+            unsafe {
+                std::env::set_var("OMUX_STATE_ROOT", path);
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var("OMUX_STATE_ROOT", value),
+                    None => std::env::remove_var("OMUX_STATE_ROOT"),
+                }
+            }
+        }
+    }
 
     #[test]
     fn settings_are_typed_and_default_to_safe_values() {
+        let root = std::env::temp_dir().join(format!(
+            "openmux-settings-default-test-{}-{}",
+            std::process::id(),
+            unix_now_nanos()
+        ));
+        let _lock = env_lock();
+        let _guard = EnvGuard::set_state_root(&root);
+
         let view = settings_view().unwrap();
 
         assert_eq!(view.schema_version, SETTINGS_SCHEMA_VERSION);
-        assert_eq!(view.display_preference, DisplayPreference::Compact);
+        assert_eq!(view.general.refresh_cadence_seconds, 300);
         assert!(view.providers.iter().all(|provider| provider.enabled));
-        assert!(!view.debug_recovery.allow_destructive_recovery_actions);
+        assert!(!view.privacy.hide_personal_identifiers);
+        assert!(view.providers.iter().all(|provider| {
+            provider
+                .source_options
+                .iter()
+                .all(|option| option.value != SourcePreference::RemoteOnly)
+        }));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn update_settings_persists_view() {
+        let root = std::env::temp_dir().join(format!(
+            "openmux-settings-persist-test-{}-{}",
+            std::process::id(),
+            unix_now_nanos()
+        ));
+        let _lock = env_lock();
+        let _guard = EnvGuard::set_state_root(&root);
+        let mut view = default_settings_view();
+        view.general.refresh_cadence_seconds = 900;
+        view.privacy.hide_personal_identifiers = true;
+
+        update_settings(UpdateSettingsCommand { view }).unwrap();
+        let loaded = settings_view().unwrap();
+
+        assert_eq!(loaded.general.refresh_cadence_seconds, 900);
+        assert!(loaded.privacy.hide_personal_identifiers);
+        assert!(settings_storage_path().unwrap().exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -131,12 +314,12 @@ mod tests {
     }
 
     #[test]
-    fn settings_reject_invalid_provider_order() {
+    fn settings_reject_remote_only_until_product_decision() {
         let mut view = default_settings_view();
-        view.provider_order.push("missing".to_string());
+        view.providers[0].source_preference = SourcePreference::RemoteOnly;
 
         let err = update_settings(UpdateSettingsCommand { view }).unwrap_err();
 
-        assert!(err.to_string().contains("unknown provider"));
+        assert!(err.to_string().contains("remote_only is not supported"));
     }
 }

@@ -2018,6 +2018,7 @@ mod tests {
                         raw_provider_key: None,
                     },
                 ],
+                reset_credits: None,
                 diagnostics: Vec::new(),
             }),
         };
@@ -2380,6 +2381,7 @@ mod tests {
                         raw_provider_key: None,
                     },
                 ],
+                reset_credits: None,
                 diagnostics: Vec::new(),
             }),
         }

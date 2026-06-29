@@ -239,6 +239,12 @@ fn quota_from_usage(usage: &UsageSnapshot) -> MenubarQuota {
         refreshed_at_unix: usage.refreshed_at_unix,
         primary_window,
         windows,
+        reset_credits: usage
+            .reset_credits
+            .as_ref()
+            .map(|credits| MenubarResetCredits {
+                available_count: credits.available_count,
+            }),
     }
 }
 

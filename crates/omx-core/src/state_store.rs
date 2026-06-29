@@ -113,6 +113,8 @@ struct StoredUsageSnapshot {
     refreshed_at_unix: Option<i64>,
     summary: Availability,
     limits: Vec<crate::UsageLimit>,
+    #[serde(default)]
+    reset_credits: Option<crate::UsageResetCredits>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -961,6 +963,7 @@ impl StateStore {
             refreshed_at_unix: usage.refreshed_at_unix,
             summary: usage.summary.clone(),
             limits: usage.limits.clone(),
+            reset_credits: usage.reset_credits.clone(),
         };
         let snapshot_json = serde_json::to_string(&snapshot)
             .map_err(|err| OpenMuxError::Message(format!("encode quota snapshot: {err}")))?;
@@ -1013,6 +1016,7 @@ impl StateStore {
                         refreshed_at_unix: snapshot.refreshed_at_unix,
                         summary: snapshot.summary,
                         limits: snapshot.limits,
+                        reset_credits: snapshot.reset_credits,
                         diagnostics,
                     })
                 },
@@ -2579,6 +2583,7 @@ mod tests {
                 display: "available".to_string(),
             },
             limits: Vec::new(),
+            reset_credits: None,
             diagnostics: Vec::new(),
         };
 

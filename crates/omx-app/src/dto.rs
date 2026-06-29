@@ -23,6 +23,15 @@ pub struct MenubarRemoveCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MenubarConsumeResetCreditCommand {
+    pub provider: String,
+    pub local_id: String,
+    pub idempotency_key: String,
+    #[serde(default)]
+    pub target_kind: Option<MenubarTargetKind>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MenubarRefreshCommand {
     pub provider: String,
     pub kind: RefreshKind,
@@ -119,6 +128,29 @@ pub struct MenubarRemoveReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MenubarConsumeResetCreditReport {
+    pub control_plane_schema_version: u32,
+    pub state_schema_version: u32,
+    pub generated_at_unix: u64,
+    pub provider: String,
+    pub requested_local_id: String,
+    pub operation: MenubarOperationResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<MenubarResetCreditOutcome>,
+    pub dashboard: MenubarDashboardReport,
+    pub accounts: MenubarAccountsReport,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum MenubarResetCreditOutcome {
+    Reset { windows_reset: u32 },
+    NothingToReset,
+    NoCredit,
+    AlreadyRedeemed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MenubarOperationResult {
     pub status: MenubarOperationStatus,
     pub changed: bool,
@@ -206,6 +238,12 @@ pub struct MenubarQuota {
     pub refreshed_at_unix: Option<i64>,
     pub primary_window: Option<MenubarQuotaWindow>,
     pub windows: Vec<MenubarQuotaWindow>,
+    pub reset_credits: Option<MenubarResetCredits>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MenubarResetCredits {
+    pub available_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

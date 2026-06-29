@@ -10,9 +10,10 @@ use omx_core::{
     AvailabilityState, ConfigProfile, ConfigSwitchReport, DoctorCheck, DoctorReport,
     ImportConfigOptions, ImportedConfig, LoginOptions, OpenMuxError, PlatformCapabilities,
     PlatformInfo, PlatformInstall, PlatformPlugin, PlatformPoolSummary, ProfileRecord,
-    RemoveReport, RemovedAccount, RemovedConfig, Result, SaveOptions, StateStore, SwitchReport,
-    UpsertAccount, UpsertProfile, UsageDiagnostic, UsageLimit, UsageLimitKind, UsageLimitScope,
-    UsageSnapshot, UsageSource, UseReport, platform_info,
+    RemoveReport, RemovedAccount, RemovedConfig, ResetCreditOutcome, Result, SaveOptions,
+    StateStore, SwitchReport, UpsertAccount, UpsertProfile, UsageDiagnostic, UsageLimit,
+    UsageLimitKind, UsageLimitScope, UsageResetCredits, UsageSnapshot, UsageSource, UseReport,
+    platform_info,
     storage::{
         create_dir_private, display_path, home_dir, io_error, prune_backup_files, read_file,
         sha256_hex, state_root as default_state_root, unix_now, unix_now_nanos,
@@ -380,6 +381,7 @@ impl CodexPlugin {
                 refreshed_at_unix: None,
                 summary: Availability::unknown(),
                 limits: Vec::new(),
+                reset_credits: None,
                 diagnostics: Vec::new(),
             })
     }
@@ -503,6 +505,41 @@ impl CodexPlugin {
         &self,
         auth: &CodexUsageAuth,
     ) -> std::result::Result<serde_json::Value, UsageDiagnostic> {
+        self.codex_backend_request(
+            auth,
+            "GET",
+            "https://chatgpt.com/backend-api/wham/usage",
+            None,
+        )
+    }
+
+    fn fetch_codex_reset_credit_consume(
+        &self,
+        auth: &CodexUsageAuth,
+        idempotency_key: &str,
+    ) -> Result<ResetCreditOutcome> {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "redeem_request_id": idempotency_key,
+        }))
+        .map_err(|err| OpenMuxError::Message(format!("encode reset credit request: {err}")))?;
+        let payload = self
+            .codex_backend_request(
+                auth,
+                "POST",
+                "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume",
+                Some(&body),
+            )
+            .map_err(|diagnostic| OpenMuxError::Message(diagnostic.message))?;
+        parse_reset_credit_outcome(&payload)
+    }
+
+    fn codex_backend_request(
+        &self,
+        auth: &CodexUsageAuth,
+        method: &str,
+        url: &str,
+        body: Option<&[u8]>,
+    ) -> std::result::Result<serde_json::Value, UsageDiagnostic> {
         let config_path = self
             .platform_state_dir()
             .map_err(usage_diagnostic_from_error)?
@@ -514,28 +551,42 @@ impl CodexPlugin {
         let proxy = codex_usage_proxy()
             .map(|proxy| format!("proxy = \"{}\"\n", escape_curl_config(&proxy)))
             .unwrap_or_default();
+        let fedramp = if auth.fedramp {
+            "header = \"X-OpenAI-Fedramp: true\"\n"
+        } else {
+            ""
+        };
         let config = format!(
-            "header = \"Authorization: Bearer {}\"\nheader = \"ChatGPT-Account-Id: {}\"\nheader = \"User-Agent: codex-cli\"\nmax-time = 8\nsilent\nshow-error\n",
+            "header = \"Authorization: Bearer {}\"\nheader = \"ChatGPT-Account-Id: {}\"\nheader = \"User-Agent: codex-cli\"\n{}max-time = 8\nsilent\nshow-error\n",
             escape_curl_config(&auth.access_token),
-            escape_curl_config(&auth.account_id)
+            escape_curl_config(&auth.account_id),
+            fedramp
         ) + &proxy;
         write_file_atomic_private(&config_path, config.as_bytes())
             .map_err(usage_diagnostic_from_error)?;
 
-        let output = Command::new("curl")
+        let mut command = Command::new("curl");
+        command
             .arg("--config")
             .arg(&config_path)
+            .arg("--request")
+            .arg(method)
             .arg("--write-out")
-            .arg("\n%{http_code}")
-            .arg("https://chatgpt.com/backend-api/wham/usage")
-            .output()
-            .map_err(|err| {
-                let _ = fs::remove_file(&config_path);
-                UsageDiagnostic {
-                    code: "network".to_string(),
-                    message: format!("failed to run curl for Codex usage: {err}"),
-                }
-            })?;
+            .arg("\n%{http_code}");
+        if let Some(body) = body {
+            command
+                .arg("--header")
+                .arg("Content-Type: application/json")
+                .arg("--data-binary")
+                .arg(String::from_utf8_lossy(body).as_ref());
+        }
+        let output = command.arg(url).output().map_err(|err| {
+            let _ = fs::remove_file(&config_path);
+            UsageDiagnostic {
+                code: "network".to_string(),
+                message: format!("failed to run curl for Codex backend request: {err}"),
+            }
+        })?;
         let _ = fs::remove_file(&config_path);
 
         if !output.status.success() {
@@ -545,12 +596,12 @@ impl CodexPlugin {
         let (status, body) =
             parse_curl_http_output(&output.stdout).ok_or_else(|| UsageDiagnostic {
                 code: "network".to_string(),
-                message: "Codex usage request did not include an HTTP status".to_string(),
+                message: "Codex backend request did not include an HTTP status".to_string(),
             })?;
         if !(200..=299).contains(&status) {
             return Err(UsageDiagnostic {
                 code: status.to_string(),
-                message: format!("Codex usage request returned HTTP {status}"),
+                message: format!("Codex backend request returned HTTP {status}"),
             });
         }
 
@@ -1526,6 +1577,30 @@ impl PlatformPlugin for CodexPlugin {
         }
     }
 
+    fn consume_reset_credit(
+        &self,
+        selector: &str,
+        idempotency_key: &str,
+    ) -> Result<ResetCreditOutcome> {
+        if idempotency_key.trim().is_empty() {
+            return Err(OpenMuxError::Message(
+                "reset credit idempotency key must not be empty".to_string(),
+            ));
+        }
+        let account = self.resolve_account(selector)?;
+        let runtime_auth_path = self.ensure_managed_runtime_scope(&account)?;
+        let auth = read_file(&runtime_auth_path)
+            .ok()
+            .and_then(|bytes| parse_codex_usage_auth(&bytes))
+            .ok_or_else(|| {
+                OpenMuxError::Message(
+                    "managed runtime auth is missing ChatGPT access token or account id"
+                        .to_string(),
+                )
+            })?;
+        self.fetch_codex_reset_credit_consume(&auth, idempotency_key)
+    }
+
     fn switch_to(&self, selector: &str) -> Result<SwitchReport> {
         let store = self.state_store()?;
         let auth_path = self.active_auth_path()?;
@@ -2168,21 +2243,62 @@ fn provider_subject_hash(provider: &str, subject: &CodexAccountSubject) -> Strin
 struct CodexUsageAuth {
     access_token: String,
     account_id: String,
+    fedramp: bool,
 }
 
 fn parse_codex_usage_auth(auth_bytes: &[u8]) -> Option<CodexUsageAuth> {
     let auth: serde_json::Value = serde_json::from_slice(auth_bytes).ok()?;
+    let access_token = auth
+        .pointer("/tokens/access_token")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())?;
+    let id_token = auth
+        .pointer("/tokens/id_token")
+        .and_then(serde_json::Value::as_str);
     Some(CodexUsageAuth {
-        access_token: auth
-            .pointer("/tokens/access_token")
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.trim().is_empty())?
-            .to_string(),
+        access_token: access_token.to_string(),
         account_id: auth
             .pointer("/tokens/account_id")
             .and_then(serde_json::Value::as_str)
             .filter(|value| !value.trim().is_empty())?
             .to_string(),
+        fedramp: jwt_claim_bool(
+            access_token,
+            "https://api.openai.com/auth.chatgpt_account_is_fedramp",
+        )
+        .or_else(|| {
+            id_token.and_then(|token| {
+                jwt_claim_bool(
+                    token,
+                    "https://api.openai.com/auth.chatgpt_account_is_fedramp",
+                )
+            })
+        })
+        .unwrap_or(false),
+    })
+}
+
+fn jwt_claim_bool(token: &str, key: &str) -> Option<bool> {
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64_url_decode(payload)?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    claims.get(key).and_then(json_bool).or_else(|| {
+        claims
+            .get("https://api.openai.com/auth")
+            .and_then(|auth| auth.get("chatgpt_account_is_fedramp"))
+            .and_then(json_bool)
+    })
+}
+
+fn json_bool(value: &serde_json::Value) -> Option<bool> {
+    value.as_bool().or_else(|| {
+        value
+            .as_str()
+            .and_then(|value| match value.to_ascii_lowercase().as_str() {
+                "true" | "1" => Some(true),
+                "false" | "0" => Some(false),
+                _ => None,
+            })
     })
 }
 
@@ -2216,6 +2332,26 @@ fn usage_diagnostic_from_error(error: OpenMuxError) -> UsageDiagnostic {
     UsageDiagnostic {
         code: "state".to_string(),
         message: error.to_string(),
+    }
+}
+
+fn parse_reset_credit_outcome(payload: &serde_json::Value) -> Result<ResetCreditOutcome> {
+    match payload.pointer("/code").and_then(serde_json::Value::as_str) {
+        Some("reset") => Ok(ResetCreditOutcome::Reset {
+            windows_reset: payload
+                .pointer("/windows_reset")
+                .and_then(json_number_or_string_as_u32)
+                .unwrap_or_default(),
+        }),
+        Some("nothing_to_reset") => Ok(ResetCreditOutcome::NothingToReset),
+        Some("no_credit") => Ok(ResetCreditOutcome::NoCredit),
+        Some("already_redeemed") => Ok(ResetCreditOutcome::AlreadyRedeemed),
+        Some(other) => Err(OpenMuxError::Message(format!(
+            "unknown Codex reset credit response code: {other}"
+        ))),
+        None => Err(OpenMuxError::Message(
+            "Codex reset credit response did not include a code".to_string(),
+        )),
     }
 }
 
@@ -2273,7 +2409,17 @@ fn parse_codex_usage_snapshot(
         refreshed_at_unix: Some(refreshed_at_unix),
         summary: summarize_limits(&limits),
         limits,
+        reset_credits: parse_codex_reset_credits(payload),
         diagnostics: Vec::new(),
+    })
+}
+
+fn parse_codex_reset_credits(payload: &serde_json::Value) -> Option<UsageResetCredits> {
+    let count = payload
+        .pointer("/rate_limit_reset_credits/available_count")
+        .and_then(json_number_or_string_as_u32)?;
+    Some(UsageResetCredits {
+        available_count: count,
     })
 }
 
@@ -2420,6 +2566,15 @@ fn json_number_as_u64(value: &serde_json::Value) -> Option<u64> {
                     .map(|value| value.round() as u64)
             })
     })
+}
+
+fn json_number_or_string_as_u32(value: &serde_json::Value) -> Option<u32> {
+    let count = value.as_u64().or_else(|| {
+        value
+            .as_str()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+    })?;
+    u32::try_from(count).ok()
 }
 
 fn json_number_as_percent_x100(value: &serde_json::Value) -> Option<u32> {

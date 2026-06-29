@@ -7,8 +7,8 @@ use crate::runtime::{
     release_refresh_request,
 };
 use omx_core::{
-    OpenMuxError, PlatformPlugin, Result, TargetCatalog, TargetKind, TargetResolution,
-    storage::unix_now,
+    OpenMuxError, PlatformPlugin, ResetCreditOutcome, Result, TargetCatalog, TargetKind,
+    TargetResolution, storage::unix_now,
 };
 use std::sync::Mutex;
 
@@ -44,6 +44,14 @@ pub fn remove_target(
     store: Option<&omx_core::StateStore>,
 ) -> Result<MenubarRemoveReport> {
     menubar_remove(plugins, command, store)
+}
+
+pub fn consume_reset_credit(
+    plugins: &[Box<dyn PlatformPlugin>],
+    command: MenubarConsumeResetCreditCommand,
+    store: Option<&omx_core::StateStore>,
+) -> Result<MenubarConsumeResetCreditReport> {
+    menubar_consume_reset_credit(plugins, command, store)
 }
 
 pub fn menubar_switch(
@@ -126,6 +134,73 @@ pub fn menubar_remove(
             message: "Target deleted.".to_string(),
             diagnostics: Vec::new(),
         },
+        dashboard,
+        accounts,
+    })
+}
+
+pub fn menubar_consume_reset_credit(
+    plugins: &[Box<dyn PlatformPlugin>],
+    command: MenubarConsumeResetCreditCommand,
+    store: Option<&omx_core::StateStore>,
+) -> Result<MenubarConsumeResetCreditReport> {
+    let _guard = OPERATION_LOCK
+        .try_lock()
+        .map_err(|_| OpenMuxError::Message("menubar operation already in progress".to_string()))?;
+    let plugin = find_plugin(plugins, &command.provider)?;
+    let before_catalog = target_catalog(plugin)?;
+    let active = active_target(plugin.id(), &before_catalog);
+    let target = resolve_menubar_target(
+        plugin.id(),
+        &before_catalog,
+        &MenubarSwitchCommand {
+            provider: command.provider.clone(),
+            local_id: command.local_id.clone(),
+            target_kind: command.target_kind,
+        },
+    )?;
+    let consume_result = plugin.consume_reset_credit(&target.target_id, &command.idempotency_key);
+    let mut diagnostics = Vec::new();
+    let (status, outcome, message) = match consume_result {
+        Ok(outcome) => {
+            let _ = plugin.refresh_accounts();
+            (
+                MenubarOperationStatus::Success,
+                Some(menubar_reset_credit_outcome(&outcome)),
+                reset_credit_message(&outcome),
+            )
+        }
+        Err(err) => {
+            diagnostics.push(MenubarDiagnostic {
+                code: "reset_credit_failed".to_string(),
+                message: sanitize_diagnostic(&err.to_string()),
+                recovery_action: Some(format!("Run `omx doctor {}`.", command.provider)),
+            });
+            (
+                MenubarOperationStatus::Failed,
+                None,
+                "Reset credit consume failed.".to_string(),
+            )
+        }
+    };
+    let dashboard = menubar_dashboard(plugins, MenubarQuery { provider: None }, store)?;
+    let active_after = active_target_for_provider_from_report(plugin.id(), &dashboard.accounts);
+    let accounts = dashboard.accounts.clone();
+    Ok(MenubarConsumeResetCreditReport {
+        control_plane_schema_version: CONTROL_PLANE_SCHEMA_VERSION,
+        state_schema_version: STATE_SCHEMA_VERSION,
+        generated_at_unix: unix_now(),
+        provider: command.provider,
+        requested_local_id: command.local_id,
+        operation: MenubarOperationResult {
+            status,
+            changed: matches!(outcome, Some(MenubarResetCreditOutcome::Reset { .. })),
+            active_before: active,
+            active_after,
+            message,
+            diagnostics,
+        },
+        outcome,
         dashboard,
         accounts,
     })
@@ -223,6 +298,32 @@ pub fn menubar_refresh(
         skipped_reason,
         accounts,
     })
+}
+
+fn menubar_reset_credit_outcome(outcome: &ResetCreditOutcome) -> MenubarResetCreditOutcome {
+    match outcome {
+        ResetCreditOutcome::Reset { windows_reset } => MenubarResetCreditOutcome::Reset {
+            windows_reset: *windows_reset,
+        },
+        ResetCreditOutcome::NothingToReset => MenubarResetCreditOutcome::NothingToReset,
+        ResetCreditOutcome::NoCredit => MenubarResetCreditOutcome::NoCredit,
+        ResetCreditOutcome::AlreadyRedeemed => MenubarResetCreditOutcome::AlreadyRedeemed,
+    }
+}
+
+fn reset_credit_message(outcome: &ResetCreditOutcome) -> String {
+    match outcome {
+        ResetCreditOutcome::Reset { windows_reset } => {
+            format!("Reset credit consumed; reset {windows_reset} usage window(s).")
+        }
+        ResetCreditOutcome::NothingToReset => {
+            "No active limit was eligible for reset; no credit was consumed.".to_string()
+        }
+        ResetCreditOutcome::NoCredit => "No reset credits available.".to_string(),
+        ResetCreditOutcome::AlreadyRedeemed => {
+            "Reset credit was already redeemed for this request.".to_string()
+        }
+    }
 }
 
 fn resolve_menubar_target(

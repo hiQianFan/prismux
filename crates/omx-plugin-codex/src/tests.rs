@@ -1105,6 +1105,25 @@ fn parses_codex_usage_auth_without_exposing_tokens() {
         Some(CodexUsageAuth {
             access_token: "access-secret".to_string(),
             account_id: "account-456".to_string(),
+            fedramp: false,
+        })
+    );
+}
+
+#[test]
+fn parses_codex_usage_auth_fedramp_claim() {
+    let token = fake_jwt(
+        r#"{"alg":"none"}"#,
+        r#"{"https://api.openai.com/auth":{"chatgpt_account_is_fedramp":true}}"#,
+    );
+    let auth = format!(r#"{{"tokens":{{"access_token":"{token}","account_id":"account-456"}}}}"#);
+
+    assert_eq!(
+        parse_codex_usage_auth(auth.as_bytes()),
+        Some(CodexUsageAuth {
+            access_token: token,
+            account_id: "account-456".to_string(),
+            fedramp: true,
         })
     );
 }
@@ -1158,6 +1177,114 @@ fn parses_codex_usage_windows_as_structured_limits() {
 }
 
 #[test]
+fn parses_codex_usage_reset_credits() {
+    let payload = serde_json::json!({
+        "rate_limit": {
+            "primary_window": {
+                "used_percent": 42,
+                "limit_window_seconds": 18000
+            }
+        },
+        "rate_limit_reset_credits": {
+            "available_count": 2
+        }
+    });
+
+    let usage = parse_codex_usage_snapshot(&payload, 1_785_000_000).unwrap();
+
+    assert_eq!(
+        usage.reset_credits,
+        Some(UsageResetCredits { available_count: 2 })
+    );
+}
+
+#[test]
+fn parses_codex_usage_reset_credits_from_string_count() {
+    let payload = serde_json::json!({
+        "rate_limit": {
+            "primary_window": {
+                "used_percent": 42,
+                "limit_window_seconds": 18000
+            }
+        },
+        "rate_limit_reset_credits": {
+            "available_count": "3"
+        }
+    });
+
+    let usage = parse_codex_usage_snapshot(&payload, 1_785_000_000).unwrap();
+
+    assert_eq!(
+        usage.reset_credits,
+        Some(UsageResetCredits { available_count: 3 })
+    );
+}
+
+#[test]
+fn omits_codex_usage_reset_credits_when_missing_or_invalid() {
+    for available_count in [serde_json::Value::Null, serde_json::json!("soon")] {
+        let payload = serde_json::json!({
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 42,
+                    "limit_window_seconds": 18000
+                }
+            },
+            "rate_limit_reset_credits": {
+                "available_count": available_count
+            }
+        });
+
+        let usage = parse_codex_usage_snapshot(&payload, 1_785_000_000).unwrap();
+        assert_eq!(usage.reset_credits, None);
+    }
+}
+
+#[test]
+fn parses_reset_credit_outcome_codes() {
+    assert_eq!(
+        parse_reset_credit_outcome(&serde_json::json!({
+            "code": "reset",
+            "windows_reset": 2
+        }))
+        .unwrap(),
+        ResetCreditOutcome::Reset { windows_reset: 2 }
+    );
+    assert_eq!(
+        parse_reset_credit_outcome(&serde_json::json!({
+            "code": "reset",
+            "windows_reset": "3"
+        }))
+        .unwrap(),
+        ResetCreditOutcome::Reset { windows_reset: 3 }
+    );
+    assert_eq!(
+        parse_reset_credit_outcome(&serde_json::json!({ "code": "nothing_to_reset" })).unwrap(),
+        ResetCreditOutcome::NothingToReset
+    );
+    assert_eq!(
+        parse_reset_credit_outcome(&serde_json::json!({ "code": "no_credit" })).unwrap(),
+        ResetCreditOutcome::NoCredit
+    );
+    assert_eq!(
+        parse_reset_credit_outcome(&serde_json::json!({ "code": "already_redeemed" })).unwrap(),
+        ResetCreditOutcome::AlreadyRedeemed
+    );
+}
+
+#[test]
+fn rejects_unknown_reset_credit_outcome_code() {
+    let err = parse_reset_credit_outcome(&serde_json::json!({ "code": "surprise" })).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("unknown Codex reset credit response code")
+    );
+
+    let err = parse_reset_credit_outcome(&serde_json::json!({})).unwrap_err();
+    assert!(err.to_string().contains("did not include a code"));
+}
+
+#[test]
 fn list_accounts_uses_cached_usage_without_refreshing_remote_quota() {
     let temp = test_temp_dir("usage-refresh-fallback");
     let codex_home = temp.join("codex-home");
@@ -1196,6 +1323,7 @@ fn list_accounts_uses_cached_usage_without_refreshing_remote_quota() {
                     exhausted: Some(false),
                     raw_provider_key: None,
                 }],
+                reset_credits: None,
                 diagnostics: Vec::new(),
             },
         )

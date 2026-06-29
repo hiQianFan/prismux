@@ -239,7 +239,55 @@ let resetCreditsAccounts = """
 let resetCreditsEnvelope = try decoder.decode(BackendEnvelope.self, from: Data(resetCreditsAccounts.utf8))
 let resetCreditAccounts = resetCreditsEnvelope.data?.accounts?.accounts ?? []
 assert(resetCreditAccounts.first?.quota?.resetCredits?.availableCount == 2)
+assert(resetCreditAccounts.first?.quota?.resetCredits?.credits.isEmpty == true)
 assert(resetCreditAccounts.last?.quota?.resetCredits == nil)
+
+let resetCreditsWithExpiry = """
+{
+  "summary": "0%",
+  "refreshed_at_unix": 1,
+  "primary_window": null,
+  "windows": [],
+  "reset_credits": {
+    "available_count": 2,
+    "credits": [
+      {
+        "status": "available",
+        "reset_type": "codex_rate_limits",
+        "granted_at_unix": 1781742467,
+        "expires_at_unix": 1784334467
+      },
+      {
+        "status": "available",
+        "reset_type": "codex_rate_limits",
+        "granted_at_unix": 1782528081,
+        "expires_at_unix": 1785120081
+      }
+    ]
+  }
+}
+"""
+let resetCreditsQuota = try decoder.decode(Quota.self, from: Data(resetCreditsWithExpiry.utf8))
+assert(resetCreditsQuota.resetCredits?.availableCount == 2)
+assert(resetCreditsQuota.resetCredits?.credits.count == 2)
+assert(resetCreditsQuota.resetCredits?.credits.first?.expiresAtUnix == 1784334467)
+
+let twoExpiryHover = resetCreditHoverText(
+    count: 2,
+    expiryTimes: [1785120081, 1784334467]
+)
+assert(twoExpiryHover.contains("2 resets available"))
+assert(twoExpiryHover.components(separatedBy: "2026-").count - 1 == 2)
+assert(twoExpiryHover.contains("Used automatically"))
+
+let threeExpiryHover = resetCreditHoverText(
+    count: 3,
+    expiryTimes: [1785120081, 1784334467, 1785200000]
+)
+assert(threeExpiryHover.components(separatedBy: "2026-").count - 1 == 2)
+
+let countOnlyHover = resetCreditHoverText(count: 2, expiryTimes: [])
+assert(countOnlyHover.contains("Expiry unavailable"))
 
 // hourly_buckets decode + rollup
 let usage = additiveEnvelope.data?.dashboard?.usage

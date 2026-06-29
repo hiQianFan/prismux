@@ -321,6 +321,16 @@ pub struct QuotaView {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ResetCreditsView {
     pub available_count: u32,
+    #[serde(default)]
+    pub credits: Vec<ResetCreditView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResetCreditView {
+    pub status: Option<String>,
+    pub reset_type: Option<String>,
+    pub granted_at_unix: Option<i64>,
+    pub expires_at_unix: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

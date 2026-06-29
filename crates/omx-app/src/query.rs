@@ -1076,6 +1076,7 @@ mod tests {
                 }],
                 reset_credits: Some(UsageResetCredits {
                     available_count: credit,
+                    credits: Vec::new(),
                 }),
                 diagnostics: Vec::new(),
             }),
@@ -1124,6 +1125,7 @@ mod tests {
                 }],
                 reset_credits: Some(ResetCreditsView {
                     available_count: credit,
+                    credits: Vec::new(),
                 }),
             }),
             status: TargetStatus::Healthy,

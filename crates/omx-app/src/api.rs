@@ -113,8 +113,15 @@ mod tests {
     #[test]
     fn accounts_report_maps_reset_credit_metadata() {
         let mut status = account(1, true, None);
-        status.usage.as_mut().unwrap().reset_credits =
-            Some(UsageResetCredits { available_count: 2 });
+        status.usage.as_mut().unwrap().reset_credits = Some(UsageResetCredits {
+            available_count: 2,
+            credits: vec![omx_core::UsageResetCredit {
+                status: Some("available".to_string()),
+                reset_type: Some("codex_rate_limits".to_string()),
+                granted_at_unix: Some(1_785_000_000),
+                expires_at_unix: Some(1_787_500_000),
+            }],
+        });
         let plugins = vec![Box::new(FakePlugin::new(vec![status])) as Box<dyn PlatformPlugin>];
 
         let report = menubar_accounts(&plugins, DashboardQuery::default()).unwrap();
@@ -126,6 +133,15 @@ mod tests {
                 .and_then(|quota| quota.reset_credits.as_ref())
                 .map(|credits| credits.available_count),
             Some(2)
+        );
+        assert_eq!(
+            report.accounts[0]
+                .quota
+                .as_ref()
+                .and_then(|quota| quota.reset_credits.as_ref())
+                .and_then(|credits| credits.credits.first())
+                .and_then(|credit| credit.expires_at_unix),
+            Some(1_787_500_000)
         );
     }
 

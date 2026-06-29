@@ -1,0 +1,11 @@
+{
+  "quota": {
+    "summary": "0%",
+    "refreshed_at_unix": 1,
+    "primary_window": null,
+    "windows": [],
+    "reset_credits": {
+      "available_count": 2
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "quota": {
+    "summary": "0%",
+    "refreshed_at_unix": 1,
+    "primary_window": null,
+    "windows": [],
+    "reset_credits": {
+      "available_count": 2,
+      "credits": [
+        {
+          "status": "available",
+          "reset_type": "codex_rate_limits",
+          "granted_at_unix": 1781742467,
+          "expires_at_unix": 1784334467
+        },
+        {
+          "status": "available",
+          "reset_type": "codex_rate_limits",
+          "granted_at_unix": 1782528081,
+          "expires_at_unix": 1785120081
+        }
+      ]
+    }
+  }
+}

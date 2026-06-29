@@ -5,6 +5,7 @@ use std::{
     process::{Command, Stdio},
 };
 
+use chrono::DateTime;
 use omx_core::{
     AccountRecord, AccountRef, AccountStatus, AccountSubjectUpdate, Availability,
     AvailabilityState, ConfigProfile, ConfigSwitchReport, DoctorCheck, DoctorReport,
@@ -12,8 +13,8 @@ use omx_core::{
     PlatformInfo, PlatformInstall, PlatformPlugin, PlatformPoolSummary, ProfileRecord,
     RemoveReport, RemovedAccount, RemovedConfig, ResetCreditOutcome, Result, SaveOptions,
     StateStore, SwitchReport, UpsertAccount, UpsertProfile, UsageDiagnostic, UsageLimit,
-    UsageLimitKind, UsageLimitScope, UsageResetCredits, UsageSnapshot, UsageSource, UseReport,
-    platform_info,
+    UsageLimitKind, UsageLimitScope, UsageResetCredit, UsageResetCredits, UsageSnapshot,
+    UsageSource, UseReport, platform_info,
     storage::{
         create_dir_private, display_path, home_dir, io_error, prune_backup_files, read_file,
         sha256_hex, state_root as default_state_root, unix_now, unix_now_nanos,
@@ -36,6 +37,10 @@ pub struct CodexPlugin {
     before_config_replace: Option<fn(&Path)>,
     #[cfg(test)]
     fail_snapshot_write: bool,
+    #[cfg(test)]
+    usage_payload: Option<std::result::Result<serde_json::Value, UsageDiagnostic>>,
+    #[cfg(test)]
+    reset_credit_detail_payload: Option<std::result::Result<serde_json::Value, UsageDiagnostic>>,
 }
 
 struct TempDirCleanup {
@@ -94,6 +99,10 @@ impl Default for CodexPlugin {
             before_config_replace: None,
             #[cfg(test)]
             fail_snapshot_write: false,
+            #[cfg(test)]
+            usage_payload: None,
+            #[cfg(test)]
+            reset_credit_detail_payload: None,
         }
     }
 }
@@ -126,6 +135,10 @@ impl CodexPlugin {
             before_config_replace: None,
             #[cfg(test)]
             fail_snapshot_write: false,
+            #[cfg(test)]
+            usage_payload: None,
+            #[cfg(test)]
+            reset_credit_detail_payload: None,
         }
     }
 
@@ -142,6 +155,22 @@ impl CodexPlugin {
     #[cfg(test)]
     fn fail_snapshot_write(&mut self) {
         self.fail_snapshot_write = true;
+    }
+
+    #[cfg(test)]
+    fn set_usage_payload(
+        &mut self,
+        payload: std::result::Result<serde_json::Value, UsageDiagnostic>,
+    ) {
+        self.usage_payload = Some(payload);
+    }
+
+    #[cfg(test)]
+    fn set_reset_credit_detail_payload(
+        &mut self,
+        payload: std::result::Result<serde_json::Value, UsageDiagnostic>,
+    ) {
+        self.reset_credit_detail_payload = Some(payload);
     }
 
     fn run_before_auth_replace_hook(&self, _auth_path: &Path) {
@@ -431,7 +460,15 @@ impl CodexPlugin {
         };
 
         match parse_codex_usage_snapshot(&payload, unix_now() as i64) {
-            Some(usage) => {
+            Some(mut usage) => {
+                if usage
+                    .reset_credits
+                    .as_ref()
+                    .is_some_and(|credits| credits.available_count > 0)
+                    && let Ok(detail_payload) = self.fetch_codex_reset_credit_details(&auth)
+                {
+                    enrich_reset_credit_details(&mut usage, &detail_payload);
+                }
                 if let Ok(store) = self.state_store() {
                     let _ = store.record_refresh_attempt(
                         &account.local_id,
@@ -505,10 +542,30 @@ impl CodexPlugin {
         &self,
         auth: &CodexUsageAuth,
     ) -> std::result::Result<serde_json::Value, UsageDiagnostic> {
+        #[cfg(test)]
+        if let Some(payload) = &self.usage_payload {
+            return payload.clone();
+        }
         self.codex_backend_request(
             auth,
             "GET",
             "https://chatgpt.com/backend-api/wham/usage",
+            None,
+        )
+    }
+
+    fn fetch_codex_reset_credit_details(
+        &self,
+        auth: &CodexUsageAuth,
+    ) -> std::result::Result<serde_json::Value, UsageDiagnostic> {
+        #[cfg(test)]
+        if let Some(payload) = &self.reset_credit_detail_payload {
+            return payload.clone();
+        }
+        self.codex_backend_request(
+            auth,
+            "GET",
+            "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
             None,
         )
     }
@@ -2415,7 +2472,65 @@ fn parse_codex_reset_credits(payload: &serde_json::Value) -> Option<UsageResetCr
         .and_then(json_number_or_string_as_u32)?;
     Some(UsageResetCredits {
         available_count: count,
+        credits: Vec::new(),
     })
+}
+
+fn enrich_reset_credit_details(usage: &mut UsageSnapshot, payload: &serde_json::Value) {
+    let Some(credits) = usage.reset_credits.as_mut() else {
+        return;
+    };
+    credits.credits = parse_codex_reset_credit_details(payload);
+}
+
+fn parse_codex_reset_credit_details(payload: &serde_json::Value) -> Vec<UsageResetCredit> {
+    let Some(items) = payload
+        .pointer("/credits")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Vec::new();
+    };
+
+    let mut credits = items
+        .iter()
+        .filter_map(parse_codex_reset_credit_detail)
+        .collect::<Vec<_>>();
+    credits.sort_by_key(|credit| credit.expires_at_unix.unwrap_or(i64::MAX));
+    credits
+}
+
+fn parse_codex_reset_credit_detail(value: &serde_json::Value) -> Option<UsageResetCredit> {
+    let status = value
+        .pointer("/status")
+        .and_then(serde_json::Value::as_str)
+        .filter(|status| !status.trim().is_empty())?;
+    if status != "available" {
+        return None;
+    }
+    let expires_at_unix = value
+        .pointer("/expires_at")
+        .and_then(serde_json::Value::as_str)
+        .and_then(rfc3339_unix)?;
+
+    Some(UsageResetCredit {
+        status: Some(status.to_string()),
+        reset_type: value
+            .pointer("/reset_type")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(ToString::to_string),
+        granted_at_unix: value
+            .pointer("/granted_at")
+            .and_then(serde_json::Value::as_str)
+            .and_then(rfc3339_unix),
+        expires_at_unix: Some(expires_at_unix),
+    })
+}
+
+fn rfc3339_unix(value: &str) -> Option<i64> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|timestamp| timestamp.timestamp())
 }
 
 fn parse_codex_usage_window(

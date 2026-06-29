@@ -1194,7 +1194,10 @@ fn parses_codex_usage_reset_credits() {
 
     assert_eq!(
         usage.reset_credits,
-        Some(UsageResetCredits { available_count: 2 })
+        Some(UsageResetCredits {
+            available_count: 2,
+            credits: Vec::new(),
+        })
     );
 }
 
@@ -1216,7 +1219,10 @@ fn parses_codex_usage_reset_credits_from_string_count() {
 
     assert_eq!(
         usage.reset_credits,
-        Some(UsageResetCredits { available_count: 3 })
+        Some(UsageResetCredits {
+            available_count: 3,
+            credits: Vec::new(),
+        })
     );
 }
 
@@ -1238,6 +1244,131 @@ fn omits_codex_usage_reset_credits_when_missing_or_invalid() {
         let usage = parse_codex_usage_snapshot(&payload, 1_785_000_000).unwrap();
         assert_eq!(usage.reset_credits, None);
     }
+}
+
+#[test]
+fn parses_codex_reset_credit_detail_expiries() {
+    let payload = serde_json::json!({
+        "available_count": 2,
+        "credits": [
+            {
+                "id": "redacted-2",
+                "status": "available",
+                "reset_type": "codex_rate_limits",
+                "granted_at": "2026-06-27T00:01:21.691005Z",
+                "expires_at": "2026-07-27T00:01:21.691005Z",
+                "redeemed_at": null
+            },
+            {
+                "id": "redacted-1",
+                "status": "available",
+                "reset_type": "codex_rate_limits",
+                "granted_at": "2026-06-18T00:27:47.174188Z",
+                "expires_at": "2026-07-18T00:27:47.174188Z",
+                "redeemed_at": null
+            }
+        ]
+    });
+
+    let credits = parse_codex_reset_credit_details(&payload);
+
+    assert_eq!(credits.len(), 2);
+    assert_eq!(
+        credits[0].expires_at_unix,
+        rfc3339_unix("2026-07-18T00:27:47.174188Z")
+    );
+    assert_eq!(
+        credits[1].expires_at_unix,
+        rfc3339_unix("2026-07-27T00:01:21.691005Z")
+    );
+    assert_eq!(credits[0].status.as_deref(), Some("available"));
+    assert_eq!(credits[0].reset_type.as_deref(), Some("codex_rate_limits"));
+    assert_eq!(
+        credits[0].granted_at_unix,
+        rfc3339_unix("2026-06-18T00:27:47.174188Z")
+    );
+}
+
+#[test]
+fn reset_credit_detail_parser_ignores_unavailable_or_malformed_entries() {
+    let payload = serde_json::json!({
+        "credits": [
+            {
+                "status": "redeemed",
+                "expires_at": "2026-07-18T00:27:47.174188Z"
+            },
+            {
+                "status": "available",
+                "expires_at": null
+            },
+            {
+                "status": "available",
+                "expires_at": "soon"
+            },
+            {
+                "status": "available",
+                "expires_at": "2026-07-27T00:01:21.691005Z"
+            }
+        ]
+    });
+
+    let credits = parse_codex_reset_credit_details(&payload);
+
+    assert_eq!(credits.len(), 1);
+    assert_eq!(
+        credits[0].expires_at_unix,
+        rfc3339_unix("2026-07-27T00:01:21.691005Z")
+    );
+}
+
+#[test]
+fn reset_credit_detail_parser_handles_empty_or_missing_credits() {
+    assert!(parse_codex_reset_credit_details(&serde_json::json!({})).is_empty());
+    assert!(parse_codex_reset_credit_details(&serde_json::json!({ "credits": [] })).is_empty());
+}
+
+#[test]
+fn refresh_keeps_usage_snapshot_when_reset_credit_detail_fails() {
+    let temp = test_temp_dir("reset-credit-detail-fallback");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("openmux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    fs::write(
+        codex_home.join(AUTH_FILE_NAME),
+        codex_auth_with_usage_token("work@example.com", "pro", "user-1", "account-1", 1),
+    )
+    .unwrap();
+
+    let mut plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("work".to_string()),
+        })
+        .unwrap();
+    plugin.set_usage_payload(Ok(serde_json::json!({
+        "rate_limit": {
+            "primary_window": {
+                "used_percent": 42,
+                "limit_window_seconds": 18000,
+                "reset_at": 1_785_018_000
+            }
+        },
+        "rate_limit_reset_credits": {
+            "available_count": 2
+        }
+    })));
+    plugin.set_reset_credit_detail_payload(Err(UsageDiagnostic {
+        code: "network".to_string(),
+        message: "reset credit expiry unavailable".to_string(),
+    }));
+
+    let status = plugin.refresh_account("work").unwrap();
+    let usage = status.usage.unwrap();
+
+    assert_eq!(usage.summary.display, "58%");
+    assert_eq!(usage.reset_credits.as_ref().unwrap().available_count, 2);
+    assert!(usage.reset_credits.as_ref().unwrap().credits.is_empty());
+    assert!(usage.diagnostics.is_empty());
 }
 
 #[test]
@@ -1602,6 +1733,24 @@ fn codex_auth_with_claims(
         ),
     );
     format!(r#"{{"tokens":{{"id_token":"{token}","account_id":"{account_id}"}}}}"#)
+}
+
+fn codex_auth_with_usage_token(
+    email: &str,
+    plan: &str,
+    user_id: &str,
+    account_id: &str,
+    nonce: u32,
+) -> String {
+    let id_token = fake_jwt(
+        r#"{"alg":"none"}"#,
+        &format!(
+            r#"{{"iss":"https://auth.openai.com","sub":"{user_id}","https://api.openai.com/profile":{{"email":"{email}"}},"https://api.openai.com/auth":{{"chatgpt_plan_type":"{plan}","chatgpt_user_id":"{user_id}","chatgpt_account_id":"{account_id}"}},"nonce":{nonce}}}"#
+        ),
+    );
+    format!(
+        r#"{{"tokens":{{"id_token":"{id_token}","access_token":"test-access-token","account_id":"{account_id}"}}}}"#
+    )
 }
 
 fn base64_url_encode(bytes: &[u8]) -> String {

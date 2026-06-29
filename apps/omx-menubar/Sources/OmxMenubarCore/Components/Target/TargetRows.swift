@@ -42,7 +42,12 @@ struct AccountTargetRow: View {
                 accent: accent,
                 subtitleAccessory: {
                     if isCodex {
-                        ResetCreditBadge(count: resetCreditCount, enabled: resetEnabled, accent: accent)
+                        ResetCreditBadge(
+                            count: resetCreditCount,
+                            expiryTimes: resetCreditExpiryTimes,
+                            enabled: resetEnabled,
+                            accent: accent
+                        )
                     }
                 }
             ) {
@@ -135,6 +140,12 @@ struct AccountTargetRow: View {
 
     private var resetCreditCount: UInt32 {
         account.quota?.resetCredits?.availableCount ?? 0
+    }
+
+    private var resetCreditExpiryTimes: [Int64] {
+        (account.quota?.resetCredits?.credits ?? [])
+            .compactMap(\.expiresAtUnix)
+            .sorted()
     }
 
     private var hasActiveLimit: Bool {
@@ -297,32 +308,71 @@ private struct TargetIdentity<Trailing: View, SubtitleAccessory: View>: View {
 
 // MARK: - Actions (single Use button + overflow Delete)
 
-/// Reset-credit count, display-only. Codex grants "rate limit reset credits";
-/// this just surfaces how many the account holds. The actual reset action lives
-/// in the overflow (···) menu — the badge is a status indicator, not a button.
-/// Only rendered for Codex accounts (grey "0" when none); a count on every
-/// non-Codex provider would be noise. The hover text explains what it is so the
-/// Reset-credit count, display-only. Codex grants "rate limit reset credits";
-/// this surfaces how many the account holds. The actual reset action lives in
-/// the overflow (···) menu — the badge is a status indicator, not a button.
-/// Only rendered for Codex accounts (grey "0" when none); a count on every
-/// non-Codex provider would be noise. The "resets" word is self-explanatory, so
-/// no hover is needed (and AppKit tooltips are unreliable inside a transient
-/// NSPopover anyway).
+/// Reset-credit count. The badge opens a small details popover because native
+/// popovers behave better than hover overlays inside the menubar window.
 private struct ResetCreditBadge: View {
     let count: UInt32
+    let expiryTimes: [Int64]
     let enabled: Bool
     let accent: Color
+    @State private var showingDetails = false
 
     var body: some View {
-        Text("\(count) \(count == 1 ? "reset" : "resets")")
-            .font(.caption2.monospacedDigit().weight(.bold))
-            .foregroundStyle(enabled ? accent : Color.secondary)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background((enabled ? accent : Color.secondary).opacity(enabled ? 0.14 : 0.08), in: Capsule())
-            .fixedSize(horizontal: true, vertical: false)
-            .accessibilityLabel("\(count) Codex reset credit\(count == 1 ? "" : "s")")
+        Button {
+            if count > 0 {
+                showingDetails.toggle()
+            }
+        } label: {
+            Text("\(count) \(count == 1 ? "reset" : "resets")")
+                .font(.caption2.monospacedDigit().weight(.bold))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background((enabled ? accent : Color.secondary).opacity(enabled ? 0.14 : 0.08), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(enabled ? accent : Color.secondary)
+        .fixedSize(horizontal: true, vertical: false)
+        .disabled(count == 0)
+        .accessibilityLabel("\(count) Codex reset credit\(count == 1 ? "" : "s")")
+        .help(count == 0 ? "No reset credits" : "Show reset credit expiry")
+        .popover(isPresented: $showingDetails, arrowEdge: .top) {
+            ResetCreditDetailsPopover(count: count, expiryTimes: expiryTimes)
+        }
+    }
+}
+
+private struct ResetCreditDetailsPopover: View {
+    let count: UInt32
+    let expiryTimes: [Int64]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("\(count) \(count == 1 ? "reset" : "resets") available")
+                .font(.caption.weight(.semibold))
+
+            if expiryTimes.isEmpty {
+                Text("Expiry unavailable")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Expire")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    ForEach(Array(expiryTimes.prefix(2).enumerated()), id: \.offset) { index, timestamp in
+                        Text("\(index + 1). \(fullDateTimeLabel(timestamp))")
+                            .font(.caption2.monospacedDigit())
+                    }
+                }
+            }
+
+            Text("Used automatically")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .frame(minWidth: 170, alignment: .leading)
     }
 }
 
@@ -401,7 +451,7 @@ private struct TargetActionCluster<ResetPopover: View, DeletePopover: View>: Vie
                 Button {
                     refreshAction()
                 } label: {
-                    Label("Refresh usage", systemImage: "arrow.clockwise")
+                    AlignedMenuText("Refresh usage")
                 }
                 .disabled(refreshing || switching || deleting || resetting)
 
@@ -412,7 +462,7 @@ private struct TargetActionCluster<ResetPopover: View, DeletePopover: View>: Vie
                 Button {
                     requestResetConfirmation()
                 } label: {
-                    Label("Reset usage limit", systemImage: "arrow.counterclockwise")
+                    AlignedMenuText("Reset usage limit")
                 }
                 .disabled(!resetEnabled || resetting || deleting || refreshing)
                 .help(resetEnabled ? "Consume 1 reset credit to reset eligible usage limits" : resetDisabledReason)
@@ -427,7 +477,7 @@ private struct TargetActionCluster<ResetPopover: View, DeletePopover: View>: Vie
             }
             .disabled(!canRemove || deleting || refreshing || resetting)
         } label: {
-            Image(systemName: (deleting || resetting || refreshing) ? "hourglass" : "ellipsis")
+            Image(systemName: "ellipsis")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 24, height: 24)
@@ -463,6 +513,22 @@ private struct TargetActionCluster<ResetPopover: View, DeletePopover: View>: Vie
                 }
             }
         )
+    }
+}
+
+private struct AlignedMenuText: View {
+    let title: String
+
+    init(_ title: String) {
+        self.title = title
+    }
+
+    var body: some View {
+        HStack {
+            Image(systemName: "trash")
+                .hidden()
+            Text(title)
+        }
     }
 }
 
@@ -625,10 +691,26 @@ private func shortDateTimeLabel(_ timestamp: Int64) -> String {
     return formatter.string(from: date)
 }
 
-/// Full year-month-day reset label for the quota lines and tooltips.
+/// Full year-month-day reset label for quota lines and reset-credit details.
 private func fullDateTimeLabel(_ timestamp: Int64) -> String {
     let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
     let formatter = DateFormatter()
     formatter.dateFormat = "yyyy-MM-dd HH:mm"
     return formatter.string(from: date)
+}
+
+public func resetCreditHoverText(count: UInt32, expiryTimes: [Int64]) -> String {
+    guard count > 0 else { return "" }
+    var lines = ["\(count) \(count == 1 ? "reset" : "resets") available"]
+    let expiries = expiryTimes.sorted().prefix(2)
+    if expiries.isEmpty {
+        lines.append("Expiry unavailable")
+    } else {
+        lines.append("Expire")
+        for (index, timestamp) in expiries.enumerated() {
+            lines.append("\(index + 1). \(fullDateTimeLabel(timestamp))")
+        }
+    }
+    lines.append("Used automatically")
+    return lines.joined(separator: "\n")
 }

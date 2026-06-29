@@ -55,6 +55,16 @@ impl UsageSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UsageResetCredits {
     pub available_count: u32,
+    #[serde(default)]
+    pub credits: Vec<UsageResetCredit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UsageResetCredit {
+    pub status: Option<String>,
+    pub reset_type: Option<String>,
+    pub granted_at_unix: Option<i64>,
+    pub expires_at_unix: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -236,6 +236,16 @@ fn quota_from_usage(usage: &UsageSnapshot) -> QuotaView {
             .as_ref()
             .map(|credits| ResetCreditsView {
                 available_count: credits.available_count,
+                credits: credits
+                    .credits
+                    .iter()
+                    .map(|credit| ResetCreditView {
+                        status: credit.status.clone(),
+                        reset_type: credit.reset_type.clone(),
+                        granted_at_unix: credit.granted_at_unix,
+                        expires_at_unix: credit.expires_at_unix,
+                    })
+                    .collect(),
             }),
     }
 }

@@ -302,9 +302,31 @@ public struct Quota: Decodable, Sendable {
 
 public struct ResetCredits: Decodable, Sendable {
     public let availableCount: UInt32
+    public let credits: [ResetCredit]
 
     enum CodingKeys: String, CodingKey {
         case availableCount = "available_count"
+        case credits
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        availableCount = try container.decode(UInt32.self, forKey: .availableCount)
+        credits = try container.decodeIfPresent([ResetCredit].self, forKey: .credits) ?? []
+    }
+}
+
+public struct ResetCredit: Decodable, Sendable {
+    public let status: String?
+    public let resetType: String?
+    public let grantedAtUnix: Int64?
+    public let expiresAtUnix: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case resetType = "reset_type"
+        case grantedAtUnix = "granted_at_unix"
+        case expiresAtUnix = "expires_at_unix"
     }
 }
 

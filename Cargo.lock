@@ -1082,6 +1082,7 @@ dependencies = [
 name = "omx-plugin-codex"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "omx-core",
  "serde_json",
  "toml",

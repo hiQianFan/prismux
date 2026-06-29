@@ -9,9 +9,9 @@ pub use crate::mutation::{
 pub use crate::query::{
     account_statuses, active_account_status, config_profiles, dashboard_view, menubar_accounts,
     menubar_dashboard, provider_view, remove_resolved_target, resolve_target, target_catalog,
-    use_resolved_target,
+    usage_groups, usage_total, use_resolved_target,
 };
-pub use crate::runtime::reset_menubar_refresh_state_for_tests;
+pub use crate::runtime::reset_refresh_state_for_tests;
 
 #[cfg(test)]
 mod tests {
@@ -33,7 +33,7 @@ mod tests {
 
     #[test]
     fn default_menubar_query_selects_all_providers() {
-        assert_eq!(MenubarQuery::default().provider, None);
+        assert_eq!(DashboardQuery::default().provider, None);
     }
 
     #[test]
@@ -43,7 +43,7 @@ mod tests {
             account(2, false, Some("bearer token leaked")),
         ])) as Box<dyn PlatformPlugin>];
 
-        let report = menubar_accounts(&plugins, MenubarQuery::default()).unwrap();
+        let report = menubar_accounts(&plugins, DashboardQuery::default()).unwrap();
 
         assert_eq!(report.active_local_id.as_deref(), Some("codex-account-1"));
         assert!(report.accounts[0].active);
@@ -65,7 +65,7 @@ mod tests {
             FakePlugin::new(vec![account(1, true, None)]).with_profiles(vec![profile(1, true)]),
         ) as Box<dyn PlatformPlugin>];
 
-        let report = menubar_accounts(&plugins, MenubarQuery::default()).unwrap();
+        let report = menubar_accounts(&plugins, DashboardQuery::default()).unwrap();
 
         assert_eq!(
             report.active_target_key.as_deref(),
@@ -85,7 +85,7 @@ mod tests {
             ) as Box<dyn PlatformPlugin>,
         ];
 
-        let report = menubar_accounts(&plugins, MenubarQuery::default()).unwrap();
+        let report = menubar_accounts(&plugins, DashboardQuery::default()).unwrap();
 
         assert_eq!(
             report
@@ -117,7 +117,7 @@ mod tests {
             Some(UsageResetCredits { available_count: 2 });
         let plugins = vec![Box::new(FakePlugin::new(vec![status])) as Box<dyn PlatformPlugin>];
 
-        let report = menubar_accounts(&plugins, MenubarQuery::default()).unwrap();
+        let report = menubar_accounts(&plugins, DashboardQuery::default()).unwrap();
 
         assert_eq!(
             report.accounts[0]
@@ -190,7 +190,7 @@ mod tests {
 
         let err = menubar_refresh(
             &plugins,
-            MenubarRefreshCommand {
+            RefreshCommand {
                 provider: "codex".to_string(),
                 kind: RefreshKind::Interactive,
                 local_id: None,
@@ -217,7 +217,7 @@ mod tests {
 
         let first = menubar_refresh(
             &plugins,
-            MenubarRefreshCommand {
+            RefreshCommand {
                 provider: "codex".to_string(),
                 kind: RefreshKind::Background,
                 local_id: None,
@@ -229,7 +229,7 @@ mod tests {
         .unwrap();
         let second = menubar_refresh(
             &plugins,
-            MenubarRefreshCommand {
+            RefreshCommand {
                 provider: "codex".to_string(),
                 kind: RefreshKind::Background,
                 local_id: None,
@@ -260,7 +260,7 @@ mod tests {
 
         let report = menubar_refresh(
             &plugins,
-            MenubarRefreshCommand {
+            RefreshCommand {
                 provider: "codex".to_string(),
                 kind: RefreshKind::Interactive,
                 local_id: None,
@@ -289,11 +289,11 @@ mod tests {
 
         let report = menubar_refresh(
             &plugins,
-            MenubarRefreshCommand {
+            RefreshCommand {
                 provider: "codex".to_string(),
                 kind: RefreshKind::Interactive,
                 local_id: Some("codex-account-2".to_string()),
-                target_kind: Some(MenubarTargetKind::Account),
+                target_kind: Some(TargetKindView::Account),
                 request_generation: None,
             },
             None,
@@ -322,7 +322,7 @@ mod tests {
 
         let first = menubar_refresh(
             &plugins,
-            MenubarRefreshCommand {
+            RefreshCommand {
                 provider: "codex".to_string(),
                 kind: RefreshKind::Interactive,
                 local_id: None,
@@ -334,7 +334,7 @@ mod tests {
         .unwrap();
         let stale = menubar_refresh(
             &plugins,
-            MenubarRefreshCommand {
+            RefreshCommand {
                 provider: "codex".to_string(),
                 kind: RefreshKind::Interactive,
                 local_id: None,
@@ -369,7 +369,7 @@ mod tests {
 
         let failed = menubar_refresh(
             &failing,
-            MenubarRefreshCommand {
+            RefreshCommand {
                 provider: "codex".to_string(),
                 kind: RefreshKind::Background,
                 local_id: None,
@@ -381,7 +381,7 @@ mod tests {
         .unwrap();
         let skipped = menubar_refresh(
             &working,
-            MenubarRefreshCommand {
+            RefreshCommand {
                 provider: "codex".to_string(),
                 kind: RefreshKind::Background,
                 local_id: None,
@@ -392,7 +392,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(failed.operation.status, MenubarOperationStatus::Failed);
+        assert_eq!(failed.operation.status, OperationStatus::Failed);
         assert!(
             failed.operation.diagnostics[0]
                 .message
@@ -417,20 +417,20 @@ mod tests {
 
         let report = consume_reset_credit(
             &plugins,
-            MenubarConsumeResetCreditCommand {
+            ConsumeResetCreditCommand {
                 provider: "codex".to_string(),
                 local_id: "codex-account-1".to_string(),
                 idempotency_key: "attempt-1".to_string(),
-                target_kind: Some(MenubarTargetKind::Account),
+                target_kind: Some(TargetKindView::Account),
             },
             None,
         )
         .unwrap();
 
-        assert_eq!(report.operation.status, MenubarOperationStatus::Success);
+        assert_eq!(report.operation.status, OperationStatus::Success);
         assert_eq!(
             report.outcome,
-            Some(MenubarResetCreditOutcome::Reset { windows_reset: 2 })
+            Some(ResetCreditOutcomeView::Reset { windows_reset: 2 })
         );
         assert_eq!(refresh_count.load(Ordering::SeqCst), 1);
     }
@@ -447,17 +447,17 @@ mod tests {
 
         let report = consume_reset_credit(
             &plugins,
-            MenubarConsumeResetCreditCommand {
+            ConsumeResetCreditCommand {
                 provider: "codex".to_string(),
                 local_id: "codex-account-1".to_string(),
                 idempotency_key: "attempt-1".to_string(),
-                target_kind: Some(MenubarTargetKind::Account),
+                target_kind: Some(TargetKindView::Account),
             },
             None,
         )
         .unwrap();
 
-        assert_eq!(report.operation.status, MenubarOperationStatus::Failed);
+        assert_eq!(report.operation.status, OperationStatus::Failed);
         assert_eq!(report.outcome, None);
         assert_eq!(
             report.operation.diagnostics[0].message,
@@ -471,7 +471,7 @@ mod tests {
             Box::new(FakePlugin::unavailable("access_token leaked")) as Box<dyn PlatformPlugin>
         ];
 
-        let report = menubar_accounts(&plugins, MenubarQuery::default()).unwrap();
+        let report = menubar_accounts(&plugins, DashboardQuery::default()).unwrap();
 
         assert!(report.accounts.is_empty());
         assert_eq!(report.diagnostics[0].code, "provider_unavailable");
@@ -487,7 +487,7 @@ mod tests {
             Box::new(FakePlugin::new(vec![account(1, false, None)])) as Box<dyn PlatformPlugin>
         ];
 
-        let report = menubar_dashboard(&plugins, MenubarQuery::default(), None).unwrap();
+        let report = menubar_dashboard(&plugins, DashboardQuery::default(), None).unwrap();
 
         assert!(report.active.is_none());
         assert_eq!(report.accounts.active_local_id, None);
@@ -500,7 +500,7 @@ mod tests {
             Box::new(FakePlugin::new(vec![account(1, true, None)])) as Box<dyn PlatformPlugin>
         ];
 
-        let err = provider_view(&plugins, MenubarQuery::default(), None).unwrap_err();
+        let err = provider_view(&plugins, DashboardQuery::default(), None).unwrap_err();
 
         assert!(err.to_string().contains("requires a provider"));
     }
@@ -512,10 +512,10 @@ mod tests {
                 as Box<dyn PlatformPlugin>,
         ];
 
-        let report = menubar_accounts(&plugins, MenubarQuery::default()).unwrap();
+        let report = menubar_accounts(&plugins, DashboardQuery::default()).unwrap();
         let account = &report.accounts[0];
 
-        assert_eq!(account.status, MenubarAccountStatus::Stale);
+        assert_eq!(account.status, TargetStatus::Stale);
         assert_eq!(account.quota.as_ref().unwrap().summary, "80%");
         assert_eq!(account.diagnostic.as_ref().unwrap().code, "test");
     }
@@ -532,7 +532,7 @@ mod tests {
 
         let report = menubar_refresh(
             &plugins,
-            MenubarRefreshCommand {
+            RefreshCommand {
                 provider: "codex".to_string(),
                 kind: RefreshKind::Interactive,
                 local_id: None,
@@ -543,7 +543,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(report.operation.status, MenubarOperationStatus::Failed);
+        assert_eq!(report.operation.status, OperationStatus::Failed);
         assert!(
             report.operation.diagnostics[0]
                 .message
@@ -610,7 +610,7 @@ mod tests {
         assert_eq!(usage.top_model.as_deref(), Some("gpt-5"));
         assert_eq!(usage.model_breakdown[0].model, "gpt-5");
         assert_eq!(usage.model_breakdown[0].total_tokens, 5);
-        assert_eq!(usage.series[0].kind, MenubarUsageChartSeriesKind::Provider);
+        assert_eq!(usage.series[0].kind, UsageChartSeriesKind::Provider);
         assert_eq!(usage.series[0].key, "codex");
         assert_eq!(usage.series[0].hourly_buckets[0].total_tokens, 5);
         assert_eq!(usage.coverage.status, "complete");
@@ -900,8 +900,8 @@ mod tests {
         }
     }
 
-    fn switch_command(local_id: &str) -> MenubarSwitchCommand {
-        MenubarSwitchCommand {
+    fn switch_command(local_id: &str) -> SwitchCommand {
+        SwitchCommand {
             provider: "codex".to_string(),
             local_id: local_id.to_string(),
             target_kind: None,
@@ -909,6 +909,6 @@ mod tests {
     }
 
     fn reset_refresh_state() {
-        reset_menubar_refresh_state_for_tests();
+        reset_refresh_state_for_tests();
     }
 }

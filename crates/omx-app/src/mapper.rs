@@ -3,23 +3,16 @@ use omx_core::{
     AccountStatus, AvailabilityState, ConfigProfile, TargetCatalog, UsageLimit, UsageSnapshot,
 };
 
-pub(crate) fn active_target(
-    provider: &str,
-    catalog: &TargetCatalog,
-) -> Option<MenubarActiveTarget> {
+pub(crate) fn active_target(provider: &str, catalog: &TargetCatalog) -> Option<ActiveTarget> {
     catalog
         .accounts
         .iter()
         .find(|status| status.active)
-        .map(|status| MenubarActiveTarget {
+        .map(|status| ActiveTarget {
             provider: provider.to_string(),
-            target_kind: MenubarTargetKind::Account,
+            target_kind: TargetKindView::Account,
             local_id: status.account.local_id.clone(),
-            account_key: target_key(
-                provider,
-                MenubarTargetKind::Account,
-                &status.account.local_id,
-            ),
+            account_key: target_key(provider, TargetKindView::Account, &status.account.local_id),
             display_label: status
                 .account
                 .alias
@@ -32,36 +25,32 @@ pub(crate) fn active_target(
                 .profiles
                 .iter()
                 .find(|profile| profile.active)
-                .map(|profile| MenubarActiveTarget {
+                .map(|profile| ActiveTarget {
                     provider: provider.to_string(),
-                    target_kind: MenubarTargetKind::Profile,
+                    target_kind: TargetKindView::Profile,
                     local_id: profile.local_id.clone(),
-                    account_key: target_key(
-                        provider,
-                        MenubarTargetKind::Profile,
-                        &profile.local_id,
-                    ),
+                    account_key: target_key(provider, TargetKindView::Profile, &profile.local_id),
                     display_label: profile.name.clone(),
                 })
         })
 }
 
 pub(crate) fn active_target_from_parts(
-    account: Option<MenubarAccount>,
-    profile: Option<MenubarProfile>,
-) -> Option<MenubarActiveTarget> {
+    account: Option<TargetAccount>,
+    profile: Option<TargetProfile>,
+) -> Option<ActiveTarget> {
     account
-        .map(|account| MenubarActiveTarget {
+        .map(|account| ActiveTarget {
             provider: account.provider,
-            target_kind: MenubarTargetKind::Account,
+            target_kind: TargetKindView::Account,
             local_id: account.local_id,
             account_key: account.account_key,
             display_label: account.display_label,
         })
         .or_else(|| {
-            profile.map(|profile| MenubarActiveTarget {
+            profile.map(|profile| ActiveTarget {
                 provider: profile.provider,
-                target_kind: MenubarTargetKind::Profile,
+                target_kind: TargetKindView::Profile,
                 local_id: profile.local_id,
                 account_key: profile.account_key,
                 display_label: profile.display_label,
@@ -71,15 +60,15 @@ pub(crate) fn active_target_from_parts(
 
 pub(crate) fn active_target_for_provider_from_report(
     provider: &str,
-    report: &MenubarAccountsReport,
-) -> Option<MenubarActiveTarget> {
+    report: &AccountsReport,
+) -> Option<ActiveTarget> {
     report
         .accounts
         .iter()
         .find(|account| account.provider == provider && account.active)
-        .map(|account| MenubarActiveTarget {
+        .map(|account| ActiveTarget {
             provider: account.provider.clone(),
-            target_kind: MenubarTargetKind::Account,
+            target_kind: TargetKindView::Account,
             local_id: account.local_id.clone(),
             account_key: account.account_key.clone(),
             display_label: account.display_label.clone(),
@@ -89,9 +78,9 @@ pub(crate) fn active_target_for_provider_from_report(
                 .profiles
                 .iter()
                 .find(|profile| profile.provider == provider && profile.active)
-                .map(|profile| MenubarActiveTarget {
+                .map(|profile| ActiveTarget {
                     provider: profile.provider.clone(),
-                    target_kind: MenubarTargetKind::Profile,
+                    target_kind: TargetKindView::Profile,
                     local_id: profile.local_id.clone(),
                     account_key: profile.account_key.clone(),
                     display_label: profile.display_label.clone(),
@@ -99,14 +88,17 @@ pub(crate) fn active_target_for_provider_from_report(
         })
 }
 
-pub(crate) fn account_from_status(status: &AccountStatus) -> MenubarAccount {
+pub(crate) fn account_from_status(status: &AccountStatus) -> TargetAccount {
     let diagnostic = status
         .usage
         .as_ref()
         .and_then(|usage| usage.diagnostics.first())
-        .map(|diagnostic| MenubarDiagnostic {
+        .map(|diagnostic| Diagnostic {
             code: diagnostic.code.clone(),
             message: sanitize_diagnostic(&diagnostic.message),
+            provider_id: Some(status.account.platform.clone()),
+            target_id: Some(status.account.local_id.clone()),
+            scope: Some("target".to_string()),
             recovery_action: recovery_action_for_code(&diagnostic.code),
         });
     let display_label = status
@@ -124,14 +116,14 @@ pub(crate) fn account_from_status(status: &AccountStatus) -> MenubarAccount {
     .flatten()
     .collect::<Vec<_>>()
     .join(" · ");
-    MenubarAccount {
+    TargetAccount {
         provider: status.account.platform.clone(),
         account_key: target_key(
             &status.account.platform,
-            MenubarTargetKind::Account,
+            TargetKindView::Account,
             &status.account.local_id,
         ),
-        target_kind: MenubarTargetKind::Account,
+        target_kind: TargetKindView::Account,
         display_number: status.account.number,
         local_id: status.account.local_id.clone(),
         display_label,
@@ -148,7 +140,7 @@ pub(crate) fn account_from_status(status: &AccountStatus) -> MenubarAccount {
     }
 }
 
-pub(crate) fn profile_from_config(profile: &ConfigProfile) -> MenubarProfile {
+pub(crate) fn profile_from_config(profile: &ConfigProfile) -> TargetProfile {
     let secondary_label = [
         profile.provider_id.as_deref(),
         profile.model.as_deref(),
@@ -158,14 +150,14 @@ pub(crate) fn profile_from_config(profile: &ConfigProfile) -> MenubarProfile {
     .flatten()
     .collect::<Vec<_>>()
     .join(" · ");
-    MenubarProfile {
+    TargetProfile {
         provider: profile.platform.id.clone(),
         account_key: target_key(
             &profile.platform.id,
-            MenubarTargetKind::Profile,
+            TargetKindView::Profile,
             &profile.local_id,
         ),
-        target_kind: MenubarTargetKind::Profile,
+        target_kind: TargetKindView::Profile,
         display_number: profile.number.unwrap_or_default(),
         local_id: profile.local_id.clone(),
         display_label: profile.name.clone(),
@@ -180,14 +172,14 @@ pub(crate) fn profile_from_config(profile: &ConfigProfile) -> MenubarProfile {
         base_url: profile.base_url.clone(),
         model: profile.model.clone(),
         auth_type: profile.auth_type.clone(),
-        status: MenubarAccountStatus::Healthy,
+        status: TargetStatus::Healthy,
         actions: target_actions(profile.active, "Use this profile"),
         diagnostic: None,
     }
 }
 
-fn target_actions(active: bool, label: &str) -> MenubarTargetActions {
-    MenubarTargetActions {
+fn target_actions(active: bool, label: &str) -> TargetActions {
+    TargetActions {
         can_activate: !active,
         can_remove: true,
         primary_label: if active {
@@ -199,31 +191,31 @@ fn target_actions(active: bool, label: &str) -> MenubarTargetActions {
     }
 }
 
-fn target_key(provider: &str, kind: MenubarTargetKind, local_id: &str) -> String {
+fn target_key(provider: &str, kind: TargetKindView, local_id: &str) -> String {
     let kind = match kind {
-        MenubarTargetKind::Account => "account",
-        MenubarTargetKind::Profile => "profile",
+        TargetKindView::Account => "account",
+        TargetKindView::Profile => "profile",
     };
     format!("{provider}/{kind}/{local_id}")
 }
 
-fn account_state(status: &AccountStatus) -> MenubarAccountStatus {
+fn account_state(status: &AccountStatus) -> TargetStatus {
     if status
         .usage
         .as_ref()
         .is_some_and(|usage| !usage.diagnostics.is_empty() && usage.refreshed_at_unix.is_some())
     {
-        return MenubarAccountStatus::Stale;
+        return TargetStatus::Stale;
     }
     match status.availability.state {
-        AvailabilityState::Available => MenubarAccountStatus::Healthy,
-        AvailabilityState::Limited => MenubarAccountStatus::Limited,
-        AvailabilityState::Exhausted => MenubarAccountStatus::Exhausted,
-        AvailabilityState::Unknown => MenubarAccountStatus::Unavailable,
+        AvailabilityState::Available => TargetStatus::Healthy,
+        AvailabilityState::Limited => TargetStatus::Limited,
+        AvailabilityState::Exhausted => TargetStatus::Exhausted,
+        AvailabilityState::Unknown => TargetStatus::Unavailable,
     }
 }
 
-fn quota_from_usage(usage: &UsageSnapshot) -> MenubarQuota {
+fn quota_from_usage(usage: &UsageSnapshot) -> QuotaView {
     let windows = usage
         .limits
         .iter()
@@ -234,7 +226,7 @@ fn quota_from_usage(usage: &UsageSnapshot) -> MenubarQuota {
         .iter()
         .min_by_key(|limit| limit.remaining_percent_x100.unwrap_or(u32::MAX))
         .map(quota_window_from_limit);
-    MenubarQuota {
+    QuotaView {
         summary: usage.summary.display.clone(),
         refreshed_at_unix: usage.refreshed_at_unix,
         primary_window,
@@ -242,14 +234,14 @@ fn quota_from_usage(usage: &UsageSnapshot) -> MenubarQuota {
         reset_credits: usage
             .reset_credits
             .as_ref()
-            .map(|credits| MenubarResetCredits {
+            .map(|credits| ResetCreditsView {
                 available_count: credits.available_count,
             }),
     }
 }
 
-fn quota_window_from_limit(limit: &UsageLimit) -> MenubarQuotaWindow {
-    MenubarQuotaWindow {
+fn quota_window_from_limit(limit: &UsageLimit) -> QuotaWindow {
+    QuotaWindow {
         id: limit.id.clone(),
         label: limit.label.clone(),
         window_seconds: limit.window_seconds,
@@ -260,17 +252,17 @@ fn quota_window_from_limit(limit: &UsageLimit) -> MenubarQuotaWindow {
     }
 }
 
-pub(crate) fn sort_accounts(accounts: &mut [MenubarAccount]) {
+pub(crate) fn sort_accounts(accounts: &mut [TargetAccount]) {
     accounts.sort_by_key(|account| account.display_number);
 }
 
-pub(crate) fn sort_profiles(profiles: &mut [MenubarProfile]) {
+pub(crate) fn sort_profiles(profiles: &mut [TargetProfile]) {
     profiles.sort_by_key(|profile| (profile.display_number, profile.name.clone()));
 }
 
 pub(crate) fn normalize_active_targets(
-    accounts: &mut [MenubarAccount],
-    profiles: &mut [MenubarProfile],
+    accounts: &mut [TargetAccount],
+    profiles: &mut [TargetProfile],
 ) {
     let providers = accounts
         .iter()

@@ -1,8 +1,8 @@
 use omx_app::{
-    ClientDescriptor, MenubarConsumeResetCreditCommand, MenubarQuery, MenubarRefreshCommand,
-    MenubarRemoveCommand, MenubarSwitchCommand, SupportReportCommand, UpdateSettingsCommand,
-    about_view, activate_target, compatibility_view, consume_reset_credit, dashboard_view,
-    refresh_provider, remove_target, settings_view, support_report, update_settings,
+    ClientDescriptor, ConsumeResetCreditCommand, DashboardQuery, RefreshCommand, RemoveCommand,
+    SupportReportCommand, SwitchCommand, UpdateSettingsCommand, about_view, activate_target,
+    compatibility_view, consume_reset_credit, dashboard_view, refresh_provider, remove_target,
+    settings_view, support_report, update_settings,
 };
 use omx_core::{
     PlatformPlugin, StateStore, UsageScanBudget, UsageScanOptions,
@@ -129,11 +129,11 @@ fn dispatch(request: RequestEnvelope) -> Result<Value, (&'static str, String)> {
         .and_then(|root| StateStore::open(&root).ok());
     match request.op.as_str() {
         "accounts" => {
-            let query: MenubarQuery = payload_or_default(request.payload)?;
+            let query: DashboardQuery = payload_or_default(request.payload)?;
             json_value(omx_app::menubar_accounts(&plugins, query))
         }
         "dashboard" => {
-            let query: MenubarQuery = payload_or_default(request.payload)?;
+            let query: DashboardQuery = payload_or_default(request.payload)?;
             refresh_usage_cache(store.as_ref(), query.provider.as_deref());
             match json_value(dashboard_view(&plugins, query, store.as_ref())) {
                 Ok(value) => {
@@ -144,22 +144,22 @@ fn dispatch(request: RequestEnvelope) -> Result<Value, (&'static str, String)> {
             }
         }
         "switch" => {
-            let command: MenubarSwitchCommand = payload(request.payload)?;
+            let command: SwitchCommand = payload(request.payload)?;
             refresh_usage_cache(store.as_ref(), Some(&command.provider));
             json_value(activate_target(&plugins, command, store.as_ref()))
         }
         "refresh" => {
-            let command: MenubarRefreshCommand = payload(request.payload)?;
+            let command: RefreshCommand = payload(request.payload)?;
             refresh_usage_cache(store.as_ref(), Some(&command.provider));
             json_value(refresh_provider(&plugins, command, store.as_ref()))
         }
         "remove" => {
-            let command: MenubarRemoveCommand = payload(request.payload)?;
+            let command: RemoveCommand = payload(request.payload)?;
             refresh_usage_cache(store.as_ref(), Some(&command.provider));
             json_value(remove_target(&plugins, command, store.as_ref()))
         }
         "consume_reset_credit" => {
-            let command: MenubarConsumeResetCreditCommand = payload(request.payload)?;
+            let command: ConsumeResetCreditCommand = payload(request.payload)?;
             refresh_usage_cache(store.as_ref(), Some(&command.provider));
             json_value(consume_reset_credit(&plugins, command, store.as_ref()))
         }
@@ -440,7 +440,7 @@ mod tests {
 
         let plugins = default_plugins();
         let direct =
-            omx_app::dashboard_view(&plugins, omx_app::MenubarQuery::default(), None).unwrap();
+            omx_app::dashboard_view(&plugins, omx_app::DashboardQuery::default(), None).unwrap();
         let ffi: Value = serde_json::from_str(&call_json(
             r#"{"schema_version":1,"op":"dashboard","payload":{}}"#,
         ))
@@ -474,6 +474,20 @@ mod tests {
                 .unwrap()
                 .len(),
             direct.accounts.profiles.len()
+        );
+        // Contract: the FFI surface and a direct control-plane call agree on the
+        // schema version and on the full aggregate projection (quota health +
+        // usage headline). The aggregate carries no per-call timestamp, so it is
+        // safe to compare by value; the top-level report's generated_at_unix is
+        // not.
+        assert_eq!(
+            ffi["data"]["control_plane_schema_version"],
+            omx_app::compatibility::CONTROL_PLANE_SCHEMA_VERSION
+        );
+        assert_eq!(direct.control_plane_schema_version, 3);
+        assert_eq!(
+            ffi["data"]["aggregate"],
+            serde_json::to_value(&direct.aggregate).unwrap()
         );
     }
 
@@ -612,7 +626,7 @@ mod tests {
     #[test]
     fn accounts_dashboard_switch_and_refresh_match_golden_fixtures() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        omx_app::reset_menubar_refresh_state_for_tests();
+        omx_app::reset_refresh_state_for_tests();
         let temp = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("OMUX_STATE_ROOT", temp.path());
@@ -622,24 +636,36 @@ mod tests {
             (
                 r#"{"schema_version":1,"op":"accounts","payload":{"provider":"codex"},"request_id":"accounts-fixture"}"#,
                 include_str!("../fixtures/menubar/accounts.response.json"),
+                "fixtures/menubar/accounts.response.json",
             ),
             (
                 r#"{"schema_version":1,"op":"dashboard","payload":{"provider":"codex"},"request_id":"dashboard-fixture"}"#,
                 include_str!("../fixtures/menubar/dashboard.response.json"),
+                "fixtures/menubar/dashboard.response.json",
             ),
             (
                 r#"{"schema_version":1,"op":"switch","payload":{"provider":"codex","local_id":"missing-local-id"},"request_id":"switch-fixture"}"#,
                 include_str!("../fixtures/menubar/switch.response.json"),
+                "fixtures/menubar/switch.response.json",
             ),
             (
                 r#"{"schema_version":1,"op":"refresh","payload":{"provider":"codex","kind":"interactive"},"request_id":"refresh-fixture"}"#,
                 include_str!("../fixtures/menubar/refresh.response.json"),
+                "fixtures/menubar/refresh.response.json",
             ),
         ];
 
-        for (request, fixture) in cases {
+        for (request, fixture, path) in cases {
             let mut actual: Value = serde_json::from_str(&call_json(request)).unwrap();
             scrub_generated_at(&mut actual);
+            if std::env::var_os("OMX_UPDATE_FIXTURES").is_some() {
+                std::fs::write(
+                    path,
+                    format!("{}\n", serde_json::to_string_pretty(&actual).unwrap()),
+                )
+                .unwrap();
+                continue;
+            }
             let expected: Value = serde_json::from_str(fixture).unwrap();
             assert_eq!(actual, expected, "{request}");
         }

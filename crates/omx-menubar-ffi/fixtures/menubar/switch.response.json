@@ -1,13 +1,13 @@
 {
-  "schema_version": 1,
-  "control_plane_schema_version": 1,
-  "state_schema_version": 1,
-  "minimum_backend_version": "0.1.0",
-  "minimum_frontend_version": "0.1.0",
-  "ok": false,
+  "control_plane_schema_version": 3,
   "error": {
     "code": "application_error",
     "message": "`missing-local-id` did not match any account or profile for `codex`"
   },
-  "request_id": "switch-fixture"
+  "minimum_backend_version": "0.1.0",
+  "minimum_frontend_version": "0.1.0",
+  "ok": false,
+  "request_id": "switch-fixture",
+  "schema_version": 1,
+  "state_schema_version": 1
 }

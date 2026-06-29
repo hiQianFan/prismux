@@ -180,7 +180,7 @@ pub fn run() -> Result<()> {
             } else {
                 print_section("Overview");
                 let dashboard =
-                    omx_app::dashboard_view(&plugins, omx_app::MenubarQuery::default(), None)?;
+                    omx_app::dashboard_view(&plugins, omx_app::DashboardQuery::default(), None)?;
                 let mut table = view_table();
                 table.set_header(vec![
                     header_cell("Platform"),
@@ -192,52 +192,38 @@ pub fn run() -> Result<()> {
                     header_cell("Status"),
                 ]);
                 for plugin in visible_plugins(&plugins) {
-                    let accounts = dashboard
-                        .accounts
-                        .accounts
+                    let aggregate = dashboard
+                        .aggregate
+                        .provider_aggregates
                         .iter()
-                        .filter(|account| account.provider == plugin.id())
-                        .collect::<Vec<_>>();
-                    let profiles = dashboard
-                        .accounts
-                        .profiles
-                        .iter()
-                        .filter(|profile| profile.provider == plugin.id())
-                        .collect::<Vec<_>>();
-                    let active_label = accounts
-                        .iter()
-                        .find(|account| account.active)
-                        .map(|account| account.display_label.clone())
-                        .or_else(|| {
-                            profiles
-                                .iter()
-                                .find(|profile| profile.active)
-                                .map(|profile| profile.display_label.clone())
-                        })
+                        .find(|view| view.provider_id == plugin.id());
+                    let active_label = aggregate
+                        .and_then(|view| view.active_target.as_ref())
+                        .map(|target| target.display_label.clone())
                         .unwrap_or_else(|| "-".to_string());
-                    let attention = dashboard
-                        .provider_views
-                        .iter()
-                        .find(|view| view.provider == plugin.id())
-                        .filter(|view| {
-                            matches!(
-                                view.status,
-                                omx_app::MenubarAccountStatus::Limited
-                                    | omx_app::MenubarAccountStatus::Exhausted
-                                    | omx_app::MenubarAccountStatus::Stale
-                                    | omx_app::MenubarAccountStatus::Unavailable
-                            )
-                        })
-                        .map(|_| 1)
-                        .unwrap_or_default();
+                    let account_count =
+                        aggregate.map(|view| view.account_count).unwrap_or_default();
+                    let profile_count =
+                        aggregate.map(|view| view.profile_count).unwrap_or_default();
+                    let quota = aggregate
+                        .and_then(|view| view.quota_health.facts.avg_remaining_percent_x100)
+                        .map(percent_x100_display)
+                        .unwrap_or_else(|| "-".to_string());
+                    let low = aggregate
+                        .and_then(|view| view.quota_health.facts.min_remaining_percent_x100)
+                        .map(percent_x100_display)
+                        .unwrap_or_else(|| "-".to_string());
+                    let status = aggregate
+                        .map(|view| provider_status_label(&view.status_tone))
+                        .unwrap_or("unknown");
                     table.add_row(vec![
                         Cell::new(plugin.name()).add_attribute(Attribute::Bold),
                         active_account_cell(active_label),
-                        Cell::new(accounts.len()),
-                        Cell::new(profiles.len()),
-                        usage_cell(&menubar_overall_availability(&accounts)),
-                        usage_cell(&menubar_window_availability(&accounts, 18_000)),
-                        pool_status_cell(attention),
+                        Cell::new(account_count),
+                        Cell::new(profile_count),
+                        usage_cell(&quota),
+                        usage_cell(&low),
+                        provider_status_cell(status),
                     ]);
                 }
                 println!("{table}");
@@ -328,7 +314,7 @@ pub fn run() -> Result<()> {
         Command::Status => {
             print_section("Platform status");
             let dashboard =
-                omx_app::dashboard_view(&plugins, omx_app::MenubarQuery::default(), None)?;
+                omx_app::dashboard_view(&plugins, omx_app::DashboardQuery::default(), None)?;
             let mut table = view_table();
             table.set_header(vec![
                 header_cell("Platform"),
@@ -680,8 +666,8 @@ fn usage_report(
         group_by_model: true,
         ..UsageSummaryQuery::default()
     })?;
-    let groups = usage_groups(group_by, summaries, &model_summaries);
-    let totals = usage_total(&groups);
+    let groups = omx_app::usage_groups(group_by, summaries, &model_summaries);
+    let totals = omx_app::usage_total(&groups);
     let requested_clients = client.iter().cloned().collect::<Vec<_>>();
     let available_clients = groups
         .iter()
@@ -745,80 +731,6 @@ fn usage_report(
             inserted_events,
         },
     })
-}
-
-fn usage_groups(
-    group_by: UsageGroupBy,
-    summaries: Vec<UsageSummary>,
-    model_summaries: &[UsageSummary],
-) -> Vec<UsageSummary> {
-    if matches!(group_by, UsageGroupBy::Client) {
-        return summaries
-            .into_iter()
-            .map(|mut summary| {
-                summary.top_model = top_model_for_client(model_summaries, &summary.client);
-                summary
-            })
-            .collect();
-    }
-    if matches!(group_by, UsageGroupBy::Model) {
-        return summaries
-            .into_iter()
-            .map(|mut summary| {
-                summary.top_model = summary.model.clone();
-                summary
-            })
-            .collect();
-    }
-
-    let mut by_day = std::collections::BTreeMap::<String, UsageSummary>::new();
-    for summary in summaries {
-        let day = summary
-            .local_day
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string());
-        by_day
-            .entry(day.clone())
-            .or_insert_with(|| {
-                let mut total = UsageSummary::empty("all");
-                total.local_day = Some(day);
-                total
-            })
-            .add(&summary);
-    }
-    by_day
-        .into_values()
-        .map(|mut summary| {
-            if let Some(day) = summary.local_day.as_deref() {
-                summary.top_model = top_model_for_day(model_summaries, day);
-            }
-            summary
-        })
-        .collect()
-}
-
-fn top_model_for_client(model_summaries: &[UsageSummary], client: &str) -> Option<String> {
-    model_summaries
-        .iter()
-        .filter(|summary| summary.client == client)
-        .max_by_key(|summary| summary.normalized_total_tokens)
-        .and_then(|summary| summary.model.clone())
-}
-
-fn top_model_for_day(model_summaries: &[UsageSummary], day: &str) -> Option<String> {
-    model_summaries
-        .iter()
-        .filter(|summary| summary.local_day.as_deref() == Some(day))
-        .max_by_key(|summary| summary.normalized_total_tokens)
-        .and_then(|summary| summary.model.clone())
-}
-
-fn usage_total(summaries: &[UsageSummary]) -> UsageSummary {
-    let mut total = UsageSummary::empty("all");
-    for summary in summaries {
-        total.add(summary);
-    }
-    total
 }
 
 #[derive(Debug, Clone)]
@@ -1596,36 +1508,6 @@ fn summarize_cli_availability(accounts: &[AccountStatus]) -> String {
     average_percent(summary_percentages.into_iter())
 }
 
-fn menubar_overall_availability(accounts: &[&omx_app::MenubarAccount]) -> String {
-    average_percent(accounts.iter().filter_map(|account| {
-        account
-            .quota
-            .as_ref()
-            .and_then(|quota| quota.primary_window.as_ref())
-            .and_then(|window| window.remaining_percent_x100)
-            .map(|percent| percent as f64 / 100.0)
-    }))
-}
-
-fn menubar_window_availability(
-    accounts: &[&omx_app::MenubarAccount],
-    window_seconds: u64,
-) -> String {
-    average_percent(accounts.iter().filter_map(|account| {
-        account
-            .quota
-            .as_ref()
-            .and_then(|quota| {
-                quota
-                    .windows
-                    .iter()
-                    .find(|window| window.window_seconds == Some(window_seconds))
-            })
-            .and_then(|window| window.remaining_percent_x100)
-            .map(|percent| percent as f64 / 100.0)
-    }))
-}
-
 #[cfg(test)]
 fn summarize_window_availability(accounts: &[AccountStatus], window_seconds: u64) -> String {
     let percentages: Vec<u32> = accounts
@@ -1709,6 +1591,7 @@ fn reset_time_display(timestamp: i64) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
+#[cfg(test)]
 fn average_percent(values: impl Iterator<Item = f64>) -> String {
     let mut total = 0.0;
     let mut count = 0_u32;
@@ -1847,11 +1730,25 @@ fn active_account_cell(value: String) -> Cell {
     }
 }
 
-fn pool_status_cell(attention_count: usize) -> Cell {
-    if attention_count == 0 {
-        muted_cell("ok")
-    } else {
-        Cell::new(format!("{attention_count} limited")).fg(Color::Yellow)
+fn percent_x100_display(percent: u32) -> String {
+    format!("{}%", percent / 100)
+}
+
+fn provider_status_label(tone: &omx_app::ViewTone) -> &'static str {
+    match tone {
+        omx_app::ViewTone::Success => "ok",
+        omx_app::ViewTone::Warning => "limited",
+        omx_app::ViewTone::Danger => "alert",
+        omx_app::ViewTone::Neutral => "-",
+    }
+}
+
+fn provider_status_cell(value: &str) -> Cell {
+    match value {
+        "ok" | "-" => muted_cell(value),
+        "limited" => Cell::new(value).fg(Color::Yellow),
+        "alert" => Cell::new(value).fg(Color::Red),
+        value => muted_cell(value),
     }
 }
 
@@ -2230,7 +2127,7 @@ mod tests {
                 group_by: UsageGroupBy::Client,
                 details: false,
             },
-            totals: usage_total(&groups),
+            totals: omx_app::usage_total(&groups),
             groups,
             freshness: UsageFreshness {
                 generated_at_unix: 1,

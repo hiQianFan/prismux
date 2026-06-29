@@ -6,7 +6,7 @@ use std::{
 };
 
 #[doc(hidden)]
-pub fn reset_menubar_refresh_state_for_tests() {
+pub fn reset_refresh_state_for_tests() {
     REFRESH_STATE
         .lock()
         .unwrap_or_else(|err| err.into_inner())
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn runtime_view_exposes_backoff_and_failure_gate() {
-        reset_menubar_refresh_state_for_tests();
+        reset_refresh_state_for_tests();
         let generation = match begin_refresh_request("codex", None) {
             RefreshAdmission::Accepted(generation) => generation,
             RefreshAdmission::Skipped { .. } => panic!("refresh should start"),

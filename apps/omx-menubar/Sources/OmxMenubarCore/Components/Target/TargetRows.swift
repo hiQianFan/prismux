@@ -12,7 +12,7 @@ private enum TargetLayout {
 // MARK: - Account row
 
 struct AccountTargetRow: View {
-    let account: MenubarAccount
+    let account: TargetAccount
     let active: Bool
     let switching: Bool
     let deleting: Bool
@@ -155,7 +155,7 @@ struct AccountTargetRow: View {
 // MARK: - Profile row
 
 struct ProfileTargetRow: View {
-    let profile: MenubarProfile
+    let profile: TargetProfile
     let active: Bool
     let switching: Bool
     let deleting: Bool

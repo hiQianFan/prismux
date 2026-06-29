@@ -42,6 +42,37 @@ let additive = """
       "diagnostics": []
     },
     "active": null,
+    "aggregate": {
+      "quota_health": {
+        "facts": {
+          "account_count": 0,
+          "reporting_count": 0,
+          "avg_remaining_percent_x100": null,
+          "min_remaining_percent_x100": null,
+          "max_remaining_percent_x100": null,
+          "soonest_reset_at_unix": null,
+          "reset_credit_total": 0
+        },
+        "healthy_count": 0,
+        "low_count": 0,
+        "exhausted_count": 0,
+        "worst_target": null,
+        "best_alternative": null,
+        "status": "unavailable",
+        "status_tone": "danger"
+      },
+      "provider_aggregates": [],
+      "usage_headline": {
+        "period": "Today",
+        "total_tokens": 0,
+        "estimated_cost_usd": null,
+        "cost_status": "Missing",
+        "top_client": null,
+        "top_model": null,
+        "breakdown": []
+      },
+      "diagnostics": []
+    },
     "usage": {
       "period": "Today",
       "total_tokens": 0,

@@ -5,8 +5,9 @@ public struct DashboardReport: Decodable, Sendable {
     public let stateSchemaVersion: UInt32?
     public let generatedAtUnix: UInt64
     public let accounts: AccountsReport
-    public let active: MenubarAccount?
+    public let active: TargetAccount?
     public let providerViews: [ProviderView]?
+    public let aggregate: DashboardAggregateView
     public let usage: UsageSummary
     public let providerUsage: [ProviderUsageSummary]
 
@@ -17,6 +18,7 @@ public struct DashboardReport: Decodable, Sendable {
         case accounts
         case active
         case providerViews = "provider_views"
+        case aggregate
         case usage
         case providerUsage = "provider_usage"
     }
@@ -29,6 +31,7 @@ public struct ProviderView: Decodable, Sendable {
     public let statusText: String
     public let statusTone: String?
     public let targetCount: Int
+    public let aggregate: ProviderAggregateView?
     public let diagnostics: [Diagnostic]
 
     enum CodingKeys: String, CodingKey {
@@ -38,7 +41,119 @@ public struct ProviderView: Decodable, Sendable {
         case statusText = "status_text"
         case statusTone = "status_tone"
         case targetCount = "target_count"
+        case aggregate
         case diagnostics
+    }
+}
+
+public struct DashboardAggregateView: Decodable, Sendable {
+    public let quotaHealth: QuotaHealthRollup
+    public let providerAggregates: [ProviderAggregateView]
+    public let usageHeadline: UsageHeadline
+    public let diagnostics: [Diagnostic]
+
+    enum CodingKeys: String, CodingKey {
+        case quotaHealth = "quota_health"
+        case providerAggregates = "provider_aggregates"
+        case usageHeadline = "usage_headline"
+        case diagnostics
+    }
+}
+
+public struct ProviderAggregateView: Decodable, Sendable {
+    public let providerId: String
+    public let providerDisplayLabel: String
+    public let accountCount: UInt32
+    public let profileCount: UInt32
+    public let targetCount: UInt32
+    public let activeTarget: ActiveTarget?
+    public let quotaHealth: QuotaHealthRollup
+    /// This provider's token/cost headline for the selected period.
+    public let usageHeadline: UsageHeadline?
+    public let status: String
+    public let statusTone: String
+    public let statusText: String
+    public let diagnostics: [Diagnostic]
+
+    enum CodingKeys: String, CodingKey {
+        case providerId = "provider_id"
+        case providerDisplayLabel = "provider_display_label"
+        case accountCount = "account_count"
+        case profileCount = "profile_count"
+        case targetCount = "target_count"
+        case activeTarget = "active_target"
+        case quotaHealth = "quota_health"
+        case usageHeadline = "usage_headline"
+        case status
+        case statusTone = "status_tone"
+        case statusText = "status_text"
+        case diagnostics
+    }
+}
+
+public struct QuotaHealthRollup: Decodable, Sendable {
+    public let facts: QuotaFactsRollup
+    public let healthyCount: UInt32
+    public let lowCount: UInt32
+    public let exhaustedCount: UInt32
+    public let worstTarget: ActiveTarget?
+    public let bestAlternative: TargetRecommendation?
+    public let status: String
+    public let statusTone: String
+
+    enum CodingKeys: String, CodingKey {
+        case facts
+        case healthyCount = "healthy_count"
+        case lowCount = "low_count"
+        case exhaustedCount = "exhausted_count"
+        case worstTarget = "worst_target"
+        case bestAlternative = "best_alternative"
+        case status
+        case statusTone = "status_tone"
+    }
+}
+
+public struct QuotaFactsRollup: Decodable, Sendable {
+    public let accountCount: UInt32
+    public let reportingCount: UInt32
+    public let avgRemainingPercentX100: UInt32?
+    public let minRemainingPercentX100: UInt32?
+    public let maxRemainingPercentX100: UInt32?
+    public let soonestResetAtUnix: Int64?
+    public let resetCreditTotal: UInt32
+
+    enum CodingKeys: String, CodingKey {
+        case accountCount = "account_count"
+        case reportingCount = "reporting_count"
+        case avgRemainingPercentX100 = "avg_remaining_percent_x100"
+        case minRemainingPercentX100 = "min_remaining_percent_x100"
+        case maxRemainingPercentX100 = "max_remaining_percent_x100"
+        case soonestResetAtUnix = "soonest_reset_at_unix"
+        case resetCreditTotal = "reset_credit_total"
+    }
+}
+
+public struct TargetRecommendation: Decodable, Sendable {
+    public let target: ActiveTarget
+    public let reason: String
+    public let action: String
+}
+
+public struct UsageHeadline: Decodable, Sendable {
+    public let totalTokens: UInt64
+    public let estimatedCostUsd: String?
+    public let costStatus: String
+    public let topClient: String?
+    public let topModel: String?
+    public let breakdown: [UsageModelBreakdown]
+
+    enum CodingKeys: String, CodingKey {
+        case totalTokens = "total_tokens"
+        case estimatedCostUsd = "estimated_cost_usd"
+        case costStatus = "cost_status"
+        case topClient = "top_client"
+        case topModel = "top_model"
+        case breakdown
     }
 }
 
@@ -46,8 +161,8 @@ public struct AccountsReport: Decodable, Sendable {
     public let controlPlaneSchemaVersion: UInt32?
     public let stateSchemaVersion: UInt32?
     public let providers: [String]
-    public let accounts: [MenubarAccount]
-    public let profiles: [MenubarProfile]
+    public let accounts: [TargetAccount]
+    public let profiles: [TargetProfile]
     public let activeLocalId: String?
     public let activeTargetKey: String?
     public let activeTargetKind: String?
@@ -74,7 +189,7 @@ public struct AccountsReport: Decodable, Sendable {
     }
 }
 
-public struct MenubarAccount: Decodable, Identifiable, Sendable {
+public struct TargetAccount: Decodable, Identifiable, Sendable {
     public var id: String { accountKey }
     public var shortLabel: String { displayLabel }
 
@@ -115,7 +230,7 @@ public struct MenubarAccount: Decodable, Identifiable, Sendable {
     }
 }
 
-public struct MenubarProfile: Decodable, Identifiable, Sendable {
+public struct TargetProfile: Decodable, Identifiable, Sendable {
     public var id: String { accountKey }
 
     public let provider: String
@@ -239,10 +354,14 @@ public struct UsageSummary: Decodable, Sendable {
 public struct HourlyBucket: Decodable, Sendable {
     public let localHour: String
     public let totalTokens: UInt64
+    public let estimatedCostUsd: String?
+    public let costStatus: String?
 
     enum CodingKeys: String, CodingKey {
         case localHour = "local_hour"
         case totalTokens = "total_tokens"
+        case estimatedCostUsd = "estimated_cost_usd"
+        case costStatus = "cost_status"
     }
 }
 
@@ -283,11 +402,17 @@ public struct Coverage: Decodable, Sendable {
 public struct Diagnostic: Decodable, Sendable {
     public let code: String
     public let message: String
+    public let providerId: String?
+    public let targetId: String?
+    public let scope: String?
     public let recoveryAction: String?
 
     enum CodingKeys: String, CodingKey {
         case code
         case message
+        case providerId = "provider_id"
+        case targetId = "target_id"
+        case scope
         case recoveryAction = "recovery_action"
     }
 }

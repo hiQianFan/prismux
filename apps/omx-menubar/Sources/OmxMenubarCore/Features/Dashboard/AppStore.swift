@@ -75,7 +75,7 @@ public final class AppStore: ObservableObject {
         refreshingProvider = nil
     }
 
-    func refreshAccount(_ account: MenubarAccount, kind: String = "interactive") async {
+    func refreshAccount(_ account: TargetAccount, kind: String = "interactive") async {
         guard !refreshInProgress else { return }
         refreshingTargetId = account.id
         await request(.refresh(
@@ -91,21 +91,21 @@ public final class AppStore: ObservableObject {
         refreshingProvider != nil || refreshingTargetId != nil
     }
 
-    func switchAccount(_ account: MenubarAccount) async {
+    func switchAccount(_ account: TargetAccount) async {
         guard switchingLocalId == nil else { return }
         switchingLocalId = account.id
         await request(.switchTarget(provider: account.provider, targetKind: account.targetKind, localId: account.localId))
         switchingLocalId = nil
     }
 
-    func switchProfile(_ profile: MenubarProfile) async {
+    func switchProfile(_ profile: TargetProfile) async {
         guard switchingLocalId == nil else { return }
         switchingLocalId = profile.id
         await request(.switchTarget(provider: profile.provider, targetKind: profile.targetKind, localId: profile.localId))
         switchingLocalId = nil
     }
 
-    func deleteAccount(_ account: MenubarAccount) async {
+    func deleteAccount(_ account: TargetAccount) async {
         guard deletingLocalId == nil else { return }
         confirmingDeleteTargetId = nil
         deletingLocalId = account.id
@@ -113,7 +113,7 @@ public final class AppStore: ObservableObject {
         deletingLocalId = nil
     }
 
-    func deleteProfile(_ profile: MenubarProfile) async {
+    func deleteProfile(_ profile: TargetProfile) async {
         guard deletingLocalId == nil else { return }
         confirmingDeleteTargetId = nil
         deletingLocalId = profile.id
@@ -121,7 +121,7 @@ public final class AppStore: ObservableObject {
         deletingLocalId = nil
     }
 
-    func resetAccountUsageLimit(_ account: MenubarAccount) async {
+    func resetAccountUsageLimit(_ account: TargetAccount) async {
         guard resettingLocalId == nil else { return }
         confirmingResetTargetId = nil
         resettingLocalId = account.id
@@ -198,25 +198,22 @@ public final class AppStore: ObservableObject {
     }
 
     private func aggregateTraySignal(_ report: DashboardReport) -> String {
-        let accounts = report.accounts.accounts
-        if accounts.isEmpty {
+        if report.accounts.accounts.isEmpty {
             return "OpenMux -"
         }
 
-        if let urgent = accounts
-            .compactMap({ account -> (String, UInt32)? in
-                guard let remaining = account.quota?.primaryWindow?.remainingPercentX100 else {
-                    return nil
-                }
-                return (account.provider.capitalized, remaining)
-            })
-            .min(by: { $0.1 < $1.1 })
+        // Read the control-plane aggregate projection; the menubar only renders
+        // it. Worst target + global min remaining and the per-provider alert
+        // count are control-plane facts, not menubar-side recomputation.
+        let quotaHealth = report.aggregate.quotaHealth
+        if let worst = quotaHealth.worstTarget,
+            let remaining = quotaHealth.facts.minRemainingPercentX100
         {
-            return "\(urgent.0) \(Int(urgent.1) / 100)%"
+            return "\(worst.provider.capitalized) \(Int(remaining) / 100)%"
         }
 
-        let troubled = (report.providerViews ?? []).filter { view in
-            view.statusTone == "warning" || view.statusTone == "danger"
+        let troubled = report.aggregate.providerAggregates.filter { aggregate in
+            aggregate.statusTone == "warning" || aggregate.statusTone == "danger"
         }.count
         if troubled > 0 {
             return "\(troubled) alerts"

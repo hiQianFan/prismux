@@ -157,28 +157,30 @@ struct DashboardView: View {
 
     private func overview(_ report: DashboardReport) -> some View {
         let providers = providerNames(report)
+        let alerts = aggregatedDiagnostics(report)
         return VStack(alignment: .leading, spacing: 12) {
             Card(title: "Providers") {
                 if providers.isEmpty {
                     emptyState("No providers reported by backend.")
                 }
                 ForEach(providers, id: \.self) { provider in
-                    let accounts = accounts(for: provider, in: report)
-                    let profiles = profiles(for: provider, in: report)
-                    let view = providerView(provider, in: report)
-                    let activeLabel = activeTargetLabel(accounts: accounts, profiles: profiles)
-                    OverviewProviderRow(
-                        provider: provider,
-                        activeTarget: activeLabel == "-" ? nil : activeLabel,
-                        accountCount: accounts.count,
-                        profileCount: profiles.count,
-                        lowestQuotaPercent: lowestQuota(accounts).map { Int($0) / 100 },
-                        statusText: view?.statusText ?? "Unknown",
-                        statusTone: view.map { toneColor($0.statusTone) } ?? .secondary,
-                        onTap: { store.selectedProvider = provider }
-                    )
-                    if provider != providers.last {
-                        Divider().opacity(0.4)
+                    if let aggregate = providerAggregate(provider, in: report) {
+                        ProviderSummaryRow(
+                            aggregate: aggregate,
+                            activeLabel: overviewActiveLabel(provider: provider, aggregate: aggregate, report: report),
+                            onTap: { store.selectedProvider = provider }
+                        )
+                        if provider != providers.last {
+                            Divider().opacity(0.4)
+                        }
+                    }
+                }
+            }
+
+            if !alerts.isEmpty {
+                Card(title: "Needs attention") {
+                    ForEach(Array(alerts.enumerated()), id: \.offset) { _, diagnostic in
+                        DiagnosticView(diagnostic: diagnostic)
                     }
                 }
             }
@@ -190,6 +192,26 @@ struct DashboardView: View {
                 onSelectPeriod: { store.usagePeriod = $0 }
             )
         }
+    }
+
+    /// Masked active label for a provider's Overview row. Prefers the aggregate's
+    /// active target, falling back to the local account/profile, and applies the
+    /// same privacy masking the rest of the UI uses.
+    private func overviewActiveLabel(provider: String, aggregate: ProviderAggregateView, report: DashboardReport) -> String? {
+        if hidePersonalIdentifiers {
+            let accounts = accounts(for: provider, in: report)
+            let profiles = profiles(for: provider, in: report)
+            return activeTargetLabel(account: activeAccount(accounts), profile: activeProfile(profiles))
+        }
+        return aggregate.activeTarget?.displayLabel
+    }
+
+    /// Provider diagnostics + dashboard-level diagnostics, concatenated. Provider
+    /// diagnostics are already scoped by provider_id; dashboard diagnostics carry
+    /// none, so the two sets don't overlap.
+    private func aggregatedDiagnostics(_ report: DashboardReport) -> [Diagnostic] {
+        let providerDiagnostics = report.aggregate.providerAggregates.flatMap(\.diagnostics)
+        return providerDiagnostics + report.aggregate.diagnostics
     }
 
     private func providerPage(provider: String, report: DashboardReport) -> some View {
@@ -216,34 +238,20 @@ struct DashboardView: View {
         }
     }
 
-    private func providerOverview(provider: String, accounts: [MenubarAccount], profiles: [MenubarProfile], active: MenubarAccount?, activeProfile: MenubarProfile?, usage: UsageSummary, report: DashboardReport) -> some View {
-        let targetLabel = activeTargetLabel(account: active, profile: activeProfile)
-        let lowest = lowestQuota(accounts).map { "\(Int($0) / 100)%" } ?? "unknown"
-        let alerts = providerView(provider, in: report).map { isProviderAttention($0) ? 1 : 0 } ?? 0
-
-        return Card(title: "\(provider.capitalized) Overview") {
-            HStack(spacing: 8) {
-                MetricCell(label: "Tokens", value: "\(usage.totalTokens)")
-                MetricCell(label: "Targets", value: "\(accounts.count + profiles.count)")
-                MetricCell(label: "Lowest", value: lowest)
-                MetricCell(label: "Alerts", value: "\(alerts)")
-            }
-
-            HStack(spacing: 8) {
-                providerDot(provider)
-                Text("Active target")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(targetLabel ?? "none")
-                    .font(.caption.monospacedDigit())
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-        }
+    private func providerOverview(provider: String, accounts: [TargetAccount], profiles: [TargetProfile], active: TargetAccount?, activeProfile: TargetProfile?, usage: UsageSummary, report: DashboardReport) -> some View {
+        let aggregate = providerAggregate(provider, in: report)
+        let targetLabel = hidePersonalIdentifiers
+            ? activeTargetLabel(account: active, profile: activeProfile)
+            : (aggregate?.activeTarget?.displayLabel ?? activeTargetLabel(account: active, profile: activeProfile))
+        return ProviderOverviewCard(
+            provider: provider,
+            aggregate: aggregate,
+            activeLabel: targetLabel,
+            accent: providerColor(provider)
+        )
     }
 
-    private func accountTargets(provider: String, accounts: [MenubarAccount], report: DashboardReport) -> some View {
+    private func accountTargets(provider: String, accounts: [TargetAccount], report: DashboardReport) -> some View {
         Card(title: "Accounts") {
             if accounts.isEmpty {
                 emptyState("No managed accounts for \(provider.capitalized).")
@@ -275,7 +283,7 @@ struct DashboardView: View {
         }
     }
 
-    private func profileTargets(provider: String, profiles: [MenubarProfile], report: DashboardReport) -> some View {
+    private func profileTargets(provider: String, profiles: [TargetProfile], report: DashboardReport) -> some View {
         Card(title: "Profiles") {
             if profiles.isEmpty {
                 emptyState("No profile targets reported for \(provider.capitalized).")
@@ -298,8 +306,8 @@ struct DashboardView: View {
         }
     }
 
-    private func diagnostics(provider: String, report: DashboardReport, accounts: [MenubarAccount]) -> some View {
-        let providerDiagnostics = report.accounts.diagnostics + accounts.compactMap(\.diagnostic)
+    private func diagnostics(provider: String, report: DashboardReport, accounts: [TargetAccount]) -> some View {
+        let providerDiagnostics = providerAggregate(provider, in: report)?.diagnostics ?? []
         return Card(title: "Diagnostics") {
             if providerDiagnostics.isEmpty {
                 emptyState("No diagnostics for \(provider.capitalized).")
@@ -338,24 +346,6 @@ struct DashboardView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func providerDot(_ provider: String) -> some View {
-        Circle()
-            .fill(providerColor(provider))
-            .frame(width: 8, height: 8)
-            .accessibilityHidden(true)
-    }
-
-    private func providerBadge(_ provider: String) -> some View {
-        ZStack {
-            Circle()
-                .fill(providerColor(provider).opacity(0.22))
-            ProviderIcon(provider: provider, size: 13)
-                .foregroundStyle(providerColor(provider))
-        }
-        .frame(width: 30, height: 30)
-        .accessibilityHidden(true)
-    }
-
     private func headerSubtitle(_ report: DashboardReport, stale: Bool) -> String {
         let prefix = stale ? "Stale" : "Updated"
         return "\(prefix) \(timeLabel(report.generatedAtUnix))"
@@ -368,13 +358,13 @@ struct DashboardView: View {
         return Array(Set(report.accounts.accounts.map(\.provider) + report.accounts.profiles.map(\.provider))).sorted()
     }
 
-    private func accounts(for provider: String, in report: DashboardReport) -> [MenubarAccount] {
+    private func accounts(for provider: String, in report: DashboardReport) -> [TargetAccount] {
         report.accounts.accounts
             .filter { $0.provider == provider }
             .sorted { $0.displayNumber == $1.displayNumber ? $0.localId < $1.localId : $0.displayNumber < $1.displayNumber }
     }
 
-    private func profiles(for provider: String, in report: DashboardReport) -> [MenubarProfile] {
+    private func profiles(for provider: String, in report: DashboardReport) -> [TargetProfile] {
         report.accounts.profiles
             .filter { $0.provider == provider }
             .sorted { $0.displayNumber == $1.displayNumber ? $0.name < $1.name : $0.displayNumber < $1.displayNumber }
@@ -388,29 +378,16 @@ struct DashboardView: View {
         report.providerViews?.first { $0.provider == provider }
     }
 
+    private func providerAggregate(_ provider: String, in report: DashboardReport) -> ProviderAggregateView? {
+        report.aggregate.providerAggregates.first { $0.providerId == provider }
+    }
+
     private func providerAttentionCount(_ report: DashboardReport) -> Int {
         (report.providerViews ?? []).filter(isProviderAttention).count
     }
 
     private func isProviderAttention(_ view: ProviderView) -> Bool {
         view.statusTone == "warning" || view.statusTone == "danger"
-    }
-
-    private var verticalRule: some View {
-        Rectangle()
-            .fill(Color.primary.opacity(0.12))
-            .frame(width: 1, height: 42)
-            .padding(.horizontal, 10)
-    }
-
-    private func lowestQuotaSummary(_ accounts: [MenubarAccount]) -> (raw: UInt32, percent: String, label: String)? {
-        let candidates = accounts.compactMap { account -> (UInt32, String)? in
-            guard let remaining = account.quota?.primaryWindow?.remainingPercentX100 else { return nil }
-            let window = account.quota?.primaryWindow?.label ?? "quota"
-            return (remaining, "\(account.provider.capitalized) \(window)")
-        }
-        guard let lowest = candidates.min(by: { $0.0 < $1.0 }) else { return nil }
-        return (lowest.0, "\(Int(lowest.0) / 100)%", lowest.1)
     }
 
     private func timeAgo(_ timestamp: UInt64) -> String {
@@ -428,15 +405,15 @@ struct DashboardView: View {
         return timeAgo(UInt64(max(0, timestamp)))
     }
 
-    private func activeAccount(_ accounts: [MenubarAccount]) -> MenubarAccount? {
+    private func activeAccount(_ accounts: [TargetAccount]) -> TargetAccount? {
         accounts.first(where: \.active)
     }
 
-    private func activeProfile(_ profiles: [MenubarProfile]) -> MenubarProfile? {
+    private func activeProfile(_ profiles: [TargetProfile]) -> TargetProfile? {
         profiles.first(where: \.active)
     }
 
-    private func activeTargetLabel(accounts: [MenubarAccount], profiles: [MenubarProfile]) -> String {
+    private func activeTargetLabel(accounts: [TargetAccount], profiles: [TargetProfile]) -> String {
         if let account = activeAccount(accounts) {
             return hidePersonalIdentifiers ? "#\(account.displayNumber) Account" : account.shortLabel
         }
@@ -446,7 +423,7 @@ struct DashboardView: View {
         return "-"
     }
 
-    private func activeTargetLabel(account: MenubarAccount?, profile: MenubarProfile?) -> String? {
+    private func activeTargetLabel(account: TargetAccount?, profile: TargetProfile?) -> String? {
         if let account {
             return hidePersonalIdentifiers ? "#\(account.displayNumber) Account" : account.shortLabel
         }
@@ -456,7 +433,7 @@ struct DashboardView: View {
         return nil
     }
 
-    private func providerUpdatedLabel(accounts: [MenubarAccount], fallback: UInt64) -> String {
+    private func providerUpdatedLabel(accounts: [TargetAccount], fallback: UInt64) -> String {
         let refreshed = accounts.compactMap { $0.quota?.refreshedAtUnix }.max()
         if let refreshed {
             return timeAgo(refreshed)
@@ -464,7 +441,7 @@ struct DashboardView: View {
         return timeAgo(fallback)
     }
 
-    private func providerSecondaryText(accounts: [MenubarAccount], profiles: [MenubarProfile]) -> String {
+    private func providerSecondaryText(accounts: [TargetAccount], profiles: [TargetProfile]) -> String {
         if accounts.isEmpty, profiles.isEmpty {
             return "No accounts"
         }
@@ -491,16 +468,12 @@ struct DashboardView: View {
         return "\(tokens)"
     }
 
-    private func lowestQuota(_ accounts: [MenubarAccount]) -> UInt32? {
-        accounts.compactMap { $0.quota?.primaryWindow?.remainingPercentX100 }.min()
-    }
-
     private enum WindowPreference {
         case short
         case weekly
     }
 
-    private func quotaWindow(_ account: MenubarAccount, preferred: WindowPreference) -> QuotaWindow? {
+    private func quotaWindow(_ account: TargetAccount, preferred: WindowPreference) -> QuotaWindow? {
         let windows = account.quota?.windows ?? []
         switch preferred {
         case .short:
@@ -562,15 +535,6 @@ struct DashboardView: View {
         case "claude": return .orange
         case "gemini": return .blue
         default: return .purple
-        }
-    }
-
-    private func toneColor(_ tone: String?) -> Color {
-        switch tone {
-        case .some("success"): return .green
-        case .some("warning"): return .orange
-        case .some("danger"): return .red
-        default: return .secondary
         }
     }
 }
@@ -697,105 +661,5 @@ private struct Card<Content: View>: View {
 
     private var background: Color {
         colorScheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.86)
-    }
-}
-
-private struct MetricCell: View {
-    let label: String
-    let value: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(value)
-                .font(.title3.monospacedDigit().bold())
-                .lineLimit(1)
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(8)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-private struct OverviewStat: View {
-    let value: String
-    let label: String
-    var color: Color = .primary
-
-    var body: some View {
-        VStack(spacing: 4) {
-            Text(value)
-                .font(.title2.monospacedDigit().bold())
-                .foregroundStyle(color)
-                .lineLimit(1)
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity)
-    }
-}
-
-private struct ProviderMiniColumn: View {
-    let label: String
-    let value: String
-    let color: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Text(value)
-                .font(.caption.monospacedDigit().weight(.semibold))
-                .foregroundStyle(color)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct UsageMetric: View {
-    let value: String
-    let label: String
-    let detail: String
-    let color: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(value)
-                .font(.title3.monospacedDigit().bold())
-                .foregroundStyle(color)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(detail)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct StatusPill: View {
-    let text: String
-    let color: Color
-
-    var body: some View {
-        Text(text)
-            .font(.caption2.monospacedDigit().weight(.semibold))
-            .foregroundStyle(color)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(color.opacity(0.13), in: Capsule())
     }
 }

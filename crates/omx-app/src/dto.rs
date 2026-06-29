@@ -292,6 +292,8 @@ pub struct MenubarUsageSummary {
     pub top_model: Option<String>,
     pub model_breakdown: Vec<MenubarUsageModelBreakdown>,
     pub hourly_buckets: Vec<MenubarHourlyBucket>,
+    #[serde(default)]
+    pub series: Vec<MenubarUsageChartSeries>,
     pub cost_status: CostStatus,
     pub estimated_cost_usd: Option<String>,
     pub freshness: MenubarFreshness,
@@ -312,6 +314,21 @@ pub struct MenubarHourlyBucket {
     /// Local hour, ISO-like, e.g. "2026-06-27T14".
     pub local_hour: String,
     pub total_tokens: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MenubarUsageChartSeriesKind {
+    Provider,
+    Model,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MenubarUsageChartSeries {
+    pub kind: MenubarUsageChartSeriesKind,
+    pub key: String,
+    pub label: String,
+    pub hourly_buckets: Vec<MenubarHourlyBucket>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

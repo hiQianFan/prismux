@@ -8,12 +8,15 @@ VERSION="$(awk '/^version = / { gsub(/"/, "", $3); print $3; exit }' Cargo.toml)
 APP_DIR="$ROOT/target/menubar/OpenMux Menubar.app"
 CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
+RESOURCES="$CONTENTS/Resources"
 
 "$ROOT/scripts/build-menubar.sh"
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS"
+mkdir -p "$RESOURCES"
 cp "$ROOT/apps/omx-menubar/.build/release/OmxMenubarApp" "$MACOS/OpenMux Menubar"
+find "$ROOT/apps/omx-menubar/.build/out/Products/Release" -maxdepth 1 -name '*.bundle' -exec cp -R {} "$RESOURCES/" \;
 
 cat > "$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

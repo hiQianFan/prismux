@@ -27,11 +27,14 @@ public enum UsagePeriod: String, CaseIterable, Identifiable {
     }
 }
 
-/// One provider's slice of a stacked bar.
+/// One series slice of a stacked bar.
 public struct UsageSegment: Identifiable, Equatable {
-    public let provider: String
+    public let kind: String
+    public let key: String
+    public let label: String
     public let tokens: UInt64
-    public var id: String { provider }
+    public let rank: Int
+    public var id: String { "\(kind):\(key)" }
 }
 
 /// One bar in the usage chart — an hour (Today) or a day (7d/30d).
@@ -46,8 +49,8 @@ public struct UsageBar: Identifiable, Equatable {
     public let tokens: UInt64
     /// True for the bucket representing the current hour/day (highlight).
     public let isCurrent: Bool
-    /// Per-provider breakdown for stacked bars. Empty for single-series bars
-    /// (the provider page), where the whole bar is one accent color.
+    /// Per-series breakdown for stacked bars. Empty for single-series bars,
+    /// where the whole bar is one accent color.
     public let segments: [UsageSegment]
 }
 
@@ -74,27 +77,33 @@ public enum UsageSeries {
         }
     }
 
-    /// Build stacked bars from several providers' buckets. Each bar's `tokens`
+    /// Build stacked bars from several series buckets. Each bar's `tokens`
     /// is the sum of its `segments`. Reuses the single-series rollup per
-    /// provider, then aligns them on the shared bar skeleton (same ids).
+    /// series, then aligns them on the shared bar skeleton (same ids).
     public static func stackedBars(
-        from series: [(provider: String, buckets: [HourlyBucket])],
+        from series: [UsageChartSeries],
         period: UsagePeriod,
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> [UsageBar] {
-        let combined = series.flatMap { $0.buckets }
+        let combined = series.flatMap(\.hourlyBuckets)
         let base = bars(from: combined, period: period, now: now, calendar: calendar)
 
-        // provider → (bar id → tokens)
-        let perProvider: [(provider: String, byId: [String: UInt64])] = series.map { entry in
-            let bars = bars(from: entry.buckets, period: period, now: now, calendar: calendar)
-            return (entry.provider, Dictionary(uniqueKeysWithValues: bars.map { ($0.id, $0.tokens) }))
+        // series → (bar id → tokens)
+        let perSeries: [(series: UsageChartSeries, byId: [String: UInt64])] = series.map { entry in
+            let bars = bars(from: entry.hourlyBuckets, period: period, now: now, calendar: calendar)
+            return (entry, Dictionary(uniqueKeysWithValues: bars.map { ($0.id, $0.tokens) }))
         }
 
         return base.map { bar in
-            let segments = perProvider.map { entry in
-                UsageSegment(provider: entry.provider, tokens: entry.byId[bar.id] ?? 0)
+            let segments = perSeries.map { entry in
+                UsageSegment(
+                    kind: entry.series.kind,
+                    key: entry.series.key,
+                    label: entry.series.label,
+                    tokens: entry.byId[bar.id] ?? 0,
+                    rank: 0
+                )
             }
             return UsageBar(
                 id: bar.id,

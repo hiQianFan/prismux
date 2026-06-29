@@ -531,6 +531,9 @@ mod tests {
         assert_eq!(usage.top_model.as_deref(), Some("gpt-5"));
         assert_eq!(usage.model_breakdown[0].model, "gpt-5");
         assert_eq!(usage.model_breakdown[0].total_tokens, 5);
+        assert_eq!(usage.series[0].kind, MenubarUsageChartSeriesKind::Provider);
+        assert_eq!(usage.series[0].key, "codex");
+        assert_eq!(usage.series[0].hourly_buckets[0].total_tokens, 5);
         assert_eq!(usage.coverage.status, "complete");
     }
 

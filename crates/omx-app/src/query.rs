@@ -263,7 +263,7 @@ fn provider_display_label(provider: &str) -> String {
 }
 
 pub fn menubar_today_usage(store: Option<&omx_core::StateStore>) -> Result<MenubarUsageSummary> {
-    menubar_usage_for_client(store, None)
+    menubar_usage_for_client(store, None, MenubarUsageChartSeriesKind::Provider)
 }
 
 fn menubar_provider_usage(
@@ -275,7 +275,11 @@ fn menubar_provider_usage(
         .map(|provider| {
             Ok(MenubarProviderUsageSummary {
                 provider: provider.clone(),
-                usage: menubar_usage_for_client(store, Some(provider))?,
+                usage: menubar_usage_for_client(
+                    store,
+                    Some(provider),
+                    MenubarUsageChartSeriesKind::Model,
+                )?,
             })
         })
         .collect()
@@ -284,6 +288,7 @@ fn menubar_provider_usage(
 fn menubar_usage_for_client(
     store: Option<&omx_core::StateStore>,
     client: Option<&str>,
+    series_kind: MenubarUsageChartSeriesKind,
 ) -> Result<MenubarUsageSummary> {
     let generated_at_unix = unix_now();
     let Some(store) = store else {
@@ -304,6 +309,7 @@ fn menubar_usage_for_client(
         ..UsageSummaryQuery::default()
     })?;
     let hourly_buckets = hourly_buckets_30d(store, client)?;
+    let series = usage_chart_series_30d(store, client, series_kind)?;
     let mut total = UsageSummary::empty("all");
     for summary in &summaries {
         total.add(summary);
@@ -327,6 +333,7 @@ fn menubar_usage_for_client(
         top_model,
         model_breakdown: usage_model_breakdown(&models),
         hourly_buckets,
+        series,
         cost_status: total.cost_status,
         estimated_cost_usd: total.estimated_cost_usd.map(|value| format!("{value:.4}")),
         freshness: MenubarFreshness {
@@ -360,22 +367,7 @@ fn hourly_buckets_30d(
     store: &omx_core::StateStore,
     client: Option<&str>,
 ) -> Result<Vec<MenubarHourlyBucket>> {
-    let today = Local::now().date_naive();
-    let window_start = today - Duration::days(29);
-    let tomorrow = today
-        .succ_opt()
-        .ok_or_else(|| OpenMuxError::Message("invalid local date".to_string()))?;
-    let since_unix = local_date_start_unix(window_start)?;
-    let until_unix = local_date_start_unix(tomorrow)?;
-
-    let summaries = store.usage_summaries_by(UsageSummaryQuery {
-        client: client.map(str::to_string),
-        since_unix: Some(since_unix),
-        until_unix: Some(until_unix),
-        group_by_local_hour: true,
-        local_day_offset_seconds: Local::now().offset().local_minus_utc(),
-        ..UsageSummaryQuery::default()
-    })?;
+    let summaries = usage_hourly_summaries_30d(store, client, false)?;
 
     let mut by_hour = std::collections::BTreeMap::<String, u64>::new();
     for summary in &summaries {
@@ -392,6 +384,101 @@ fn hourly_buckets_30d(
             total_tokens,
         })
         .collect())
+}
+
+fn usage_chart_series_30d(
+    store: &omx_core::StateStore,
+    client: Option<&str>,
+    kind: MenubarUsageChartSeriesKind,
+) -> Result<Vec<MenubarUsageChartSeries>> {
+    match kind {
+        MenubarUsageChartSeriesKind::Provider => provider_usage_series_30d(store),
+        MenubarUsageChartSeriesKind::Model => model_usage_series_30d(store, client),
+    }
+}
+
+fn provider_usage_series_30d(store: &omx_core::StateStore) -> Result<Vec<MenubarUsageChartSeries>> {
+    let summaries = usage_hourly_summaries_30d(store, None, false)?;
+    let mut by_provider =
+        std::collections::BTreeMap::<String, std::collections::BTreeMap<String, u64>>::new();
+    for summary in summaries {
+        let Some(hour) = summary.local_hour else {
+            continue;
+        };
+        *by_provider
+            .entry(summary.client)
+            .or_default()
+            .entry(hour)
+            .or_insert(0) += summary.normalized_total_tokens;
+    }
+    Ok(by_provider
+        .into_iter()
+        .map(|(provider, buckets)| MenubarUsageChartSeries {
+            kind: MenubarUsageChartSeriesKind::Provider,
+            label: provider_display_label(&provider),
+            key: provider,
+            hourly_buckets: hourly_bucket_entries(buckets),
+        })
+        .collect())
+}
+
+fn model_usage_series_30d(
+    store: &omx_core::StateStore,
+    client: Option<&str>,
+) -> Result<Vec<MenubarUsageChartSeries>> {
+    let summaries = usage_hourly_summaries_30d(store, client, true)?;
+    let mut by_model =
+        std::collections::BTreeMap::<String, std::collections::BTreeMap<String, u64>>::new();
+    for summary in summaries {
+        let Some(hour) = summary.local_hour else {
+            continue;
+        };
+        let model = summary.model.unwrap_or_else(|| "unknown".to_string());
+        *by_model.entry(model).or_default().entry(hour).or_insert(0) +=
+            summary.normalized_total_tokens;
+    }
+    Ok(by_model
+        .into_iter()
+        .map(|(model, buckets)| MenubarUsageChartSeries {
+            kind: MenubarUsageChartSeriesKind::Model,
+            key: model.clone(),
+            label: model,
+            hourly_buckets: hourly_bucket_entries(buckets),
+        })
+        .collect())
+}
+
+fn usage_hourly_summaries_30d(
+    store: &omx_core::StateStore,
+    client: Option<&str>,
+    group_by_model: bool,
+) -> Result<Vec<UsageSummary>> {
+    let today = Local::now().date_naive();
+    let window_start = today - Duration::days(29);
+    let tomorrow = today
+        .succ_opt()
+        .ok_or_else(|| OpenMuxError::Message("invalid local date".to_string()))?;
+    store.usage_summaries_by(UsageSummaryQuery {
+        client: client.map(str::to_string),
+        since_unix: Some(local_date_start_unix(window_start)?),
+        until_unix: Some(local_date_start_unix(tomorrow)?),
+        group_by_local_hour: true,
+        group_by_model,
+        local_day_offset_seconds: Local::now().offset().local_minus_utc(),
+        ..UsageSummaryQuery::default()
+    })
+}
+
+fn hourly_bucket_entries(
+    buckets: std::collections::BTreeMap<String, u64>,
+) -> Vec<MenubarHourlyBucket> {
+    buckets
+        .into_iter()
+        .map(|(local_hour, total_tokens)| MenubarHourlyBucket {
+            local_hour,
+            total_tokens,
+        })
+        .collect()
 }
 
 fn usage_model_breakdown(models: &[UsageSummary]) -> Vec<MenubarUsageModelBreakdown> {
@@ -440,6 +527,7 @@ fn empty_usage(generated_at_unix: u64, status: &str) -> MenubarUsageSummary {
         top_model: None,
         model_breakdown: Vec::new(),
         hourly_buckets: Vec::new(),
+        series: Vec::new(),
         cost_status: CostStatus::Missing,
         estimated_cost_usd: None,
         freshness: MenubarFreshness {

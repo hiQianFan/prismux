@@ -219,6 +219,7 @@ public struct UsageSummary: Decodable, Sendable {
     public let topModel: String?
     public let modelBreakdown: [UsageModelBreakdown]
     public let hourlyBuckets: [HourlyBucket]?
+    public let series: [UsageChartSeries]?
     public let coverage: Coverage
 
     enum CodingKeys: String, CodingKey {
@@ -227,6 +228,7 @@ public struct UsageSummary: Decodable, Sendable {
         case topModel = "top_model"
         case modelBreakdown = "model_breakdown"
         case hourlyBuckets = "hourly_buckets"
+        case series
         case coverage
     }
 }
@@ -251,6 +253,20 @@ public struct UsageModelBreakdown: Decodable, Sendable {
     enum CodingKeys: String, CodingKey {
         case model
         case totalTokens = "total_tokens"
+    }
+}
+
+public struct UsageChartSeries: Decodable, Sendable {
+    public let kind: String
+    public let key: String
+    public let label: String
+    public let hourlyBuckets: [HourlyBucket]
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case key
+        case label
+        case hourlyBuckets = "hourly_buckets"
     }
 }
 

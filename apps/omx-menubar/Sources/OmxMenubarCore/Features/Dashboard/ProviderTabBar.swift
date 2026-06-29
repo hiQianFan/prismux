@@ -23,7 +23,6 @@ struct ProviderTabBar: View {
     private func tab(provider: String?) -> some View {
         let isSelected = provider == selected
         let tint = provider.map(ProviderStyle.color) ?? ProviderStyle.overviewColor
-        let symbol = provider.map(ProviderStyle.icon) ?? ProviderStyle.overviewIcon
         let label = provider?.capitalized ?? "Overview"
 
         return Button {
@@ -34,8 +33,7 @@ struct ProviderTabBar: View {
                 withAnimation(.smooth(duration: 0.24)) { onSelect(provider) }
             }
         } label: {
-            Image(systemName: symbol)
-                .font(.system(size: 14, weight: .semibold))
+            ProviderIcon(provider: provider, size: 14)
                 .foregroundStyle(isSelected ? tint : Color.secondary)
                 .frame(width: 38, height: 30)
                 .background(

@@ -10,6 +10,7 @@ let package = Package(
     targets: [
         .target(
             name: "OmxMenubarCore",
+            resources: [.copy("Resources/ProviderIcons")],
             linkerSettings: [
                 .unsafeFlags(["../../target/release/libomx_menubar_ffi.a"])
             ]

@@ -53,6 +53,25 @@ let additive = """
         {"local_hour": "2026-06-27T10", "total_tokens": 80},
         {"local_hour": "2026-06-26T09", "total_tokens": 200}
       ],
+      "series": [
+        {
+          "kind": "provider",
+          "key": "codex",
+          "label": "Codex",
+          "hourly_buckets": [
+            {"local_hour": "2026-06-27T09", "total_tokens": 120},
+            {"local_hour": "2026-06-26T09", "total_tokens": 200}
+          ]
+        },
+        {
+          "kind": "provider",
+          "key": "claude",
+          "label": "Claude",
+          "hourly_buckets": [
+            {"local_hour": "2026-06-27T10", "total_tokens": 80}
+          ]
+        }
+      ],
       "cost_status": "Missing",
       "estimated_cost_usd": null,
       "freshness": {"generated_at_unix": 1, "stale": true},
@@ -72,6 +91,28 @@ let additive = """
           "top_client": null,
           "top_model": null,
           "model_breakdown": [],
+          "hourly_buckets": [
+            {"local_hour": "2026-06-27T09", "total_tokens": 120},
+            {"local_hour": "2026-06-27T10", "total_tokens": 80}
+          ],
+          "series": [
+            {
+              "kind": "model",
+              "key": "gpt-5.5",
+              "label": "gpt-5.5",
+              "hourly_buckets": [
+                {"local_hour": "2026-06-27T09", "total_tokens": 120}
+              ]
+            },
+            {
+              "kind": "model",
+              "key": "gpt-5.4",
+              "label": "gpt-5.4",
+              "hourly_buckets": [
+                {"local_hour": "2026-06-27T10", "total_tokens": 80}
+              ]
+            }
+          ],
           "cost_status": "Missing",
           "estimated_cost_usd": null,
           "freshness": {"generated_at_unix": 1, "stale": true},
@@ -172,6 +213,7 @@ assert(resetCreditAccounts.last?.quota?.resetCredits == nil)
 // hourly_buckets decode + rollup
 let usage = additiveEnvelope.data?.dashboard?.usage
 assert(usage?.hourlyBuckets?.count == 3)
+assert(usage?.series?.count == 2)
 
 var anchorComponents = DateComponents()
 anchorComponents.year = 2026
@@ -200,7 +242,7 @@ assert(weekBars[weekBars.count - 2].tokens == 200) // yesterday 06-26
 // Stacked: same buckets split across two providers; per-bar tokens must equal
 // the sum of segments, and segments must carry the right provider tokens.
 let stacked = UsageSeries.stackedBars(
-    from: [(provider: "codex", buckets: buckets), (provider: "claude", buckets: [])],
+    from: usage?.series ?? [],
     period: .today,
     now: anchor,
     calendar: utcCalendar
@@ -208,10 +250,28 @@ let stacked = UsageSeries.stackedBars(
 assert(stacked.count == 24)
 assert(stacked[9].tokens == 120)
 assert(stacked[9].segments.count == 2)
-assert(stacked[9].segments.first { $0.provider == "codex" }?.tokens == 120)
-assert(stacked[9].segments.first { $0.provider == "claude" }?.tokens == 0)
+assert(stacked[9].segments.first { $0.key == "codex" }?.tokens == 120)
+assert(stacked[9].segments.first { $0.key == "claude" }?.tokens == 0)
 // Bar total is always the sum of its segments.
 assert(stacked.allSatisfy { $0.tokens == $0.segments.reduce(UInt64(0)) { $0 + $1.tokens } })
+
+let stackedWeek = UsageSeries.stackedBars(
+    from: usage?.series ?? [],
+    period: .sevenDays,
+    now: anchor,
+    calendar: utcCalendar
+)
+assert(stackedWeek[stackedWeek.count - 2].segments.first { $0.key == "codex" }?.tokens == 200)
+
+let providerUsage = additiveEnvelope.data?.dashboard?.providerUsage.first?.usage
+let modelStacked = UsageSeries.stackedBars(
+    from: providerUsage?.series ?? [],
+    period: .sevenDays,
+    now: anchor,
+    calendar: utcCalendar
+)
+assert(modelStacked.last?.segments.first { $0.key == "gpt-5.5" }?.tokens == 120)
+assert(modelStacked.last?.segments.first { $0.key == "gpt-5.4" }?.tokens == 80)
 
 func decode(_ name: String) throws -> BackendEnvelope {
     let data = try Data(contentsOf: fixtureRoot.appendingPathComponent(name))

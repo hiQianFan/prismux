@@ -185,7 +185,6 @@ struct DashboardView: View {
             UsageCard(
                 usage: report.usage,
                 title: "Token Usage",
-                providerUsage: report.providerUsage,
                 period: store.usagePeriod,
                 onSelectPeriod: { store.usagePeriod = $0 }
             )
@@ -208,6 +207,7 @@ struct DashboardView: View {
                 usage: usage,
                 title: "\(provider.capitalized) Token Usage",
                 accent: ProviderStyle.color(provider),
+                themeProvider: provider,
                 period: store.usagePeriod,
                 onSelectPeriod: { store.usagePeriod = $0 }
             )
@@ -347,21 +347,11 @@ struct DashboardView: View {
         ZStack {
             Circle()
                 .fill(providerColor(provider).opacity(0.22))
-            Image(systemName: providerIcon(provider))
-                .font(.system(size: 13, weight: .semibold))
+            ProviderIcon(provider: provider, size: 13)
                 .foregroundStyle(providerColor(provider))
         }
         .frame(width: 30, height: 30)
         .accessibilityHidden(true)
-    }
-
-    private func providerIcon(_ provider: String) -> String {
-        switch provider.lowercased() {
-        case "codex": return "brain.head.profile"
-        case "claude": return "sparkle"
-        case "gemini": return "diamond.fill"
-        default: return "circle.grid.2x2.fill"
-        }
     }
 
     private func headerSubtitle(_ report: DashboardReport, stale: Bool) -> String {
@@ -805,93 +795,5 @@ private struct StatusPill: View {
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
             .background(color.opacity(0.13), in: Capsule())
-    }
-}
-
-private struct ModelUsageBars: View {
-    let models: [UsageModelBreakdown]
-
-    var body: some View {
-        if models.isEmpty {
-            Text("No model usage today")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
-        } else {
-            VStack(alignment: .leading, spacing: 7) {
-                ZStack(alignment: .bottomLeading) {
-                    VStack(spacing: 0) {
-                        ForEach(0..<4, id: \.self) { _ in
-                            Rectangle()
-                                .fill(Color.primary.opacity(0.07))
-                                .frame(height: 1)
-                            Spacer()
-                        }
-                    }
-
-                    HStack(alignment: .bottom, spacing: 8) {
-                        ForEach(Array(models.enumerated()), id: \.offset) { index, model in
-                            VStack(spacing: 4) {
-                                RoundedRectangle(cornerRadius: 3)
-                                    .fill(modelColor(model.model, index: index))
-                                    .frame(height: barHeight(model.totalTokens))
-                                    .overlay(alignment: .top) {
-                                        RoundedRectangle(cornerRadius: 3)
-                                            .fill(Color.white.opacity(0.22))
-                                            .frame(height: 4)
-                                    }
-                                Text(shortModel(model.model))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .accessibilityLabel("\(model.model) \(model.totalTokens) tokens")
-                        }
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.top, 8)
-                .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
-
-                HStack(spacing: 10) {
-                    ForEach(Array(models.prefix(4).enumerated()), id: \.offset) { index, model in
-                        HStack(spacing: 4) {
-                            Circle()
-                                .fill(modelColor(model.model, index: index))
-                                .frame(width: 7, height: 7)
-                            Text(shortModel(model.model))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                    }
-                    Spacer()
-                }
-            }
-        }
-    }
-
-    private var maxTokens: UInt64 {
-        models.map(\.totalTokens).max() ?? 1
-    }
-
-    private func barHeight(_ tokens: UInt64) -> CGFloat {
-        10 + CGFloat(tokens) / CGFloat(maxTokens) * 42
-    }
-
-    private func shortModel(_ model: String) -> String {
-        model.replacingOccurrences(of: "claude-", with: "")
-            .replacingOccurrences(of: "gpt-", with: "g")
-            .replacingOccurrences(of: "gemini-", with: "gm-")
-    }
-
-    private func modelColor(_ model: String, index: Int) -> Color {
-        let lower = model.lowercased()
-        if lower.contains("claude") { return .orange }
-        if lower.contains("gemini") { return .blue }
-        if lower.contains("gpt") || lower.contains("codex") { return .green }
-        return [.purple, .pink, .teal, .indigo][index % 4]
     }
 }

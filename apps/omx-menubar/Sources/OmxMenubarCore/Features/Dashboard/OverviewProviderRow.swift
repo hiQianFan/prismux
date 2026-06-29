@@ -47,8 +47,7 @@ struct OverviewProviderRow: View {
     private var badge: some View {
         ZStack {
             Circle().fill(ProviderStyle.color(provider).opacity(0.18))
-            Image(systemName: ProviderStyle.icon(provider))
-                .font(.system(size: 13, weight: .semibold))
+            ProviderIcon(provider: provider, size: 13)
                 .foregroundStyle(ProviderStyle.color(provider))
         }
         .frame(width: 30, height: 30)

@@ -46,6 +46,7 @@
       "top_model": null,
       "model_breakdown": [],
       "hourly_buckets": [],
+      "series": [],
       "cost_status": "Missing",
       "estimated_cost_usd": null,
       "freshness": {
@@ -70,6 +71,7 @@
           "top_model": null,
           "model_breakdown": [],
           "hourly_buckets": [],
+          "series": [],
           "cost_status": "Missing",
           "estimated_cost_usd": null,
           "freshness": {

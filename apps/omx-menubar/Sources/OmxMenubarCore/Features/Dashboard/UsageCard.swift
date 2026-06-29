@@ -5,30 +5,39 @@ import SwiftUI
 /// backend are the single source of truth; Today renders 24 hourly bars and
 /// 7d/30d roll the same series up into daily bars (see `UsageSeries`).
 ///
-/// On the Overview the bars are stacked by provider (one color segment each);
-/// on a provider page there is a single `accent`-colored series.
+/// The backend decides the segment dimension: Overview uses providers, and a
+/// provider page uses models.
 struct UsageCard: View {
     let usage: UsageSummary
     let title: String
-    /// Today-only model breakdown, shown under the Today tab only.
     var accent: Color = .purple
-    /// When non-empty, bars are stacked per provider instead of single-color.
-    var providerUsage: [ProviderUsageSummary] = []
+    var themeProvider: String?
     let period: UsagePeriod
     let onSelectPeriod: (UsagePeriod) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var stacked: Bool { !providerUsage.isEmpty }
+    private var series: [UsageChartSeries] { usage.series ?? [] }
+    private var stacksBars: Bool { themeProvider == nil && !series.isEmpty }
+    private var showsComposition: Bool { !series.isEmpty }
 
-    private var bars: [UsageBar] {
-        if stacked {
-            let series = providerUsage.map {
-                (provider: $0.provider, buckets: $0.usage.hourlyBuckets ?? [])
-            }
+    private var rawBars: [UsageBar] {
+        if stacksBars {
             return UsageSeries.stackedBars(from: series, period: period)
         }
         return UsageSeries.bars(from: usage.hourlyBuckets ?? [], period: period)
+    }
+
+    private var bars: [UsageBar] {
+        stacksBars ? UsageSeriesRanker.rankedBars(rawBars) : rawBars
+    }
+
+    private var compositionBars: [UsageBar] {
+        UsageSeriesRanker.rankedBars(UsageSeries.stackedBars(from: series, period: period))
+    }
+
+    private var legendItems: [UsageLegendItem] {
+        UsageSeriesRanker.legendItems(compositionBars)
     }
 
     private var total: UInt64 { UsageSeries.total(bars) }
@@ -37,11 +46,15 @@ struct UsageCard: View {
         VStack(alignment: .leading, spacing: OmxTokens.Spacing.md) {
             header
 
-            UsageBarChart(bars: bars, accent: accent, period: period, stacked: stacked)
+            UsageBarChart(
+                bars: bars,
+                accent: accent,
+                themeProvider: themeProvider,
+                period: period,
+                stacked: stacksBars
+            )
                 .frame(height: 96)
                 .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: period)
-
-            footer
         }
         .padding(OmxTokens.Spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -65,23 +78,12 @@ struct UsageCard: View {
                 Spacer()
                 PeriodToggle(period: period, onSelect: onSelectPeriod)
             }
-            if stacked {
-                ProviderLegend(providers: providerUsage.map(\.provider))
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var footer: some View {
-        // model_breakdown is today-scoped data — only honest under Today.
-        // 7d/30d intentionally have no footer line; the bars and hover carry it.
-        if period == .today {
-            if usage.modelBreakdown.isEmpty {
-                Text("No model usage today")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else {
-                ModelLegend(models: usage.modelBreakdown, accent: accent)
+            if showsComposition {
+                UsageLegend(
+                    items: legendItems,
+                    showsPercent: !stacksBars,
+                    themeProvider: themeProvider
+                )
             }
         }
     }
@@ -136,10 +138,11 @@ private struct PeriodToggle: View {
 
 /// Stacked usage bars via Swift Charts. Today = 24 hourly bars; 7d/30d = one
 /// bar per day. The x-axis only labels the first and last bucket; hovering a
-/// bar reveals its time and per-provider breakdown.
+/// bar reveals its time and per-series breakdown.
 private struct UsageBarChart: View {
     let bars: [UsageBar]
     let accent: Color
+    let themeProvider: String?
     let period: UsagePeriod
     let stacked: Bool
 
@@ -196,7 +199,7 @@ private struct UsageBarChart: View {
                             y: .value("Tokens", segment.tokens),
                             width: barWidth
                         )
-                        .foregroundStyle(ProviderStyle.color(segment.provider))
+                        .foregroundStyle(UsageSeriesStyle.color(segment, themeProvider: themeProvider))
                         .cornerRadius(2)
                     }
                 } else {
@@ -205,7 +208,7 @@ private struct UsageBarChart: View {
                         y: .value("Tokens", bar.tokens),
                         width: barWidth
                     )
-                    .foregroundStyle(accent.opacity(bar.isCurrent ? 1 : 0.7))
+                    .foregroundStyle(accent.opacity(isHighlighted(bar) ? 1 : 0.7))
                     .cornerRadius(2)
                 }
             }
@@ -222,7 +225,12 @@ private struct UsageBarChart: View {
                         spacing: 2,
                         overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))
                     ) {
-                        HoverTooltip(bar: bar, period: period, stacked: stacked)
+                        HoverTooltip(
+                            bar: bar,
+                            themeProvider: themeProvider,
+                            period: period,
+                            stacked: stacked
+                        )
                     }
             }
         }
@@ -255,11 +263,19 @@ private struct UsageBarChart: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 8))
     }
+
+    private func isHighlighted(_ bar: UsageBar) -> Bool {
+        if let selectedId {
+            return bar.id == selectedId
+        }
+        return bar.isCurrent
+    }
 }
 
-/// Floating readout for the hovered bar: its time and per-provider tokens.
+/// Floating readout for the hovered bar: its time and per-series tokens.
 private struct HoverTooltip: View {
     let bar: UsageBar
+    let themeProvider: String?
     let period: UsagePeriod
     let stacked: Bool
 
@@ -271,9 +287,9 @@ private struct HoverTooltip: View {
                 ForEach(bar.segments.filter { $0.tokens > 0 }) { segment in
                     HStack(spacing: 4) {
                         Circle()
-                            .fill(ProviderStyle.color(segment.provider))
+                            .fill(UsageSeriesStyle.color(segment, themeProvider: themeProvider))
                             .frame(width: 6, height: 6)
-                        Text("\(segment.provider.capitalized) \(tokenText(segment.tokens))")
+                        Text("\(segment.label) \(tokenText(segment.tokens))")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -304,60 +320,175 @@ private struct HoverTooltip: View {
     }
 }
 
-/// Provider color key shown above the stacked Overview chart.
-private struct ProviderLegend: View {
-    let providers: [String]
+/// Color key shown above a stacked chart.
+private struct UsageLegend: View {
+    let items: [UsageLegendItem]
+    let showsPercent: Bool
+    let themeProvider: String?
 
     var body: some View {
         HStack(spacing: 10) {
-            ForEach(providers, id: \.self) { provider in
+            ForEach(items) { item in
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(ProviderStyle.color(provider))
+                        .fill(UsageSeriesStyle.color(item.segment, themeProvider: themeProvider))
                         .frame(width: 6, height: 6)
-                    Text(provider.capitalized)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-    }
-}
-
-/// Compact color-keyed legend for today's model mix.
-private struct ModelLegend: View {
-    let models: [UsageModelBreakdown]
-    let accent: Color
-
-    var body: some View {
-        HStack(spacing: 10) {
-            ForEach(Array(models.prefix(4).enumerated()), id: \.offset) { index, model in
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(color(for: model.model, index: index))
-                        .frame(width: 6, height: 6)
-                    Text(shortModel(model.model))
+                    Text(label(for: item))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
                 }
             }
             Spacer(minLength: 0)
         }
     }
 
-    private func shortModel(_ model: String) -> String {
-        model.replacingOccurrences(of: "claude-", with: "")
-            .replacingOccurrences(of: "gpt-", with: "g")
-            .replacingOccurrences(of: "gemini-", with: "gm-")
+    private func label(for item: UsageLegendItem) -> String {
+        if showsPercent {
+            return "\(item.segment.label) \(percentText(item.share))"
+        }
+        return item.segment.label
     }
 
-    private func color(for model: String, index: Int) -> Color {
-        let lower = model.lowercased()
-        if lower.contains("claude") { return .orange }
-        if lower.contains("gemini") { return .blue }
-        if lower.contains("gpt") || lower.contains("codex") { return .green }
-        return [.purple, .pink, .teal, .indigo][index % 4]
+    private func percentText(_ share: Double) -> String {
+        if share <= 0 { return "0%" }
+        if share >= 0.995 { return "100%" }
+        if share >= 0.10 { return "\(Int((share * 100).rounded()))%" }
+        if share < 0.001 { return "<0.1%" }
+        return String(format: "%.1f%%", share * 100)
+    }
+}
+
+private struct UsageLegendItem: Identifiable {
+    let segment: UsageSegment
+    let tokens: UInt64
+    let totalTokens: UInt64
+
+    var id: String { segment.id }
+    var share: Double {
+        guard totalTokens > 0 else { return 0 }
+        return Double(tokens) / Double(totalTokens)
+    }
+}
+
+private enum UsageSeriesRanker {
+    private static let maxVisibleSegments = 5
+    private static let otherKey = "__other__"
+
+    static func rankedBars(_ bars: [UsageBar]) -> [UsageBar] {
+        let ranked = rankedSegmentIds(bars)
+        let visible = Set(ranked.prefix(maxVisibleSegments).map(\.id))
+        let rankById = Dictionary(uniqueKeysWithValues: ranked.enumerated().map { index, entry in
+            (entry.id, index)
+        })
+        let hasOther = ranked.count > maxVisibleSegments
+
+        return bars.map { bar in
+            var otherTokens: UInt64 = 0
+            var segments = bar.segments.compactMap { segment -> UsageSegment? in
+                if visible.contains(segment.id) {
+                    return UsageSegment(
+                        kind: segment.kind,
+                        key: segment.key,
+                        label: segment.label,
+                        tokens: segment.tokens,
+                        rank: rankById[segment.id] ?? 0
+                    )
+                }
+                otherTokens += segment.tokens
+                return nil
+            }
+            if hasOther {
+                segments.append(UsageSegment(
+                    kind: "other",
+                    key: otherKey,
+                    label: "Other",
+                    tokens: otherTokens,
+                    rank: maxVisibleSegments
+                ))
+            }
+            return UsageBar(
+                id: bar.id,
+                label: bar.label,
+                fullLabel: bar.fullLabel,
+                tokens: bar.tokens,
+                isCurrent: bar.isCurrent,
+                segments: segments
+            )
+        }
+    }
+
+    static func legendItems(_ bars: [UsageBar]) -> [UsageLegendItem] {
+        var totals: [String: (segment: UsageSegment, tokens: UInt64)] = [:]
+        for segment in bars.flatMap(\.segments) {
+            let current = totals[segment.id]?.tokens ?? 0
+            totals[segment.id] = (segment, current + segment.tokens)
+        }
+        let totalTokens = totals.values.reduce(UInt64(0)) { $0 + $1.tokens }
+        return totals.values
+            .filter { $0.tokens > 0 }
+            .sorted {
+                if $0.segment.rank == $1.segment.rank {
+                    return $0.segment.label < $1.segment.label
+                }
+                return $0.segment.rank < $1.segment.rank
+            }
+            .map { UsageLegendItem(segment: $0.segment, tokens: $0.tokens, totalTokens: totalTokens) }
+    }
+
+    private static func rankedSegmentIds(_ bars: [UsageBar]) -> [(id: String, label: String)] {
+        var totals: [String: (label: String, tokens: UInt64)] = [:]
+        for segment in bars.flatMap(\.segments) {
+            let current = totals[segment.id]?.tokens ?? 0
+            totals[segment.id] = (segment.label, current + segment.tokens)
+        }
+        return totals
+            .filter { $0.value.tokens > 0 }
+            .sorted {
+                if $0.value.tokens == $1.value.tokens {
+                    return $0.value.label < $1.value.label
+                }
+                return $0.value.tokens > $1.value.tokens
+            }
+            .map { (id: $0.key, label: $0.value.label) }
+    }
+}
+
+private enum UsageSeriesStyle {
+    static func color(_ segment: UsageSegment, themeProvider: String?) -> Color {
+        if segment.kind == "provider" {
+            return ProviderStyle.color(segment.key)
+        }
+        return derivedColor(base: ProviderStyle.hsb(themeProvider), rank: segment.rank)
+    }
+
+    private static func derivedColor(base: ProviderStyle.HSB, rank: Int) -> Color {
+        if rank == 0 {
+            return Color(hue: base.hue, saturation: base.saturation, brightness: base.brightness)
+        }
+        if rank >= 5 {
+            return Color(
+                hue: base.hue,
+                saturation: max(0.18, base.saturation * 0.28),
+                brightness: min(0.88, max(0.42, base.brightness * 0.92))
+            )
+        }
+        let variants: [(hue: Double, saturation: Double, brightness: Double)] = [
+            (0.060, 0.72, 1.24),
+            (-0.070, 0.66, 0.74),
+            (0.120, 0.58, 1.36),
+            (-0.120, 0.52, 0.62),
+        ]
+        let variant = variants[(rank - 1) % variants.count]
+        let hue = normalizedHue(base.hue + variant.hue)
+        let saturation = min(0.95, max(0.30, base.saturation * variant.saturation))
+        let brightness = min(0.96, max(0.36, base.brightness * variant.brightness))
+        return Color(hue: hue, saturation: saturation, brightness: brightness)
+    }
+
+    private static func normalizedHue(_ hue: Double) -> Double {
+        let value = hue.truncatingRemainder(dividingBy: 1)
+        return value < 0 ? value + 1 : value
     }
 }

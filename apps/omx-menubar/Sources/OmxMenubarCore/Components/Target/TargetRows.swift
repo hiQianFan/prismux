@@ -27,6 +27,7 @@ struct AccountTargetRow: View {
     let requestResetConfirmation: () -> Void
     let cancelResetConfirmation: () -> Void
     let resetAction: () -> Void
+    let refreshAction: () -> Void
     let requestDeleteConfirmation: () -> Void
     let cancelDeleteConfirmation: () -> Void
     let deleteAction: () -> Void
@@ -56,6 +57,7 @@ struct AccountTargetRow: View {
                     confirmingDelete: confirmingDelete,
                     confirmingReset: confirmingReset,
                     disabledReason: account.actions?.disabledReason,
+                    showRefreshAction: true,
                     showResetAction: isCodex,
                     resetCreditCount: resetCreditCount,
                     resetEnabled: resetEnabled,
@@ -63,6 +65,7 @@ struct AccountTargetRow: View {
                     useLabel: account.actions?.primaryLabel ?? "Use this account",
                     accent: accent,
                     switchAction: switchAction,
+                    refreshAction: refreshAction,
                     requestResetConfirmation: requestResetConfirmation,
                     cancelResetConfirmation: cancelResetConfirmation,
                     resetPopover: {
@@ -184,6 +187,7 @@ struct ProfileTargetRow: View {
                     confirmingDelete: confirmingDelete,
                     confirmingReset: false,
                     disabledReason: profile.actions?.disabledReason,
+                    showRefreshAction: false,
                     showResetAction: false,
                     resetCreditCount: 0,
                     resetEnabled: false,
@@ -191,6 +195,7 @@ struct ProfileTargetRow: View {
                     useLabel: profile.actions?.primaryLabel ?? "Use this profile",
                     accent: .accentColor,
                     switchAction: switchAction,
+                    refreshAction: {},
                     requestResetConfirmation: {},
                     cancelResetConfirmation: {},
                     resetPopover: {
@@ -332,6 +337,7 @@ private struct TargetActionCluster<ResetPopover: View, DeletePopover: View>: Vie
     let confirmingDelete: Bool
     let confirmingReset: Bool
     let disabledReason: String?
+    let showRefreshAction: Bool
     let showResetAction: Bool
     let resetCreditCount: UInt32
     let resetEnabled: Bool
@@ -339,6 +345,7 @@ private struct TargetActionCluster<ResetPopover: View, DeletePopover: View>: Vie
     let useLabel: String
     let accent: Color
     let switchAction: () -> Void
+    let refreshAction: () -> Void
     let requestResetConfirmation: () -> Void
     let cancelResetConfirmation: () -> Void
     let resetPopover: () -> ResetPopover
@@ -390,6 +397,17 @@ private struct TargetActionCluster<ResetPopover: View, DeletePopover: View>: Vie
 
     private var overflowMenu: some View {
         Menu {
+            if showRefreshAction {
+                Button {
+                    refreshAction()
+                } label: {
+                    Label("Refresh usage", systemImage: "arrow.clockwise")
+                }
+                .disabled(refreshing || switching || deleting || resetting)
+
+                Divider()
+            }
+
             if showResetAction {
                 Button {
                     requestResetConfirmation()
@@ -409,7 +427,7 @@ private struct TargetActionCluster<ResetPopover: View, DeletePopover: View>: Vie
             }
             .disabled(!canRemove || deleting || refreshing || resetting)
         } label: {
-            Image(systemName: (deleting || resetting) ? "hourglass" : "ellipsis")
+            Image(systemName: (deleting || resetting || refreshing) ? "hourglass" : "ellipsis")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 24, height: 24)

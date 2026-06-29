@@ -9,6 +9,7 @@ public final class AppStore: ObservableObject {
     @Published private(set) var resettingLocalId: String?
     @Published private(set) var confirmingResetTargetId: String?
     @Published private(set) var refreshingProvider: String?
+    @Published private(set) var refreshingTargetId: String?
     @Published private(set) var operationNotice: OperationNotice?
     @Published var selectedProvider: String?
     /// Usage-card period selector. Shared across the overview and provider
@@ -47,7 +48,7 @@ public final class AppStore: ObservableObject {
     }
 
     func refresh(provider: String? = nil, kind: String) async {
-        guard refreshingProvider == nil else { return }
+        guard !refreshInProgress else { return }
         guard let target = provider else {
             await refreshAll(providers: currentProviders, kind: kind)
             return
@@ -57,21 +58,37 @@ public final class AppStore: ObservableObject {
             return
         }
         refreshingProvider = target
-        await request(.refresh(provider: target, kind: kind))
+        await request(.refresh(provider: target, kind: kind, targetKind: nil, localId: nil))
         refreshingProvider = nil
     }
 
     func refreshAll(providers: [String], kind: String) async {
-        guard refreshingProvider == nil else { return }
+        guard !refreshInProgress else { return }
         if providers.isEmpty {
             await load()
             return
         }
         for provider in providers {
             refreshingProvider = provider
-            await request(.refresh(provider: provider, kind: kind))
+            await request(.refresh(provider: provider, kind: kind, targetKind: nil, localId: nil))
         }
         refreshingProvider = nil
+    }
+
+    func refreshAccount(_ account: MenubarAccount, kind: String = "interactive") async {
+        guard !refreshInProgress else { return }
+        refreshingTargetId = account.id
+        await request(.refresh(
+            provider: account.provider,
+            kind: kind,
+            targetKind: account.targetKind,
+            localId: account.localId
+        ))
+        refreshingTargetId = nil
+    }
+
+    private var refreshInProgress: Bool {
+        refreshingProvider != nil || refreshingTargetId != nil
     }
 
     func switchAccount(_ account: MenubarAccount) async {

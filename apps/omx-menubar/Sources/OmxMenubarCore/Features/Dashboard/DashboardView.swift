@@ -79,7 +79,8 @@ struct DashboardView: View {
 
 
     private func header(_ report: DashboardReport, stale: Bool) -> some View {
-        HStack(alignment: .center, spacing: 12) {
+        let isRefreshing = store.refreshingProvider != nil || store.refreshingTargetId != nil
+        return HStack(alignment: .center, spacing: 12) {
             headerIcon(provider: report.active?.provider ?? providerNames(report).first ?? "openmux", stale: stale)
 
             VStack(alignment: .leading, spacing: 4) {
@@ -104,7 +105,7 @@ struct DashboardView: View {
                         }
                     }
                 } label: {
-                    if store.refreshingProvider != nil {
+                    if isRefreshing {
                         ProgressView()
                             .controlSize(.small)
                             .frame(width: 16, height: 16)
@@ -113,7 +114,7 @@ struct DashboardView: View {
                     }
                 }
                 .buttonStyle(IconFeedbackButtonStyle())
-                .disabled(store.refreshingProvider != nil)
+                .disabled(isRefreshing)
                 .help("Refresh status")
                 .accessibilityLabel("Refresh status")
 
@@ -255,7 +256,7 @@ struct DashboardView: View {
                     switching: store.switchingLocalId == account.id,
                     deleting: store.deletingLocalId == account.id,
                     resetting: store.resettingLocalId == account.id,
-                    refreshing: store.refreshingProvider != nil,
+                    refreshing: store.refreshingProvider != nil || store.refreshingTargetId == account.id,
                     confirmingDelete: store.confirmingDeleteTargetId == account.id,
                     confirmingReset: store.confirmingResetTargetId == account.id,
                     primary: quotaWindow(account, preferred: .short),
@@ -265,6 +266,7 @@ struct DashboardView: View {
                     requestResetConfirmation: { store.confirmReset(account.id) },
                     cancelResetConfirmation: { store.cancelResetConfirmation() },
                     resetAction: { Task { await store.resetAccountUsageLimit(account) } },
+                    refreshAction: { Task { await store.refreshAccount(account) } },
                     requestDeleteConfirmation: { store.confirmDelete(account.id) },
                     cancelDeleteConfirmation: { store.cancelDeleteConfirmation() },
                     deleteAction: { Task { await store.deleteAccount(account) } }

@@ -25,7 +25,20 @@ pub trait PlatformPlugin {
     fn current(&self) -> Result<Option<AccountStatus>>;
     fn list_accounts(&self) -> Result<Vec<AccountStatus>>;
     fn refresh_accounts(&self) -> Result<Vec<AccountStatus>> {
-        self.list_accounts()
+        let accounts = self.list_accounts()?;
+        accounts
+            .iter()
+            .map(|status| self.refresh_account(&status.account.local_id))
+            .collect()
+    }
+    fn refresh_account(&self, selector: &str) -> Result<AccountStatus> {
+        self.list_accounts()?
+            .into_iter()
+            .find(|status| status.account.local_id == selector)
+            .ok_or_else(|| OpenMuxError::AccountNotFound {
+                platform: self.id().to_string(),
+                account: selector.to_string(),
+            })
     }
     fn list_configs(&self) -> Result<Vec<ConfigProfile>> {
         Ok(Vec::new())

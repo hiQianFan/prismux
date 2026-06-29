@@ -216,6 +216,28 @@ pub fn menubar_refresh(
         .map_err(|_| OpenMuxError::Message("menubar operation already in progress".to_string()))?;
     let now = unix_now();
     let plugin = find_plugin(plugins, &command.provider)?;
+    let refresh_target = match command.local_id.as_ref() {
+        Some(local_id) => {
+            let catalog = target_catalog(plugin)?;
+            let target = resolve_menubar_target(
+                plugin.id(),
+                &catalog,
+                &MenubarSwitchCommand {
+                    provider: command.provider.clone(),
+                    local_id: local_id.clone(),
+                    target_kind: command.target_kind,
+                },
+            )?;
+            if target.kind != TargetKind::Account {
+                return Err(OpenMuxError::Message(format!(
+                    "`{local_id}` is not an account target for `{}`",
+                    command.provider
+                )));
+            }
+            Some(target)
+        }
+        None => None,
+    };
     let generation = match begin_refresh_request(&command.provider, command.request_generation) {
         RefreshAdmission::Accepted(generation) => generation,
         RefreshAdmission::Skipped { generation, reason } => {
@@ -236,6 +258,7 @@ pub fn menubar_refresh(
                 state_schema_version: STATE_SCHEMA_VERSION,
                 generated_at_unix: unix_now(),
                 provider: command.provider,
+                requested_local_id: command.local_id,
                 kind: command.kind,
                 generation,
                 operation,
@@ -253,17 +276,29 @@ pub fn menubar_refresh(
     } else {
         MenubarOperationStatus::Skipped
     };
-    let mut operation_message = skipped_reason
-        .as_ref()
-        .map(|reason| format!("Refresh skipped: {reason}."))
-        .unwrap_or_else(|| "Provider refreshed.".to_string());
+    let target_label = command.local_id.as_deref();
+    let mut operation_message = skipped_reason.as_ref().map_or_else(
+        || match target_label {
+            Some(_) => "Account usage refreshed.".to_string(),
+            None => "Provider refreshed.".to_string(),
+        },
+        |reason| format!("Refresh skipped: {reason}."),
+    );
     let mut operation_diagnostics = Vec::new();
     if refreshed {
-        let result = plugin.refresh_accounts();
+        let result = match refresh_target.as_ref() {
+            Some(target) => plugin
+                .refresh_account(&target.target_id)
+                .map(|status| vec![status]),
+            None => plugin.refresh_accounts(),
+        };
         record_refresh_result(&command.provider, generation, now, result.is_ok());
         if let Err(err) = result {
             operation_status = MenubarOperationStatus::Failed;
-            operation_message = "Refresh failed; showing last known data.".to_string();
+            operation_message = match target_label {
+                Some(_) => "Account usage refresh failed; showing last known data.".to_string(),
+                None => "Refresh failed; showing last known data.".to_string(),
+            };
             operation_diagnostics.push(MenubarDiagnostic {
                 code: "refresh_failed".to_string(),
                 message: sanitize_diagnostic(&err.to_string()),
@@ -290,6 +325,7 @@ pub fn menubar_refresh(
         state_schema_version: STATE_SCHEMA_VERSION,
         generated_at_unix: unix_now(),
         provider: command.provider,
+        requested_local_id: command.local_id,
         kind: command.kind,
         generation,
         operation,

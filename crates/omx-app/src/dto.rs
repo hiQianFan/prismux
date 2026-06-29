@@ -36,6 +36,10 @@ pub struct MenubarRefreshCommand {
     pub provider: String,
     pub kind: RefreshKind,
     #[serde(default)]
+    pub local_id: Option<String>,
+    #[serde(default)]
+    pub target_kind: Option<MenubarTargetKind>,
+    #[serde(default)]
     pub request_generation: Option<u64>,
 }
 
@@ -106,6 +110,8 @@ pub struct MenubarRefreshReport {
     pub state_schema_version: u32,
     pub generated_at_unix: u64,
     pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_local_id: Option<String>,
     pub kind: RefreshKind,
     pub generation: u64,
     pub operation: MenubarOperationResult,

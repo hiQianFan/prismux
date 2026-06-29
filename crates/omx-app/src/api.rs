@@ -193,6 +193,8 @@ mod tests {
             MenubarRefreshCommand {
                 provider: "codex".to_string(),
                 kind: RefreshKind::Interactive,
+                local_id: None,
+                target_kind: None,
                 request_generation: None,
             },
             None,
@@ -218,6 +220,8 @@ mod tests {
             MenubarRefreshCommand {
                 provider: "codex".to_string(),
                 kind: RefreshKind::Background,
+                local_id: None,
+                target_kind: None,
                 request_generation: None,
             },
             None,
@@ -228,6 +232,8 @@ mod tests {
             MenubarRefreshCommand {
                 provider: "codex".to_string(),
                 kind: RefreshKind::Background,
+                local_id: None,
+                target_kind: None,
                 request_generation: None,
             },
             None,
@@ -237,6 +243,69 @@ mod tests {
         assert!(first.refreshed);
         assert!(!second.refreshed);
         assert_eq!(second.skipped_reason.as_deref(), Some("fresh_enough"));
+        assert_eq!(refresh_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn provider_refresh_calls_single_account_refresh_for_each_account() {
+        let _guard = TEST_OPERATION_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        reset_refresh_state();
+        let refresh_count = Arc::new(AtomicUsize::new(0));
+        let plugins = vec![Box::new(
+            FakePlugin::new(vec![account(1, true, None), account(2, false, None)])
+                .with_refresh_count(refresh_count.clone()),
+        ) as Box<dyn PlatformPlugin>];
+
+        let report = menubar_refresh(
+            &plugins,
+            MenubarRefreshCommand {
+                provider: "codex".to_string(),
+                kind: RefreshKind::Interactive,
+                local_id: None,
+                target_kind: None,
+                request_generation: None,
+            },
+            None,
+        )
+        .unwrap();
+
+        assert!(report.refreshed);
+        assert_eq!(refresh_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn account_refresh_calls_single_account_refresh_once() {
+        let _guard = TEST_OPERATION_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        reset_refresh_state();
+        let refresh_count = Arc::new(AtomicUsize::new(0));
+        let plugins = vec![Box::new(
+            FakePlugin::new(vec![account(1, true, None), account(2, false, None)])
+                .with_refresh_count(refresh_count.clone()),
+        ) as Box<dyn PlatformPlugin>];
+
+        let report = menubar_refresh(
+            &plugins,
+            MenubarRefreshCommand {
+                provider: "codex".to_string(),
+                kind: RefreshKind::Interactive,
+                local_id: Some("codex-account-2".to_string()),
+                target_kind: Some(MenubarTargetKind::Account),
+                request_generation: None,
+            },
+            None,
+        )
+        .unwrap();
+
+        assert!(report.refreshed);
+        assert_eq!(
+            report.requested_local_id.as_deref(),
+            Some("codex-account-2")
+        );
+        assert_eq!(report.operation.message, "Account usage refreshed.");
         assert_eq!(refresh_count.load(Ordering::SeqCst), 1);
     }
 
@@ -256,6 +325,8 @@ mod tests {
             MenubarRefreshCommand {
                 provider: "codex".to_string(),
                 kind: RefreshKind::Interactive,
+                local_id: None,
+                target_kind: None,
                 request_generation: Some(10),
             },
             None,
@@ -266,6 +337,8 @@ mod tests {
             MenubarRefreshCommand {
                 provider: "codex".to_string(),
                 kind: RefreshKind::Interactive,
+                local_id: None,
+                target_kind: None,
                 request_generation: Some(9),
             },
             None,
@@ -299,6 +372,8 @@ mod tests {
             MenubarRefreshCommand {
                 provider: "codex".to_string(),
                 kind: RefreshKind::Background,
+                local_id: None,
+                target_kind: None,
                 request_generation: None,
             },
             None,
@@ -309,6 +384,8 @@ mod tests {
             MenubarRefreshCommand {
                 provider: "codex".to_string(),
                 kind: RefreshKind::Background,
+                local_id: None,
+                target_kind: None,
                 request_generation: None,
             },
             None,
@@ -458,6 +535,8 @@ mod tests {
             MenubarRefreshCommand {
                 provider: "codex".to_string(),
                 kind: RefreshKind::Interactive,
+                local_id: None,
+                target_kind: None,
                 request_generation: None,
             },
             None,
@@ -663,14 +742,20 @@ mod tests {
             Ok(self.accounts.clone())
         }
 
-        fn refresh_accounts(&self) -> Result<Vec<AccountStatus>> {
+        fn refresh_account(&self, selector: &str) -> Result<AccountStatus> {
             if let Some(count) = self.refresh_count.as_ref() {
                 count.fetch_add(1, Ordering::SeqCst);
             }
             if let Some(message) = self.refresh_error.as_ref() {
                 return Err(OpenMuxError::Message(message.clone()));
             }
-            self.list_accounts()
+            self.list_accounts()?
+                .into_iter()
+                .find(|status| status.account.local_id == selector)
+                .ok_or_else(|| OpenMuxError::AccountNotFound {
+                    platform: self.provider.to_string(),
+                    account: selector.to_string(),
+                })
         }
 
         fn capabilities(&self) -> PlatformCapabilities {

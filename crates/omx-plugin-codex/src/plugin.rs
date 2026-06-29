@@ -1365,21 +1365,16 @@ impl PlatformPlugin for CodexPlugin {
             .collect())
     }
 
-    fn refresh_accounts(&self) -> Result<Vec<AccountStatus>> {
+    fn refresh_account(&self, selector: &str) -> Result<AccountStatus> {
         let store = self.state_store()?;
         let active = store.active_account(self.id())?;
         let active_id = active.as_ref().map(|account| account.local_id.as_str());
-        Ok(store
-            .list_accounts(self.id())?
-            .iter()
-            .map(|account| {
-                self.account_status_with_usage(
-                    account,
-                    active_id,
-                    self.usage_from_snapshot(account),
-                )
-            })
-            .collect())
+        let account = store
+            .account_by_selector(self.id(), selector)?
+            .ok_or_else(|| {
+                OpenMuxError::Message(format!("`{selector}` did not match any Codex account"))
+            })?;
+        Ok(self.account_status_with_usage(&account, active_id, self.usage_from_snapshot(&account)))
     }
 
     fn list_configs(&self) -> Result<Vec<ConfigProfile>> {

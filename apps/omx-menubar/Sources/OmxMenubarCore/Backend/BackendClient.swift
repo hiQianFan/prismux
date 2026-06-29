@@ -26,7 +26,7 @@ enum Payload: Encodable, Sendable {
     case updateSettings(SettingsView)
     case aboutView
     case supportReport(includeDebugSummary: Bool, recentDiagnostics: [String])
-    case refresh(provider: String, kind: String)
+    case refresh(provider: String, kind: String, targetKind: String?, localId: String?)
     case switchTarget(provider: String, targetKind: String, localId: String)
     case removeTarget(provider: String, targetKind: String, localId: String)
     case consumeResetCredit(provider: String, targetKind: String, localId: String, idempotencyKey: String)
@@ -46,9 +46,11 @@ enum Payload: Encodable, Sendable {
         case .supportReport(let includeDebugSummary, let recentDiagnostics):
             try container.encode(includeDebugSummary, forKey: .includeDebugSummary)
             try container.encode(recentDiagnostics, forKey: .recentDiagnostics)
-        case .refresh(let provider, let kind):
+        case .refresh(let provider, let kind, let targetKind, let localId):
             try container.encode(provider, forKey: .provider)
             try container.encode(kind, forKey: .kind)
+            try container.encodeIfPresent(targetKind, forKey: .targetKind)
+            try container.encodeIfPresent(localId, forKey: .localId)
         case .switchTarget(let provider, let targetKind, let localId),
              .removeTarget(let provider, let targetKind, let localId):
             try container.encode(provider, forKey: .provider)

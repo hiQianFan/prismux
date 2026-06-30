@@ -98,6 +98,7 @@ public struct QuotaHealthRollup: Decodable, Sendable {
     public let exhaustedCount: UInt32
     public let worstTarget: ActiveTarget?
     public let bestAlternative: TargetRecommendation?
+    public let windowAverages: WindowAverages?
     public let status: String
     public let statusTone: String
 
@@ -108,8 +109,22 @@ public struct QuotaHealthRollup: Decodable, Sendable {
         case exhaustedCount = "exhausted_count"
         case worstTarget = "worst_target"
         case bestAlternative = "best_alternative"
+        case windowAverages = "window_averages"
         case status
         case statusTone = "status_tone"
+    }
+}
+
+/// Per-window-class average remaining (x100). nil = that class had no reporting
+/// account. The Overview renders 5h / 7d bars from these, identical to the
+/// account card's QuotaLine.
+public struct WindowAverages: Decodable, Sendable {
+    public let shortRemainingPercentX100: UInt32?
+    public let weeklyRemainingPercentX100: UInt32?
+
+    enum CodingKeys: String, CodingKey {
+        case shortRemainingPercentX100 = "short_remaining_percent_x100"
+        case weeklyRemainingPercentX100 = "weekly_remaining_percent_x100"
     }
 }
 
@@ -141,6 +156,8 @@ public struct TargetRecommendation: Decodable, Sendable {
 
 public struct UsageHeadline: Decodable, Sendable {
     public let totalTokens: UInt64
+    public let inputTokens: UInt64?
+    public let outputTokens: UInt64?
     public let estimatedCostUsd: String?
     public let costStatus: String
     public let topClient: String?
@@ -149,6 +166,8 @@ public struct UsageHeadline: Decodable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case totalTokens = "total_tokens"
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
         case estimatedCostUsd = "estimated_cost_usd"
         case costStatus = "cost_status"
         case topClient = "top_client"

@@ -1,14 +1,5 @@
 import SwiftUI
 
-// MARK: - Shared layout
-
-/// Shared column widths so every quota line (5h / 7d) aligns vertically across
-/// all account cards. This is the fix for the "七扭八歪" misalignment: one set
-/// of constants instead of ad-hoc per-row widths.
-private enum TargetLayout {
-    static let quotaLabelWidth: CGFloat = 30
-}
-
 // MARK: - Account row
 
 struct AccountTargetRow: View {
@@ -529,98 +520,6 @@ private struct AlignedMenuText: View {
                 .hidden()
             Text(title)
         }
-    }
-}
-
-// MARK: - Quota line
-
-/// One quota window, stacked: a text row (label · percent … full reset time)
-/// over a thin full-width progress bar. The bar color encodes *health* of the
-/// remaining quota (healthy → low → critical) rather than which window it is —
-/// the window is already named by the "5h"/"7d" label, so color is free to warn.
-/// Static tick marks at the warn/critical thresholds give the user a fixed
-/// reference for "how close am I to trouble".
-private struct QuotaLine: View {
-    let window: QuotaWindow?
-    let fallbackLabel: String
-
-    /// Below these *remaining* fractions the quota is getting tight. Apple's
-    /// battery/disk convention: comfortable → yellow → red.
-    private static let warnThreshold = 0.50
-    private static let criticalThreshold = 0.20
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
-                Text(label)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: TargetLayout.quotaLabelWidth, alignment: .leading)
-
-                Text(percentText)
-                    .font(.caption2.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(barColor)
-
-                Spacer(minLength: 8)
-
-                if let reset = window?.resetAtUnix {
-                    Text(fullDateTimeLabel(reset))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.12))
-                    Capsule()
-                        .fill(barColor)
-                        .frame(width: max(3, proxy.size.width * fraction))
-
-                    // Threshold ticks: neutral reference lines, not alarms.
-                    tick(at: Self.warnThreshold, width: proxy.size.width)
-                    tick(at: Self.criticalThreshold, width: proxy.size.width)
-                }
-            }
-            .frame(height: 5)
-        }
-        .help(helpText)
-        .accessibilityLabel(helpText)
-    }
-
-    private func tick(at value: Double, width: CGFloat) -> some View {
-        Rectangle()
-            .fill(Color.primary.opacity(0.3))
-            .frame(width: 1, height: 5)
-            .offset(x: width * value)
-    }
-
-    private var barColor: Color {
-        guard window?.remainingPercentX100 != nil else { return .secondary }
-        if fraction <= Self.criticalThreshold { return .red }
-        if fraction <= Self.warnThreshold { return .yellow }
-        return .green
-    }
-
-    private var label: String {
-        let raw = window?.label ?? fallbackLabel
-        return raw.lowercased().contains("week") ? "7d" : raw
-    }
-
-    private var fraction: Double {
-        guard let remaining = window?.remainingPercentX100 else { return 0 }
-        return max(0, min(1, Double(remaining) / 10_000.0))
-    }
-
-    private var percentText: String {
-        guard let remaining = window?.remainingPercentX100 else { return "--" }
-        return "\(Int(remaining) / 100)%"
-    }
-
-    private var helpText: String {
-        let reset = window?.resetAtUnix.map { "resets \(fullDateTimeLabel($0))" } ?? "no reset data"
-        return "\(label) \(percentText), \(reset)"
     }
 }
 

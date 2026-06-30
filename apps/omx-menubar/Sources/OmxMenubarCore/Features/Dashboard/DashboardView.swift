@@ -159,13 +159,15 @@ struct DashboardView: View {
         let providers = providerNames(report)
         let alerts = aggregatedDiagnostics(report)
         return VStack(alignment: .leading, spacing: 12) {
+            UsageStatsStrip(headline: report.aggregate.usageHeadline)
+
             Card(title: "Providers") {
                 if providers.isEmpty {
                     emptyState("No providers reported by backend.")
                 }
                 ForEach(providers, id: \.self) { provider in
                     if let aggregate = providerAggregate(provider, in: report) {
-                        ProviderSummaryRow(
+                        ProviderSummaryCard(
                             aggregate: aggregate,
                             activeLabel: overviewActiveLabel(provider: provider, aggregate: aggregate, report: report),
                             onTap: { store.selectedProvider = provider }
@@ -238,17 +240,15 @@ struct DashboardView: View {
         }
     }
 
+    /// Provider page header: just the token/cost strip. The per-account 5h/7d
+    /// quota bars live in the Accounts list right below, so a provider-average
+    /// summary card here would only echo them. (The Overview keeps that card —
+    /// there it's the only view of the provider.)
+    @ViewBuilder
     private func providerOverview(provider: String, accounts: [TargetAccount], profiles: [TargetProfile], active: TargetAccount?, activeProfile: TargetProfile?, usage: UsageSummary, report: DashboardReport) -> some View {
-        let aggregate = providerAggregate(provider, in: report)
-        let targetLabel = hidePersonalIdentifiers
-            ? activeTargetLabel(account: active, profile: activeProfile)
-            : (aggregate?.activeTarget?.displayLabel ?? activeTargetLabel(account: active, profile: activeProfile))
-        return ProviderOverviewCard(
-            provider: provider,
-            aggregate: aggregate,
-            activeLabel: targetLabel,
-            accent: providerColor(provider)
-        )
+        if let headline = providerAggregate(provider, in: report)?.usageHeadline {
+            UsageStatsStrip(headline: headline)
+        }
     }
 
     private func accountTargets(provider: String, accounts: [TargetAccount], report: DashboardReport) -> some View {

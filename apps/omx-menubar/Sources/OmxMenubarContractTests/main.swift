@@ -28,6 +28,8 @@ let additive = """
 {
   "schema_version": 1,
   "ok": true,
+  "data_stale": true,
+  "served_from_snapshot": true,
   "data": {
     "generated_at_unix": 1,
     "unknown_optional": "ignored",
@@ -160,6 +162,8 @@ let additive = """
 }
 """
 let additiveEnvelope = try decoder.decode(BackendEnvelope.self, from: Data(additive.utf8))
+assert(additiveEnvelope.dataStale == true)
+assert(additiveEnvelope.servedFromSnapshot == true)
 assert(additiveEnvelope.data?.dashboard?.usage.coverage.status == "empty")
 
 let resetCreditsAccounts = """

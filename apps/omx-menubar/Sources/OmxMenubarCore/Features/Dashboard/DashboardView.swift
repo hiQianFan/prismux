@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct DashboardView: View {
     @ObservedObject var store: AppStore
@@ -10,9 +11,23 @@ struct DashboardView: View {
     @AppStorage("dev.openmux.menubar.hidePersonalIdentifiers") private var hidePersonalIdentifiers = false
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var importProvider: String?
+    @State private var importName = ""
+    @State private var importContent = ""
+    @State private var importError: String?
+    @State private var cliReady = false
 
     var body: some View {
         content(report, stale: stale)
+            // Inline overlay inside the popover, NOT a .sheet: a sheet opens its
+            // own modal window, and dismissing the transient popover while it is
+            // up orphans the modal session and freezes all input on reopen.
+            .overlay {
+                if importProvider != nil {
+                    importProfileOverlay
+                }
+            }
+            .task { cliReady = CliToolStatus.detect().resolution == .ready }
     }
 
     private func content(_ report: DashboardReport, stale: Bool) -> some View {
@@ -48,7 +63,7 @@ struct DashboardView: View {
             carousel(pages: pages, selectedIndex: selectedIndex, report: report)
 
             Divider()
-            footer(providers: providers, selectedProvider: currentProvider)
+            footer(report: report, stale: stale)
         }
     }
 
@@ -253,8 +268,30 @@ struct DashboardView: View {
 
     private func accountTargets(provider: String, accounts: [TargetAccount], report: DashboardReport) -> some View {
         Card(title: "Accounts") {
-            if accounts.isEmpty {
-                emptyState("No managed accounts for \(provider.capitalized).")
+            // Onboarding always lives in the same top-right "+", empty or not.
+            Menu {
+                Button("Sign in…") { Task { await store.signIn(provider: provider) } }
+                Button("Use existing login") { Task { await store.useExistingLogin(provider: provider) } }
+            } label: {
+                Image(systemName: "plus")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(store.signingInProvider != nil || store.savingExistingLoginProvider != nil)
+        } content: {
+            if store.signingInProvider == provider {
+                signInProgress()
+            } else if accounts.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    emptyState("No \(provider.capitalized) accounts yet.")
+                    HStack(spacing: 8) {
+                        Button("Sign in…") { Task { await store.signIn(provider: provider) } }
+                            .buttonStyle(CompactCommandButtonStyle())
+                        Button("Use existing login") { Task { await store.useExistingLogin(provider: provider) } }
+                            .buttonStyle(CompactCommandButtonStyle())
+                    }
+                }
             }
 
             ForEach(accounts) { account in
@@ -283,10 +320,47 @@ struct DashboardView: View {
         }
     }
 
+    /// In-flight sign-in: a real, cancellable wait, not a dead spinner. The
+    /// backend kills the official-CLI child on Cancel or a 3-minute timeout.
+    private func signInProgress() -> some View {
+        HStack(spacing: 10) {
+            ProgressView().controlSize(.small)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Waiting for browser sign-in…")
+                    .font(.caption.weight(.medium))
+                Text("Finish in your browser, or cancel.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Cancel") { store.cancelSignIn() }
+                .buttonStyle(CompactCommandButtonStyle())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private func profileTargets(provider: String, profiles: [TargetProfile], report: DashboardReport) -> some View {
         Card(title: "Profiles") {
+            Button {
+                beginProfileImport(provider: provider)
+            } label: {
+                if store.importingProfileProvider == provider {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "plus")
+                }
+            }
+            .buttonStyle(.borderless)
+            .fixedSize()
+            .disabled(store.importingProfileProvider != nil)
+        } content: {
             if profiles.isEmpty {
-                emptyState("No profile targets reported for \(provider.capitalized).")
+                VStack(alignment: .leading, spacing: 8) {
+                    emptyState("No \(provider.capitalized) profiles yet.")
+                    Button("Import profile") { beginProfileImport(provider: provider) }
+                        .buttonStyle(CompactCommandButtonStyle())
+                        .disabled(store.importingProfileProvider != nil)
+                }
             }
 
             ForEach(profiles) { profile in
@@ -304,6 +378,9 @@ struct DashboardView: View {
                 )
             }
         }
+        .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil) { providers in
+            handleProfileFileDrop(providers, provider: provider)
+        }
     }
 
     private func diagnostics(provider: String, report: DashboardReport, accounts: [TargetAccount]) -> some View {
@@ -319,23 +396,52 @@ struct DashboardView: View {
         }
     }
 
-    private func footer(providers: [String], selectedProvider: String?) -> some View {
+    // Footer is a status strip, not the main action area: a one-line freshness
+    // string on the left, then low-frequency exits on the right. Settings
+    // already lives in the header gear, so it is not duplicated here.
+    private func footer(report: DashboardReport, stale: Bool) -> some View {
         HStack(spacing: 10) {
-            Text(selectedProvider.map { "\($0.capitalized) tools" } ?? "OpenMux tools")
+            Text(footerStatus(report, stale: stale))
                 .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Button("Manage in CLI") {
-                copyCliHelpAndOpenTerminal(provider: selectedProvider ?? providers.first ?? "codex")
-            }
-            .buttonStyle(CompactCommandButtonStyle())
+                .foregroundStyle(stale ? .orange : .secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
 
             Spacer()
+
+            Menu {
+                Button("About OpenMux") { onOpenSettings(.about) }
+                Button("Copy omx command") { copyOmxCommand() }
+                Button("Open Releases") {
+                    if let url = URL(string: "https://github.com/hiQianFan/openmux/releases") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("More")
+            .accessibilityLabel("More options")
 
             Button("Quit") { NSApplication.shared.terminate(nil) }
                 .buttonStyle(CompactCommandButtonStyle())
         }
         .padding()
+    }
+
+    private func footerStatus(_ report: DashboardReport, stale: Bool) -> String {
+        let freshness = headerSubtitle(report, stale: stale)
+        return cliReady ? "\(freshness) · CLI ready" : "\(freshness) · CLI not configured"
+    }
+
+    // Copies the bundled-helper symlink command rather than launching a
+    // terminal: copy-and-paste keeps focus and avoids spawning Terminal.app.
+    private func copyOmxCommand() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(CliToolStatus.detect().manualCommand, forType: .string)
     }
 
     @ViewBuilder
@@ -344,6 +450,167 @@ struct DashboardView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func dismissImport() {
+        importProvider = nil
+        importError = nil
+    }
+
+    @ViewBuilder
+    private var importProfileOverlay: some View {
+        if let provider = importProvider {
+            ZStack {
+                // Scrim: tapping outside the panel cancels, like a real dialog.
+                Color.black.opacity(0.35)
+                    .ignoresSafeArea()
+                    .onTapGesture { dismissImport() }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "square.and.arrow.down")
+                            .foregroundStyle(providerColor(provider))
+                        Text("Import \(provider.capitalized) Profile")
+                            .font(.headline)
+                        Spacer()
+                    }
+
+                    Text("Paste a relay or gateway config, choose a file, or drop one onto the Profiles card.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    TextField("Name (optional)", text: $importName)
+                        .textFieldStyle(.roundedBorder)
+
+                    TextEditor(text: $importContent)
+                        .font(.system(.caption, design: .monospaced))
+                        .scrollContentBackground(.hidden)
+                        .padding(6)
+                        .frame(minHeight: 150)
+                        .background(
+                            Color.primary.opacity(0.04),
+                            in: RoundedRectangle(cornerRadius: 8)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                        )
+
+                    if let importError {
+                        Label(importError, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+
+                    HStack(spacing: 8) {
+                        Button {
+                            chooseProfileImportFile()
+                        } label: {
+                            Label("Choose File", systemImage: "folder")
+                        }
+                        .buttonStyle(CompactCommandButtonStyle())
+
+                        Spacer()
+
+                        Button("Cancel") { dismissImport() }
+                            .buttonStyle(CompactCommandButtonStyle())
+                            .keyboardShortcut(.cancelAction)
+
+                        Button {
+                            submitProfileImport(provider: provider)
+                        } label: {
+                            Text("Import")
+                        }
+                        .buttonStyle(ProminentCommandButtonStyle(tint: providerColor(provider)))
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(importContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+                .padding(16)
+                .background(
+                    .regularMaterial,
+                    in: RoundedRectangle(cornerRadius: 12)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                )
+                .padding(16)
+            }
+            .transition(.opacity)
+        }
+    }
+
+    private func beginProfileImport(provider: String) {
+        importProvider = provider
+        importName = ""
+        importContent = ""
+        importError = nil
+    }
+
+    private func submitProfileImport(provider: String) {
+        let content = importContent
+        let name = importName.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            await store.importProfile(
+                provider: provider,
+                name: name.isEmpty ? nil : name,
+                content: content
+            )
+            dismissImport()
+        }
+    }
+
+    private func chooseProfileImportFile() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        if panel.runModal() == .OK, let url = panel.url {
+            loadProfileImportFile(url)
+        }
+    }
+
+    private func handleProfileFileDrop(_ providers: [NSItemProvider], provider: String) -> Bool {
+        guard let item = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }) else {
+            return false
+        }
+        item.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { value, error in
+            DispatchQueue.main.async {
+                if let error {
+                    importError = error.localizedDescription
+                    return
+                }
+                let url: URL?
+                if let value = value as? URL {
+                    url = value
+                } else if let data = value as? Data {
+                    url = URL(dataRepresentation: data, relativeTo: nil)
+                } else {
+                    url = nil
+                }
+                guard let url else {
+                    importError = "Dropped item was not a readable file."
+                    return
+                }
+                beginProfileImport(provider: provider)
+                loadProfileImportFile(url)
+            }
+        }
+        return true
+    }
+
+    private func loadProfileImportFile(_ url: URL) {
+        do {
+            let values = try url.resourceValues(forKeys: [.fileSizeKey])
+            if let size = values.fileSize, size > 262_144 {
+                throw ProfileImportInputError("Profile config file must be 256 KiB or smaller.")
+            }
+            importContent = try String(contentsOf: url, encoding: .utf8)
+            importError = nil
+        } catch {
+            importError = error.localizedDescription
+        }
     }
 
     private func headerSubtitle(_ report: DashboardReport, stale: Bool) -> String {
@@ -498,21 +765,6 @@ struct DashboardView: View {
         return date.formatted(date: .omitted, time: .shortened)
     }
 
-    private func copyCliHelpAndOpenTerminal(provider: String) {
-        let help = """
-        omx login \(provider)
-        omx import \(provider) --file provider.toml
-        omx alias \(provider) <selector> <alias>
-        omx doctor \(provider)
-        omx save \(provider) --alias recovery
-        omx use \(provider) <selector>
-        omx remove \(provider) <selector>
-        """
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(help, forType: .string)
-        NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Utilities/Terminal.app"))
-    }
-
     private var cardBackground: Color {
         colorScheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.82)
     }
@@ -570,6 +822,26 @@ private struct CompactCommandButtonStyle: ButtonStyle {
     }
 }
 
+/// Filled, tinted primary action. Used for the onboarding CTA so "Sign in" /
+/// "Import" reads as the one obvious next step, not another row verb.
+private struct ProminentCommandButtonStyle: ButtonStyle {
+    var tint: Color = .accentColor
+
+    func makeBody(configuration: Configuration) -> some View {
+        PressableChrome(
+            configuration: configuration,
+            tint: tint,
+            horizontalPadding: 12,
+            verticalPadding: 6,
+            minWidth: 0,
+            minHeight: 0,
+            cornerRadius: 7,
+            filled: true
+        )
+        .font(.caption.weight(.semibold))
+    }
+}
+
 private struct PanelRowButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         PressableChrome(
@@ -594,15 +866,16 @@ private struct PressableChrome: View {
     let minWidth: CGFloat
     let minHeight: CGFloat
     let cornerRadius: CGFloat
+    var filled: Bool = false
 
     var body: some View {
         configuration.label
             .padding(.horizontal, horizontalPadding)
             .padding(.vertical, verticalPadding)
             .frame(minWidth: minWidth, minHeight: minHeight)
-            .foregroundStyle(tint)
+            .foregroundStyle(filled ? Color.white : tint)
             .background(
-                tint.opacity(backgroundOpacity),
+                filled ? tint.opacity(configuration.isPressed ? 0.85 : 1) : tint.opacity(backgroundOpacity),
                 in: RoundedRectangle(cornerRadius: cornerRadius)
             )
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
@@ -632,21 +905,31 @@ struct TargetRowFeedback: ViewModifier {
     }
 }
 
-private struct Card<Content: View>: View {
+private struct Card<Header: View, Content: View>: View {
     @Environment(\.colorScheme) private var colorScheme
     private let title: String?
+    private let accessory: Header
     private let content: Content
 
-    init(title: String? = nil, @ViewBuilder content: () -> Content) {
+    init(
+        title: String? = nil,
+        @ViewBuilder accessory: () -> Header = { EmptyView() },
+        @ViewBuilder content: () -> Content
+    ) {
         self.title = title
+        self.accessory = accessory()
         self.content = content()
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let title {
-                Text(title)
-                    .font(.headline)
+                HStack(spacing: 8) {
+                    Text(title)
+                        .font(.headline)
+                    Spacer(minLength: 0)
+                    accessory
+                }
             }
             content
         }
@@ -662,4 +945,14 @@ private struct Card<Content: View>: View {
     private var background: Color {
         colorScheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.86)
     }
+}
+
+private struct ProfileImportInputError: LocalizedError {
+    let message: String
+
+    init(_ message: String) {
+        self.message = message
+    }
+
+    var errorDescription: String? { message }
 }

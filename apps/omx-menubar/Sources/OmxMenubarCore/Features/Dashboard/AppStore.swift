@@ -10,11 +10,19 @@ public final class AppStore: ObservableObject {
     @Published private(set) var confirmingResetTargetId: String?
     @Published private(set) var refreshingProvider: String?
     @Published private(set) var refreshingTargetId: String?
+    @Published private(set) var signingInProvider: String?
+    @Published private(set) var savingExistingLoginProvider: String?
+    @Published private(set) var importingProfileProvider: String?
     @Published private(set) var operationNotice: OperationNotice?
     @Published var selectedProvider: String?
     /// Usage-card period selector. Shared across the overview and provider
     /// pages so the chart granularity stays consistent as you switch tabs.
-    @Published var usagePeriod: UsagePeriod = .today
+    @Published var usagePeriod: UsagePeriod = .today {
+        didSet {
+            guard oldValue != usagePeriod else { return }
+            Task { await load() }
+        }
+    }
 
     var trayTitle: String {
         switch state {
@@ -34,6 +42,10 @@ public final class AppStore: ObservableObject {
     private let backend: BackendClient
     private var generation: UInt64 = 0
     private var lastGood: DashboardReport?
+    /// Tail of the write-command chain. Every state-mutating command links onto
+    /// it so the order the UI issues commands in is exactly the order the
+    /// backend executes them. See `runSerial`.
+    private var writeTail: Task<Void, Never>?
 
     public init(backend: RustBackendClient) {
         self.backend = backend
@@ -43,12 +55,39 @@ public final class AppStore: ObservableObject {
         self.backend = backend
     }
 
+    /// Serialize state-mutating commands (sign in / import / switch / delete /
+    /// reset). They are dispatched from the UI as independent `Task`s, so their
+    /// detached FFI calls could otherwise reach the backend's operation lock out
+    /// of order; the UI would then apply whichever response returned last, which
+    /// is not necessarily the write the backend applied last. Chaining each
+    /// command onto the previous one makes UI-issue-order == backend-apply-order,
+    /// so the newest response always reflects the newest write.
+    ///
+    /// Reads (`load`/`refresh`) deliberately stay OFF this chain: they are
+    /// concurrent and idempotent, and `generation` already keeps only the newest
+    /// read. A read issued after a write reflects that write because the backend
+    /// serializes it behind the same lock.
+    private func runSerial(_ work: @escaping @MainActor () async -> Void) async {
+        let prior = writeTail
+        let task = Task { @MainActor in
+            await prior?.value
+            await work()
+        }
+        writeTail = task
+        await task.value
+    }
+
     public func load() async {
-        await request(.dashboard(provider: nil))
+        await request(.dashboard(provider: nil, usagePeriod: usagePeriod))
     }
 
     func refresh(provider: String? = nil, kind: String) async {
         guard !refreshInProgress else { return }
+        // Skip background refreshes while a sign-in/import is in flight: let the
+        // onboarding command's own fresh response land instead of racing it with
+        // a redundant read. (Not a correctness crutch — the backend serializes
+        // both behind one lock — just avoids needless work and UI churn.)
+        guard !onboardingInProgress else { return }
         guard let target = provider else {
             await refreshAll(providers: currentProviders, kind: kind)
             return
@@ -58,19 +97,20 @@ public final class AppStore: ObservableObject {
             return
         }
         refreshingProvider = target
-        await request(.refresh(provider: target, kind: kind, targetKind: nil, localId: nil))
+        await request(.refresh(provider: target, kind: kind, targetKind: nil, localId: nil, usagePeriod: usagePeriod))
         refreshingProvider = nil
     }
 
     func refreshAll(providers: [String], kind: String) async {
         guard !refreshInProgress else { return }
+        guard !onboardingInProgress else { return }
         if providers.isEmpty {
             await load()
             return
         }
         for provider in providers {
             refreshingProvider = provider
-            await request(.refresh(provider: provider, kind: kind, targetKind: nil, localId: nil))
+            await request(.refresh(provider: provider, kind: kind, targetKind: nil, localId: nil, usagePeriod: usagePeriod))
         }
         refreshingProvider = nil
     }
@@ -82,7 +122,8 @@ public final class AppStore: ObservableObject {
             provider: account.provider,
             kind: kind,
             targetKind: account.targetKind,
-            localId: account.localId
+            localId: account.localId,
+            usagePeriod: usagePeriod
         ))
         refreshingTargetId = nil
     }
@@ -91,47 +132,118 @@ public final class AppStore: ObservableObject {
         refreshingProvider != nil || refreshingTargetId != nil
     }
 
+    private var onboardingInProgress: Bool {
+        signingInProvider != nil
+            || savingExistingLoginProvider != nil
+            || importingProfileProvider != nil
+    }
+
     func switchAccount(_ account: TargetAccount) async {
-        guard switchingLocalId == nil else { return }
-        switchingLocalId = account.id
-        await request(.switchTarget(provider: account.provider, targetKind: account.targetKind, localId: account.localId))
-        switchingLocalId = nil
+        await runSerial { [weak self] in
+            guard let self, self.switchingLocalId == nil else { return }
+            self.switchingLocalId = account.id
+            await self.request(.switchTarget(provider: account.provider, targetKind: account.targetKind, localId: account.localId, usagePeriod: self.usagePeriod))
+            self.switchingLocalId = nil
+        }
     }
 
     func switchProfile(_ profile: TargetProfile) async {
-        guard switchingLocalId == nil else { return }
-        switchingLocalId = profile.id
-        await request(.switchTarget(provider: profile.provider, targetKind: profile.targetKind, localId: profile.localId))
-        switchingLocalId = nil
+        await runSerial { [weak self] in
+            guard let self, self.switchingLocalId == nil else { return }
+            self.switchingLocalId = profile.id
+            await self.request(.switchTarget(provider: profile.provider, targetKind: profile.targetKind, localId: profile.localId, usagePeriod: self.usagePeriod))
+            self.switchingLocalId = nil
+        }
     }
 
     func deleteAccount(_ account: TargetAccount) async {
-        guard deletingLocalId == nil else { return }
-        confirmingDeleteTargetId = nil
-        deletingLocalId = account.id
-        await request(.removeTarget(provider: account.provider, targetKind: account.targetKind, localId: account.localId))
-        deletingLocalId = nil
+        await runSerial { [weak self] in
+            guard let self, self.deletingLocalId == nil else { return }
+            self.confirmingDeleteTargetId = nil
+            self.deletingLocalId = account.id
+            await self.request(.removeTarget(provider: account.provider, targetKind: account.targetKind, localId: account.localId, usagePeriod: self.usagePeriod))
+            self.deletingLocalId = nil
+        }
     }
 
     func deleteProfile(_ profile: TargetProfile) async {
-        guard deletingLocalId == nil else { return }
-        confirmingDeleteTargetId = nil
-        deletingLocalId = profile.id
-        await request(.removeTarget(provider: profile.provider, targetKind: profile.targetKind, localId: profile.localId))
-        deletingLocalId = nil
+        await runSerial { [weak self] in
+            guard let self, self.deletingLocalId == nil else { return }
+            self.confirmingDeleteTargetId = nil
+            self.deletingLocalId = profile.id
+            await self.request(.removeTarget(provider: profile.provider, targetKind: profile.targetKind, localId: profile.localId, usagePeriod: self.usagePeriod))
+            self.deletingLocalId = nil
+        }
     }
 
     func resetAccountUsageLimit(_ account: TargetAccount) async {
-        guard resettingLocalId == nil else { return }
-        confirmingResetTargetId = nil
-        resettingLocalId = account.id
-        await request(.consumeResetCredit(
-            provider: account.provider,
-            targetKind: account.targetKind,
-            localId: account.localId,
-            idempotencyKey: UUID().uuidString
-        ))
-        resettingLocalId = nil
+        await runSerial { [weak self] in
+            guard let self, self.resettingLocalId == nil else { return }
+            self.confirmingResetTargetId = nil
+            self.resettingLocalId = account.id
+            await self.request(.consumeResetCredit(
+                provider: account.provider,
+                targetKind: account.targetKind,
+                localId: account.localId,
+                idempotencyKey: UUID().uuidString,
+                usagePeriod: self.usagePeriod
+            ))
+            self.resettingLocalId = nil
+        }
+    }
+
+    func signIn(provider: String) async {
+        await runSerial { [weak self] in
+            guard let self, !self.onboardingInProgress else { return }
+            self.signingInProvider = provider
+            await self.request(.login(
+                provider: provider,
+                alias: nil,
+                activate: false,
+                deviceAuth: false,
+                usagePeriod: self.usagePeriod
+            ))
+            self.signingInProvider = nil
+        }
+    }
+
+    /// Cancel an in-flight `signIn`. Fire-and-forget on its own backend call so
+    /// it reaches the FFI while the login task is parked holding the operation
+    /// lock; it only flips the backend cancel flag. Does not go through
+    /// `request(_:)` — that would bump generation and clobber dashboard state.
+    func cancelSignIn() {
+        guard signingInProvider != nil else { return }
+        Task.detached { [backend] in
+            _ = try? await backend.call(BackendRequest(
+                schemaVersion: 1,
+                op: "cancel_login",
+                payload: .cancelLogin,
+                requestId: UUID().uuidString
+            ))
+        }
+    }
+
+    func useExistingLogin(provider: String) async {
+        await runSerial { [weak self] in
+            guard let self, !self.onboardingInProgress else { return }
+            self.savingExistingLoginProvider = provider
+            await self.request(.saveExistingLogin(provider: provider, alias: nil, usagePeriod: self.usagePeriod))
+            self.savingExistingLoginProvider = nil
+        }
+    }
+
+    func importProfile(provider: String, name: String?, content: String) async {
+        await runSerial { [weak self] in
+            guard let self, !self.onboardingInProgress else { return }
+            self.importingProfileProvider = provider
+            await self.request(.importProfile(
+                provider: provider,
+                name: name,
+                content: content,
+                usagePeriod: self.usagePeriod
+            ))
+            self.importingProfileProvider = nil
+        }
     }
 
     func confirmDelete(_ targetId: String) {
@@ -154,6 +266,9 @@ public final class AppStore: ObservableObject {
         generation += 1
         let currentGeneration = generation
         do {
+            // The backend serializes writes behind a blocking operation lock, so
+            // a write never fails just because a refresh briefly held it — no
+            // client-side retry needed.
             let envelope = try await backend.call(BackendRequest(
                 schemaVersion: 1,
                 op: opName(payload),
@@ -166,7 +281,7 @@ public final class AppStore: ObservableObject {
             }
             if let report = envelope.data?.dashboard {
                 lastGood = report
-                state = .ready(report, stale: false)
+                state = .ready(report, stale: envelope.dataStale == true || envelope.servedFromSnapshot == true)
             } else {
                 state = .failed(lastGood: lastGood, message: "Backend returned no dashboard.")
             }
@@ -181,6 +296,14 @@ public final class AppStore: ObservableObject {
         if let localized = error as? LocalizedError,
            let description = localized.errorDescription,
            !description.isEmpty {
+            if description.contains("failed to run"), description.contains("login") {
+                if description.contains("codex") {
+                    return "Codex CLI was not found. Install Codex CLI, then try Sign in again."
+                }
+                if description.contains("claude") {
+                    return "Claude Code CLI was not found. Install Claude Code, then try Sign in again."
+                }
+            }
             return description
         }
         return error.localizedDescription
@@ -244,6 +367,10 @@ public final class AppStore: ObservableObject {
         case .switchTarget: return "switch"
         case .removeTarget: return "remove"
         case .consumeResetCredit: return "consume_reset_credit"
+        case .login: return "login"
+        case .saveExistingLogin: return "save_existing_login"
+        case .importProfile: return "import_profile"
+        case .cancelLogin: return "cancel_login"
         }
     }
 }

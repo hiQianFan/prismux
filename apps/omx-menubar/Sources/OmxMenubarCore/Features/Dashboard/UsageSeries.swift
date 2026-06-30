@@ -2,7 +2,7 @@ import Foundation
 
 /// The period selector shown on the usage card. Today renders hourly bars;
 /// 7d / 30d roll the same hourly series up into daily bars.
-public enum UsagePeriod: String, CaseIterable, Identifiable {
+public enum UsagePeriod: String, CaseIterable, Identifiable, Sendable {
     case today
     case sevenDays
     case thirtyDays
@@ -14,6 +14,14 @@ public enum UsagePeriod: String, CaseIterable, Identifiable {
         case .today: return "Today"
         case .sevenDays: return "7d"
         case .thirtyDays: return "30d"
+        }
+    }
+
+    public var backendValue: String {
+        switch self {
+        case .today: return "Today"
+        case .sevenDays: return "SevenDays"
+        case .thirtyDays: return "ThirtyDays"
         }
     }
 

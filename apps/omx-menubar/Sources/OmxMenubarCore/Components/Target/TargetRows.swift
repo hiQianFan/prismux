@@ -466,7 +466,11 @@ private struct TargetActionCluster<ResetPopover: View, DeletePopover: View>: Vie
             } label: {
                 Label("Delete", systemImage: "trash")
             }
-            .disabled(!canRemove || deleting || refreshing || resetting)
+            // Not gated on `refreshing`: a background usage poll (popover-open or
+            // the 300s timer) sets refreshingProvider and would otherwise gray
+            // out Delete for the whole provider. Removal is unrelated to usage
+            // refresh and the backend serializes operations anyway.
+            .disabled(!canRemove || deleting)
         } label: {
             Image(systemName: "ellipsis")
                 .font(.caption.weight(.semibold))

@@ -19,22 +19,29 @@ struct BackendRequest: Encodable, Sendable {
 }
 
 enum Payload: Encodable, Sendable {
-    case dashboard(provider: String?)
+    case dashboard(provider: String?, usagePeriod: UsagePeriod?)
     case accounts(provider: String?)
     case compatibility
     case settingsView
     case updateSettings(SettingsView)
     case aboutView
     case supportReport(includeDebugSummary: Bool, recentDiagnostics: [String])
-    case refresh(provider: String, kind: String, targetKind: String?, localId: String?)
-    case switchTarget(provider: String, targetKind: String, localId: String)
-    case removeTarget(provider: String, targetKind: String, localId: String)
-    case consumeResetCredit(provider: String, targetKind: String, localId: String, idempotencyKey: String)
+    case refresh(provider: String, kind: String, targetKind: String?, localId: String?, usagePeriod: UsagePeriod?)
+    case switchTarget(provider: String, targetKind: String, localId: String, usagePeriod: UsagePeriod?)
+    case removeTarget(provider: String, targetKind: String, localId: String, usagePeriod: UsagePeriod?)
+    case consumeResetCredit(provider: String, targetKind: String, localId: String, idempotencyKey: String, usagePeriod: UsagePeriod?)
+    case login(provider: String, alias: String?, activate: Bool, deviceAuth: Bool, usagePeriod: UsagePeriod?)
+    case saveExistingLogin(provider: String, alias: String?, usagePeriod: UsagePeriod?)
+    case importProfile(provider: String, name: String?, content: String, usagePeriod: UsagePeriod?)
+    case cancelLogin
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case .dashboard(let provider), .accounts(let provider):
+        case .dashboard(let provider, let usagePeriod):
+            try container.encodeIfPresent(provider, forKey: .provider)
+            try container.encodeIfPresent(usagePeriod?.backendValue, forKey: .usagePeriod)
+        case .accounts(let provider):
             try container.encodeIfPresent(provider, forKey: .provider)
         case .compatibility:
             try container.encode(1, forKey: .controlPlaneSchemaVersion)
@@ -46,26 +53,47 @@ enum Payload: Encodable, Sendable {
         case .supportReport(let includeDebugSummary, let recentDiagnostics):
             try container.encode(includeDebugSummary, forKey: .includeDebugSummary)
             try container.encode(recentDiagnostics, forKey: .recentDiagnostics)
-        case .refresh(let provider, let kind, let targetKind, let localId):
+        case .refresh(let provider, let kind, let targetKind, let localId, let usagePeriod):
             try container.encode(provider, forKey: .provider)
             try container.encode(kind, forKey: .kind)
             try container.encodeIfPresent(targetKind, forKey: .targetKind)
             try container.encodeIfPresent(localId, forKey: .localId)
-        case .switchTarget(let provider, let targetKind, let localId),
-             .removeTarget(let provider, let targetKind, let localId):
+            try container.encodeIfPresent(usagePeriod?.backendValue, forKey: .usagePeriod)
+        case .switchTarget(let provider, let targetKind, let localId, let usagePeriod),
+             .removeTarget(let provider, let targetKind, let localId, let usagePeriod):
             try container.encode(provider, forKey: .provider)
             try container.encode(targetKind, forKey: .targetKind)
             try container.encode(localId, forKey: .localId)
-        case .consumeResetCredit(let provider, let targetKind, let localId, let idempotencyKey):
+            try container.encodeIfPresent(usagePeriod?.backendValue, forKey: .usagePeriod)
+        case .consumeResetCredit(let provider, let targetKind, let localId, let idempotencyKey, let usagePeriod):
             try container.encode(provider, forKey: .provider)
             try container.encode(targetKind, forKey: .targetKind)
             try container.encode(localId, forKey: .localId)
             try container.encode(idempotencyKey, forKey: .idempotencyKey)
+            try container.encodeIfPresent(usagePeriod?.backendValue, forKey: .usagePeriod)
+        case .login(let provider, let alias, let activate, let deviceAuth, let usagePeriod):
+            try container.encode(provider, forKey: .provider)
+            try container.encodeIfPresent(alias, forKey: .alias)
+            try container.encode(activate, forKey: .activate)
+            try container.encode(deviceAuth, forKey: .deviceAuth)
+            try container.encodeIfPresent(usagePeriod?.backendValue, forKey: .usagePeriod)
+        case .saveExistingLogin(let provider, let alias, let usagePeriod):
+            try container.encode(provider, forKey: .provider)
+            try container.encodeIfPresent(alias, forKey: .alias)
+            try container.encodeIfPresent(usagePeriod?.backendValue, forKey: .usagePeriod)
+        case .importProfile(let provider, let name, let content, let usagePeriod):
+            try container.encode(provider, forKey: .provider)
+            try container.encodeIfPresent(name, forKey: .name)
+            try container.encode(content, forKey: .content)
+            try container.encodeIfPresent(usagePeriod?.backendValue, forKey: .usagePeriod)
+        case .cancelLogin:
+            break
         }
     }
 
     private enum CodingKeys: String, CodingKey {
         case provider
+        case usagePeriod = "usage_period"
         case controlPlaneSchemaVersion = "control_plane_schema_version"
         case stateSchemaVersion = "state_schema_version"
         case view
@@ -75,6 +103,11 @@ enum Payload: Encodable, Sendable {
         case targetKind = "target_kind"
         case localId = "local_id"
         case idempotencyKey = "idempotency_key"
+        case alias
+        case activate
+        case deviceAuth = "device_auth"
+        case name
+        case content
     }
 }
 
@@ -85,6 +118,8 @@ public struct BackendEnvelope: Decodable, Sendable {
     public let minimumBackendVersion: String?
     public let minimumFrontendVersion: String?
     public let ok: Bool
+    public let dataStale: Bool?
+    public let servedFromSnapshot: Bool?
     public let data: BackendData?
     public let error: BackendError?
 
@@ -95,6 +130,8 @@ public struct BackendEnvelope: Decodable, Sendable {
         case minimumBackendVersion = "minimum_backend_version"
         case minimumFrontendVersion = "minimum_frontend_version"
         case ok
+        case dataStale = "data_stale"
+        case servedFromSnapshot = "served_from_snapshot"
         case data
         case error
     }

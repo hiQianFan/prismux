@@ -27,7 +27,11 @@ cargo fmt --all
 cargo test --locked
 cargo clippy --all-targets --all-features -- -D warnings
 cargo build --release -p omx-cli --locked
+scripts/build-menubar.sh
+scripts/bundle-menubar.sh
 ```
+
+Menubar 构建需要完整 Xcode。Command Line Tools 不包含 App 使用的 SwiftUI macro toolchain。
 
 使用隔离状态运行 safe smoke tests：
 
@@ -41,23 +45,57 @@ OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=
 
 除非明确就是要测试真实账号，否则不要对真实工具 home 运行 `login`、`use` 或 credential switching。
 
-## v0.1 Artifacts
+## macOS Artifacts
 
-- macOS Apple Silicon archive
-- macOS Intel archive
+- `OpenMux-vX.Y.Z-macos-arm64.zip` 和 `OpenMux-vX.Y.Z-macos-x86_64.zip`，每个 archive 内包含 `OpenMux.app`
+- 内置 CLI helper：`OpenMux.app/Contents/MacOS/omx`
 - `SHA256SUMS`
 
-v0.1 不发布 Linux binary、Windows binary、Homebrew formula、crates.io package、独立签名或 provenance attestation。
+macOS app bundle 是首选分发路径。它同时包含 Menubar 和同版本 CLI helper。需要 Terminal 使用时，用户通过 Menubar 显式创建 PATH symlink；release 不复制 auth/state 文件，也不修改 shell 启动文件。
+
+第一版公开 App bundle 不发布 Linux binary、Windows binary、Homebrew formula、crates.io package、Sparkle 更新、Developer ID notarization 自动化、独立签名或 provenance attestation。
+
+## Bundle Layout
+
+```text
+OpenMux.app/
+  Contents/
+    MacOS/
+      OpenMux
+      omx
+    Resources/
+      ...
+```
+
+`Contents/MacOS/omx` 是可执行代码，不是 resource。发布验证必须检查：
+
+- `OpenMux.app` 设置了 `LSUIElement=true` 和 `LSMinimumSystemVersion=14.0`。
+- `CFBundleShortVersionString` 与 Cargo workspace version 一致。
+- `OpenMux.app/Contents/MacOS/omx --version` 输出同一版本。
+- bundled `omx status` 在隔离 `OMUX_STATE_ROOT`、`CODEX_HOME`、`CLAUDE_CONFIG_DIR` 下通过。
+- 解压 release zip 后，`Contents/MacOS/OpenMux` 和 `Contents/MacOS/omx` 仍保留可执行权限。
+- bundle privacy/audit scripts 没有发现 raw auth、token、API key、raw log 或被排除的第三方数据引擎。
+
+## Source Build
+
+GitHub 自动生成的 source archive 可用于开发。`cargo install --git https://github.com/hiQianFan/openmux -p omx-cli --locked` 只安装 CLI。完整 Menubar app 需要 macOS + full Xcode：
+
+```sh
+scripts/build-menubar.sh
+scripts/bundle-menubar.sh
+```
+
+更完整步骤见 [源码构建](BUILD.md)。
 
 ## Artifact 能力边界
 
-当前 v0.1 release 仍以 CLI artifact 为主，Menubar 通过 macOS 本地 bundle 构建脚本验证。后续如果拆成独立产物，发布说明必须逐项声明包含能力、平台和依赖：
+发布说明必须逐项声明 artifact 包含能力、平台和依赖：
 
-| Artifact | 包含能力 | 平台 | 依赖 |
+| Artifact | 包含能力 | 平台 | 说明 |
 | --- | --- | --- | --- |
-| `CLI-only` | `login`、`save`、`use`、`import`、`alias`、`doctor`、`usage`、JSON/machine output | macOS；后续再评估 Linux/Windows | 已安装的目标 AI tool CLI |
-| `Menubar-only` | dashboard、refresh、显式 activation、last-good snapshot、upgrade-required/unavailable view、CLI handoff 文案 | macOS 14+ Apple Silicon | embedded staticlib、helper binary 或 installed `omx` CLI 之一 |
-| `full bundle` | CLI + Menubar + 共享 state root + compatibility gate | macOS | 已安装的目标 AI tool CLI |
+| `OpenMux.app` full bundle | Menubar dashboard、refresh、显式 account/profile activation、onboarding actions、bundled `omx` helper、共享 state root | macOS 14+ | 首选公开 macOS artifact。 |
+| standalone CLI tarball | CLI-only 账号/profile 管理和脚本能力 | 后续 | 有真实 standalone 需求后再加。 |
+| Windows/Linux packages | 平台专用 CLI/App packaging | 后续 | 独立提案；不复用 macOS `.app` layout。 |
 
 发布包不得暗示未包含的 optional module 可用。缺少 CLI、helper、Menubar 或 future `serve` 模块时，对应前端必须展示 unavailable view 和安装/切换指引；state-changing operation 只能在 `compatibility_view` 通过 schema gate 后启用。
 

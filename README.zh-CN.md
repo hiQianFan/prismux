@@ -6,14 +6,14 @@ OpenMux 是面向 AI coding tools 的本地账号和 profile 切换工具。
 
 它帮助你在 Codex、Claude Code 等工具中管理多个本地账号，查看账号池状态，并通过平台内编号或 alias 快速切换账号，减少重复浏览器登录。
 
-> 当前状态：早期 v0.x Rust CLI。v0.1 官方二进制只面向 macOS。Linux 和 Windows 会在平台凭据、权限和外部 CLI 行为验证后加入官方支持。
+> 当前状态：早期 v0.x。v0.1 官方下载路径是 macOS full app bundle。Linux 和 Windows 会在平台凭据、权限和外部 CLI 行为验证后加入官方支持。
 
 ## 支持平台
 
 | 平台 | v0.1 状态 | 说明 |
 | --- | --- | --- |
-| macOS Apple Silicon | 支持 | v0.1 官方 GitHub Release target。 |
-| macOS Intel | 支持 | v0.1 官方 GitHub Release target。 |
+| macOS Apple Silicon | 支持 | 官方 `OpenMux.app` GitHub Release target。 |
+| macOS Intel | 支持 | 官方 `OpenMux.app` GitHub Release target。 |
 | Linux | 计划中 | 源码构建可能可用；v0.1 不提供官方 binary。 |
 | Windows | 计划中 | 需要验证 credential、权限和外部 CLI 行为。 |
 
@@ -29,13 +29,13 @@ OpenMux 是面向 AI coding tools 的本地账号和 profile 切换工具。
 
 ### GitHub Releases
 
-v0.1 从 GitHub Releases 下载 macOS archive：
+v0.1 从 GitHub Releases 下载 macOS app archive：
 
 ```text
 https://github.com/hiQianFan/openmux/releases
 ```
 
-将 `omx` 放到 `PATH` 后验证：
+解压后把 `OpenMux.app` 拖到 `/Applications`，再从 Finder 打开。App 内置同版本 `omx` CLI helper；如果希望在 Terminal 使用 `omx`，在 Settings 中点击 `Enable omx command`，然后验证：
 
 ```sh
 omx --version
@@ -141,6 +141,7 @@ OpenMux 不实现自己的 Anthropic OAuth token exchange，也不调用 Anthrop
 
 - [安装指南](docs/INSTALL.zh-CN.md)
 - [发布指南](docs/RELEASE.zh-CN.md)
+- [源码构建](docs/BUILD.md)
 - [路线图](ROADMAP.zh-CN.md)
 - [贡献指南](CONTRIBUTING.md)
 - [架构](docs/ARCHITECTURE.md)

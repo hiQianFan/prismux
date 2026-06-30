@@ -1,7 +1,7 @@
 # Contributing
 
-OpenMux is an early-stage Rust CLI. Keep changes small, reviewable, and explicit
-about credential safety.
+OpenMux is an early-stage Rust CLI and macOS Menubar app. Keep changes small,
+reviewable, and explicit about credential safety.
 
 ## Branch Model
 
@@ -107,12 +107,39 @@ Use isolated state for manual checks:
 OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p omx-cli -- status
 ```
 
+## Menubar and Bundle Checks
+
+The macOS Menubar app requires a full Xcode installation. Command Line Tools
+alone do not include the SwiftUI macro toolchain used by the app.
+
+```sh
+scripts/build-menubar.sh
+scripts/bundle-menubar.sh
+```
+
+The bundle script creates `target/menubar/OpenMux.app` with the bundled helper at
+`OpenMux.app/Contents/MacOS/omx`. Use isolated state for helper smoke tests:
+
+```sh
+OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home target/menubar/OpenMux.app/Contents/MacOS/omx status
+```
+
+See [docs/BUILD.md](docs/BUILD.md) for source-build details.
+
+## OpenSpec Changes
+
+Use `openspec/changes/<change-name>/` for product or architecture changes before
+implementation. Proposal, design, tasks, and capability specs under
+`openspec/changes/**` are written in Chinese; keep commands, code identifiers,
+file paths, crate names, and protocol terms in English when that is clearer.
+
 ## Pull Request Checklist
 
 - CI passes.
 - Local checks have been run or the PR explains why not.
 - README/docs are updated when behavior changes.
 - `CHANGELOG.md` is updated for user-visible changes.
+- Menubar, release, and install docs are updated when bundle behavior changes.
 - No tokens, auth payloads, snapshots, backups, or private credential files are committed.
 - Changes touching auth replacement explain backup/rollback behavior.
 
@@ -127,3 +154,9 @@ OpenMux operates on auth files and local account state. Be conservative:
 - Verify snapshot hashes before switching.
 - Roll back when a switch fails halfway.
 - Keep diagnostics useful without exposing secrets.
+
+## Community Conduct
+
+Be direct, specific, and respectful. Assume good intent, keep reviews focused on
+the code and user impact, and never ask contributors to paste tokens, raw auth
+payloads, snapshots, backups, or private account files into public issues or PRs.

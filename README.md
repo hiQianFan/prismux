@@ -8,16 +8,16 @@ It helps you keep multiple local accounts for tools such as Codex and Claude
 Code, inspect the current account pool, and switch accounts by a platform-local
 number or alias without repeatedly walking through browser login flows.
 
-> Status: early v0.x Rust CLI. v0.1 targets macOS only for official binaries.
-> Linux and Windows are planned after platform-specific credential behavior is
-> tested and documented.
+> Status: early v0.x. v0.1 targets macOS full app bundles for official
+> downloads. Linux and Windows are planned after platform-specific credential
+> behavior is tested and documented.
 
 ## Supported Platforms
 
 | Platform | v0.1 status | Notes |
 | --- | --- | --- |
-| macOS Apple Silicon | Supported | Official GitHub Release target. |
-| macOS Intel | Supported | Official GitHub Release target. |
+| macOS Apple Silicon | Supported | Official `OpenMux.app` GitHub Release target. |
+| macOS Intel | Supported | Official `OpenMux.app` GitHub Release target. |
 | Linux | Planned | Source builds may work; no official v0.1 binary. |
 | Windows | Planned | Requires credential, permission, and external CLI validation. |
 
@@ -33,13 +33,15 @@ number or alias without repeatedly walking through browser login flows.
 
 ### GitHub Releases
 
-For v0.1, download the macOS archive from:
+For v0.1, download the macOS app archive from:
 
 ```text
 https://github.com/hiQianFan/openmux/releases
 ```
 
-Then place `omx` somewhere on your `PATH` and verify:
+Unpack it, move `OpenMux.app` to `/Applications`, and open it from Finder.
+The app contains the matching `omx` CLI helper. In Settings, use
+`Enable omx command` if you want `omx` available in Terminal, then verify:
 
 ```sh
 omx --version
@@ -149,6 +151,7 @@ Report suspected credential handling vulnerabilities privately. See
 
 - [Install guide](docs/INSTALL.md)
 - [Release guide](docs/RELEASE.md)
+- [Build from source](docs/BUILD.md)
 - [Roadmap](ROADMAP.md)
 - [Contributing](CONTRIBUTING.md)
 - [Architecture](docs/ARCHITECTURE.md)

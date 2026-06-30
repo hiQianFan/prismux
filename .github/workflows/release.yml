@@ -6,7 +6,7 @@ on:
       - main
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   prepare:
@@ -129,36 +129,44 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build release binary
-        run: cargo build --release -p omx-cli --locked
+      - name: Build app bundle
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: scripts/bundle-menubar.sh
 
-      - name: Self-test binary
+      - name: Self-test app bundle
         shell: bash
         run: |
           set -euo pipefail
-          ./target/release/omx --version
+          app="target/menubar/OpenMux.app"
+          test -x "${app}/Contents/MacOS/OpenMux"
+          test -x "${app}/Contents/MacOS/omx"
+          "${app}/Contents/MacOS/omx" --version
           OMUX_STATE_ROOT="${RUNNER_TEMP}/openmux-state" \
           CODEX_HOME="${RUNNER_TEMP}/codex-home" \
           CLAUDE_CONFIG_DIR="${RUNNER_TEMP}/claude-home" \
-          ./target/release/omx status
+          "${app}/Contents/MacOS/omx" status
 
       - name: Package artifact
         shell: bash
         run: |
           set -euo pipefail
-          artifact="openmux-${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}"
-          mkdir -p "dist/${artifact}"
-          cp target/release/omx "dist/${artifact}/omx"
-          tar -C dist -czf "${artifact}.tar.gz" "${artifact}"
-          shasum -a 256 "${artifact}.tar.gz" > "${artifact}.sha256"
+          artifact="OpenMux-${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}"
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "target/menubar/OpenMux.app" "dist/${artifact}.zip"
+          unzip -q "dist/${artifact}.zip" -d "${RUNNER_TEMP}/openmux-unpack"
+          test -x "${RUNNER_TEMP}/openmux-unpack/OpenMux.app/Contents/MacOS/OpenMux"
+          test -x "${RUNNER_TEMP}/openmux-unpack/OpenMux.app/Contents/MacOS/omx"
+          OMUX_STATE_ROOT="${RUNNER_TEMP}/openmux-unpack-state" \
+          CODEX_HOME="${RUNNER_TEMP}/openmux-unpack-codex-home" \
+          CLAUDE_CONFIG_DIR="${RUNNER_TEMP}/openmux-unpack-claude-home" \
+          "${RUNNER_TEMP}/openmux-unpack/OpenMux.app/Contents/MacOS/omx" status
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: openmux-${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}
-          path: |
-            openmux-${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}.tar.gz
-            openmux-${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}.sha256
+          name: OpenMux-${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}
+          path: dist/OpenMux-${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}.zip
 
   publish:
     name: Publish GitHub Release
@@ -167,6 +175,8 @@ jobs:
       - prepare
       - build
     if: needs.prepare.outputs.release == 'true'
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ github.token }}
 
@@ -186,9 +196,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          find release-artifacts -name '*.tar.gz' -exec cp {} dist/ \;
+          find release-artifacts -name '*.zip' -exec cp {} dist/ \;
           find release-artifacts -name 'release-notes.md' -exec cp {} release-notes.md \;
-          (cd dist && shasum -a 256 *.tar.gz > SHA256SUMS)
+          (cd dist && shasum -a 256 *.zip > SHA256SUMS)
 
       - name: Create release
         shell: bash

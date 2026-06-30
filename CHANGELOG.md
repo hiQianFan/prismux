@@ -12,7 +12,7 @@ may include breaking changes to the CLI or internal plugin API.
 - GitHub launch readiness plan, including repository cleanup, bilingual user
   documentation, release automation, and macOS v0.1 distribution policy.
 
-## v0.1.0 - 2026-06-17
+## v0.1.0 - 2026-06-30
 
 ### Added
 
@@ -34,9 +34,18 @@ may include breaking changes to the CLI or internal plugin API.
   Code credential artifacts; macOS uses Keychain, non-macOS or explicit
   `CLAUDE_CONFIG_DIR` uses plaintext `.credentials.json`.
 - Unified Claude account/profile selector resolution with ambiguity detection.
-- Product, architecture, OpenSpec, contribution, security, roadmap, install, and
-  release documentation.
-- macOS GitHub Release automation for official v0.1 binaries.
+- Native macOS Menubar app for dashboard, refresh, explicit account/profile
+  activation, onboarding actions, Settings, About, and support report copying.
+- macOS full bundle release path: `OpenMux.app` archives for Apple Silicon and
+  Intel, with bundled same-version `omx` helper at
+  `OpenMux.app/Contents/MacOS/omx`.
+- Explicit `Enable omx command` setup that creates a user-controlled symlink to
+  the bundled helper without copying auth/state or modifying shell startup
+  files.
+- Product, architecture, OpenSpec, contribution, security, roadmap, install,
+  source-build, and release documentation.
+- GitHub Release automation for official v0.1 `OpenMux.app` archives and
+  `SHA256SUMS`.
 
 ### Security
 
@@ -49,8 +58,10 @@ may include breaking changes to the CLI or internal plugin API.
 
 ### Known Limitations
 
-- v0.1 official binaries target macOS only.
+- v0.1 official downloads target macOS only.
 - Linux and Windows official binaries are planned after platform validation.
 - Homebrew and crates.io distribution are planned but not available in v0.1.
+- Sparkle auto-update, Developer ID notarization, and standalone CLI tarballs
+  are not part of v0.1.
 - GitHub Release artifacts include SHA-256 checksums, but not independent
   signing or provenance in v0.1.

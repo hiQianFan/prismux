@@ -5,17 +5,19 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 VERSION="$(awk '/^version = / { gsub(/"/, "", $3); print $3; exit }' Cargo.toml)"
-APP_DIR="$ROOT/target/menubar/OpenMux Menubar.app"
+APP_DIR="$ROOT/target/menubar/OpenMux.app"
 CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 
+cargo build --release -p omx-cli
 "$ROOT/scripts/build-menubar.sh"
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS"
 mkdir -p "$RESOURCES"
-cp "$ROOT/apps/omx-menubar/.build/release/OmxMenubarApp" "$MACOS/OpenMux Menubar"
+cp "$ROOT/apps/omx-menubar/.build/release/OmxMenubarApp" "$MACOS/OpenMux"
+cp "$ROOT/target/release/omx" "$MACOS/omx"
 find "$ROOT/apps/omx-menubar/.build/out/Products/Release" -maxdepth 1 -name '*.bundle' -exec cp -R {} "$RESOURCES/" \;
 
 cat > "$CONTENTS/Info.plist" <<PLIST
@@ -24,11 +26,11 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key>
-  <string>OpenMux Menubar</string>
+  <string>OpenMux</string>
   <key>CFBundleIdentifier</key>
   <string>dev.openmux.menubar</string>
   <key>CFBundleName</key>
-  <string>OpenMux Menubar</string>
+  <string>OpenMux</string>
   <key>CFBundleShortVersionString</key>
   <string>$VERSION</string>
   <key>CFBundleVersion</key>
@@ -43,6 +45,8 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 </plist>
 PLIST
 
+codesign --force --sign - "$MACOS/OpenMux"
+codesign --force --sign - "$MACOS/omx"
 codesign --force --sign - "$APP_DIR"
 codesign --verify "$APP_DIR"
 "$ROOT/scripts/check-menubar-version.sh" "$APP_DIR"

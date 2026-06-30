@@ -6,7 +6,8 @@
 
 - Codex account login, save, list, alias, switch, and profile import.
 - Claude Code profile import/switch and OAuth account snapshot import/switch.
-- macOS GitHub Release binaries for Apple Silicon and Intel.
+- macOS `OpenMux.app` full bundle releases for Apple Silicon and Intel, with a
+  bundled same-version `omx` helper.
 - `cargo install --git` developer install path.
 - Bilingual README and user docs.
 - Repository cleanup, CI, issue/PR templates, and security policy.
@@ -35,6 +36,7 @@
 
 - Homebrew tap after macOS releases stabilize.
 - crates.io distribution after crate names and public API boundaries are stable.
+- Standalone CLI tarballs if there is real demand beyond the app-bundled helper.
 - Gemini CLI plugin.
 - Artifact signing or provenance beyond v0.1 checksums.
 - More provider/profile import formats.
@@ -42,6 +44,6 @@
 ## Non-Goals
 
 - OpenMux is not an API gateway, model router, or provider marketplace.
-- v0.1 does not include a GUI, daemon, watcher, or dynamic plugin loading.
+- v0.1 does not include a daemon, watcher, dynamic plugin loading, Sparkle
+  auto-update, or Developer ID notarization.
 - OpenMux does not call private provider APIs to enrich account metadata.
-

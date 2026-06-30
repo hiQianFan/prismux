@@ -5,7 +5,7 @@
 - [x] 1.2 验证 `OpenMux.app/Contents/MacOS/omx --version` 与 Cargo workspace version 一致。
 - [x] 1.3 更新 release workflow，构建 CLI、使用 full Xcode 构建 Menubar、运行 Swift contract tests、组装 `.app` archive、运行 bundle smoke test。
 - [x] 1.4 使用能保留 macOS bundle layout 和 executable permissions 的 zip 流程打包，上传 `OpenMux-vX.Y.Z-macos-<arch>.zip` 和 `SHA256SUMS`。
-- [ ] 1.5 在 release notes 中声明 artifact 包含 Menubar + bundled CLI helper。
+- [x] 1.5 在 release notes 中声明 artifact 包含 Menubar + bundled CLI helper。
 - [x] 1.6 解压 release zip 后验证 `Contents/MacOS/OpenMux` 和 `Contents/MacOS/omx` 都存在、可执行，且 helper smoke test 使用隔离 `OMUX_STATE_ROOT`、`CODEX_HOME`、`CLAUDE_CONFIG_DIR`。
 
 ## 2. CLI install UX
@@ -27,16 +27,16 @@
 
 ## 4. Documentation
 
-- [ ] 4.1 更新 `docs/INSTALL.md` 和 `docs/INSTALL.zh-CN.md`，说明 full bundle 安装、CLI symlink 和 PATH。
-- [ ] 4.2 更新 `docs/RELEASE.md` 和 `docs/RELEASE.zh-CN.md`，说明 app artifact、helper layout 和验收。
-- [ ] 4.3 更新 `docs/menubar-v1.md`，记录 Menubar 交互链路。
-- [ ] 4.4 更新 README/ROADMAP，将 CLI-only 口径改为 macOS full bundle 主路径。
-- [ ] 4.5 更新 `CHANGELOG.md`，为实际发布版本新增 `## vX.Y.Z - YYYY-MM-DD`，记录 full bundle、bundled CLI helper、Menubar onboarding、已知限制和安全行为。
-- [ ] 4.6 更新 `CONTRIBUTING.md`，补充 Menubar/SwiftPM/Xcode 构建要求、bundle smoke、文档更新要求和 OpenSpec change 要求。
-- [ ] 4.7 新增或更新 source build 文档（建议 `docs/BUILD.md`），说明从 source archive/clone 构建 CLI、Menubar、full bundle，以及 full Xcode requirement。
-- [ ] 4.8 统一 repository URL：Cargo metadata、README、Menubar About links、INSTALL/RELEASE 文档必须指向同一个 GitHub repo。
-- [ ] 4.9 审查公开仓库说明文件：确认 `LICENSE`、`SECURITY.md`、issue/PR templates、vendor notes、CodexBar/reference boundary 可被外部贡献者理解。
-- [ ] 4.10 决定是否新增 `CODE_OF_CONDUCT.md`；若暂不新增，至少在 `CONTRIBUTING.md` 写明基本协作行为期望。
+- [x] 4.1 更新 `docs/INSTALL.md` 和 `docs/INSTALL.zh-CN.md`，说明 full bundle 安装、CLI symlink 和 PATH。
+- [x] 4.2 更新 `docs/RELEASE.md` 和 `docs/RELEASE.zh-CN.md`，说明 app artifact、helper layout 和验收。
+- [x] 4.3 更新 `docs/menubar-v1.md`，记录 Menubar 交互链路。
+- [x] 4.4 更新 README/ROADMAP，将 CLI-only 口径改为 macOS full bundle 主路径。
+- [x] 4.5 更新 `CHANGELOG.md`，为实际发布版本新增 `## vX.Y.Z - YYYY-MM-DD`，记录 full bundle、bundled CLI helper、Menubar onboarding、已知限制和安全行为。
+- [x] 4.6 更新 `CONTRIBUTING.md`，补充 Menubar/SwiftPM/Xcode 构建要求、bundle smoke、文档更新要求和 OpenSpec change 要求。
+- [x] 4.7 新增或更新 source build 文档（建议 `docs/BUILD.md`），说明从 source archive/clone 构建 CLI、Menubar、full bundle，以及 full Xcode requirement。
+- [x] 4.8 统一 repository URL：Cargo metadata、README、Menubar About links、INSTALL/RELEASE 文档必须指向同一个 GitHub repo。
+- [x] 4.9 审查公开仓库说明文件：确认 `LICENSE`、`SECURITY.md`、issue/PR templates、vendor notes、CodexBar/reference boundary 可被外部贡献者理解。
+- [x] 4.10 决定是否新增 `CODE_OF_CONDUCT.md`；若暂不新增，至少在 `CONTRIBUTING.md` 写明基本协作行为期望。
 
 ## 5. Validation
 

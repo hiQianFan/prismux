@@ -18,7 +18,7 @@ final class MenubarSettingsWindowController {
         let window = NSWindow(contentViewController: controller)
         window.title = "OpenMux Settings"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.setContentSize(NSSize(width: 680, height: 460))
+        window.setContentSize(NSSize(width: 540, height: 460))
         window.isReleasedWhenClosed = false
         window.center()
         self.window = window

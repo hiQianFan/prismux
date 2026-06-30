@@ -598,6 +598,7 @@ public struct AboutView: Decodable, Sendable {
     public let stateRoot: AboutPath
     public let settingsPath: AboutPath
     public let links: [AboutLink]
+    public let authorLinks: [AboutLink]
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -609,6 +610,7 @@ public struct AboutView: Decodable, Sendable {
         case stateRoot = "state_root"
         case settingsPath = "settings_path"
         case links
+        case authorLinks = "author_links"
     }
 }
 

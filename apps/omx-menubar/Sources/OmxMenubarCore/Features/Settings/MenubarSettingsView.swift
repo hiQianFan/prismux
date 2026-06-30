@@ -6,199 +6,171 @@ struct MenubarSettingsView: View {
     @AppStorage("dev.openmux.menubar.trayDisplayMode") private var trayDisplayMode = "text"
 
     var body: some View {
-        NavigationSplitView {
-            List(MenubarSettingsTab.allCases, selection: $store.selectedTab) { tab in
-                Label(tab.title, systemImage: tab.icon)
-                    .tag(tab)
-            }
-            .navigationSplitViewColumnWidth(150)
-        } detail: {
-            detail
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        VStack(spacing: 0) {
+            tabBar
+            Divider()
+            content
         }
-        .frame(width: 680, height: 460)
+        .frame(width: 540, height: 460)
         .task { await store.load() }
     }
 
-    @ViewBuilder
-    private var detail: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            titleBar
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if let errorMessage = store.errorMessage {
-                        SettingsBanner(text: errorMessage, systemImage: "exclamationmark.triangle.fill", color: .orange)
+    // Top toolbar tabs, in the macOS Preferences idiom — three first-class
+    // categories, not a sidebar that dwarfs this little content.
+    private var tabBar: some View {
+        HStack(spacing: 6) {
+            ForEach(MenubarSettingsTab.allCases) { tab in
+                let selected = store.selectedTab == tab
+                Button {
+                    store.selectedTab = tab
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: tab.icon)
+                            .font(.system(size: 16, weight: .regular))
+                        Text(tab.title)
+                            .font(.caption)
                     }
-                    if store.loading, store.settings == nil {
-                        ProgressView("Loading settings")
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.top, 120)
-                    } else {
-                        switch store.selectedTab {
-                        case .general:
-                            generalPane
-                        case .providers:
-                            providersPane
-                        case .about:
-                            aboutPane
-                        }
-                    }
+                    .frame(width: 70, height: 44)
+                    .contentShape(Rectangle())
+                    .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(selected ? Color.accentColor.opacity(0.12) : .clear)
+                    )
                 }
-                .padding(20)
-            }
-        }
-    }
-
-    private var titleBar: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(store.selectedTab.title)
-                    .font(.title3.weight(.semibold))
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
             }
             Spacer()
-            if store.saving {
-                ProgressView()
-                    .controlSize(.small)
-            }
-            Button {
-                Task { await store.load() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.borderless)
-            .help("Refresh settings")
+            if store.saving { ProgressView().controlSize(.small) }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
     }
 
-    private var subtitle: String {
-        switch store.selectedTab {
-        case .general:
-            "Menubar behavior and privacy"
-        case .providers:
-            "Provider availability and data source policy"
-        case .about:
-            "Version, paths, and safe support information"
+    @ViewBuilder
+    private var content: some View {
+        if store.loading, store.settings == nil {
+            ProgressView("Loading settings")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            switch store.selectedTab {
+            case .general: GeneralPane(store: store, trayDisplayMode: $trayDisplayMode)
+            case .providers: ProvidersPane(store: store)
+            case .about: AboutPane(store: store)
+            }
         }
     }
+}
 
-    private var generalPane: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            SettingsSection(title: "Menubar") {
+// MARK: - General
+
+private struct GeneralPane: View {
+    @ObservedObject var store: MenubarSettingsStore
+    @Binding var trayDisplayMode: String
+
+    var body: some View {
+        Form {
+            if let errorMessage = store.errorMessage {
+                Section { SettingsBanner(text: errorMessage, systemImage: "exclamationmark.triangle.fill", color: .orange) }
+            }
+
+            Section("Appearance") {
                 Picker("Tray display", selection: $trayDisplayMode) {
                     Text("Icon and summary").tag("text")
                     Text("Icon only").tag("icon_only")
                 }
-                .pickerStyle(.segmented)
-
                 if let settings = store.settings {
-                    Picker(
-                        "Background refresh",
-                        selection: refreshCadenceBinding(settings)
-                    ) {
-                        Text("5 min").tag(UInt64(300))
-                        Text("15 min").tag(UInt64(900))
-                        Text("30 min").tag(UInt64(1800))
-                    }
-                    .pickerStyle(.segmented)
-                    Text("Interactive refresh still happens when opening the popover or pressing refresh.")
+                    Toggle("Hide personal account identifiers", isOn: privacyBinding(settings))
+                    Text("Account and profile rows use coarse labels such as #1 Account instead of emails or profile names.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
 
-            SettingsSection(title: "Privacy") {
-                if let settings = store.settings {
-                    Toggle(
-                        "Hide personal account identifiers in menubar rows",
-                        isOn: privacyBinding(settings)
-                    )
-                    Text("When enabled, account and profile rows use coarse labels such as #1 Account instead of emails or profile names.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+            Section("Startup") {
+                Toggle("Open OpenMux at login", isOn: Binding(
+                    get: { store.launchAtLogin },
+                    set: { store.setLaunchAtLogin($0) }
+                ))
             }
-        }
-    }
 
-    private var providersPane: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let providers = store.settings?.providers {
-                ForEach(providers) { provider in
-                    ProviderSettingsCard(
-                        provider: provider,
-                        enabled: Binding(
-                            get: { provider.enabled },
-                            set: { store.updateProviderEnabled(provider, enabled: $0) }
-                        ),
-                        sourcePreference: Binding(
-                            get: { provider.sourcePreference },
-                            set: { store.updateProviderSource(provider, sourcePreference: $0) }
-                        )
-                    )
+            Section("Command-line tool") {
+                LabeledContent("omx command") {
+                    StatusChip(text: store.cliStatus.statusText, tone: store.cliStatus.statusTone)
                 }
-            }
-        }
-    }
-
-    private var aboutPane: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            if let about = store.about {
-                SettingsSection(title: "OpenMux") {
-                    SettingsKeyValueRow(label: "Version", value: about.appVersion)
-                    SettingsKeyValueRow(label: "Control plane schema", value: "\(about.controlPlaneSchemaVersion)")
-                    SettingsKeyValueRow(label: "State schema", value: "\(about.stateSchemaVersion)")
-                    SettingsKeyValueRow(label: "Settings schema", value: "\(about.settingsSchemaVersion)")
-                    SettingsKeyValueRow(label: "Runtime", value: about.runtime.statusText)
-                }
-
-                SettingsSection(title: "Storage") {
-                    PathRow(title: "State root", path: about.stateRoot) { store.reveal(about.stateRoot) }
-                    PathRow(title: "Settings", path: about.settingsPath) { store.reveal(about.settingsPath) }
-                }
-
-                SettingsSection(title: "Support") {
-                    HStack {
-                        Button("Copy Version Info") { store.copyVersionInfo() }
-                        Button("Copy Redacted Support Report") {
-                            Task { await store.copySupportReport() }
-                        }
+                if let bundled = store.cliStatus.bundledPath {
+                    LabeledContent("Bundled helper") {
+                        Text(bundled)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
                     }
-                    .buttonStyle(.bordered)
-                    if let supportStatus = store.supportStatus {
-                        Text(supportStatus)
-                            .font(.caption)
+                }
+                if let helperVersion = store.cliStatus.helperVersion {
+                    LabeledContent("Helper version") {
+                        Text(helperVersion)
+                            .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
                     }
                 }
-
-                SettingsSection(title: "Links") {
-                    ForEach(about.links) { link in
-                        Button(link.label) {
-                            if let url = URL(string: link.url) {
-                                NSWorkspace.shared.open(url)
-                            }
-                        }
-                        .buttonStyle(.link)
+                if let found = store.cliStatus.foundPath {
+                    LabeledContent("Terminal omx") {
+                        Text(found)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
                     }
                 }
-            } else {
-                Text("About information is unavailable.")
+                if let foundVersion = store.cliStatus.foundVersion {
+                    LabeledContent("Terminal version") {
+                        Text(foundVersion)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                HStack {
+                    Button("Enable omx command") { store.enableCliCommand() }
+                        .disabled(!store.cliStatus.helperAvailable || store.cliStatus.resolution == .ready)
+                    Button("Copy command") { store.copyCliCommand() }
+                    if store.cliStatus.pathCommand != nil {
+                        Button("Copy PATH command") { store.copyPathCommand() }
+                    }
+                }
+                if store.cliStatus.resolution == .differentFound, let found = store.cliStatus.foundPath {
+                    Text("A different omx is already on your PATH at \(found). OpenMux won't overwrite it; adjust it manually if you want the bundled helper.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("The omx CLI ships inside OpenMux. This only links it onto your PATH — it does not download a separate tool.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                LabeledContent("Network proxy") {
+                    Text(store.cliStatus.proxySource)
+                        .foregroundStyle(.secondary)
+                }
+                Text("Effective for OpenMux refresh requests. Set OMUX_HTTPS_PROXY / HTTPS_PROXY / ALL_PROXY to change it.")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
-        }
-    }
 
-    private func refreshCadenceBinding(_ settings: SettingsView) -> Binding<UInt64> {
-        Binding(
-            get: { store.settings?.general.refreshCadenceSeconds ?? settings.general.refreshCadenceSeconds },
-            set: { store.updateRefreshCadence($0) }
-        )
+            Section("Storage") {
+                if let about = store.about {
+                    PathRow(title: "State root", path: about.stateRoot) { store.reveal(about.stateRoot) }
+                    PathRow(title: "Settings", path: about.settingsPath) { store.reveal(about.settingsPath) }
+                }
+            }
+
+            if let status = store.supportStatus {
+                Section { Text(status).font(.caption).foregroundStyle(.secondary) }
+            }
+        }
+        .formStyle(.grouped)
     }
 
     private func privacyBinding(_ settings: SettingsView) -> Binding<Bool> {
@@ -209,46 +181,66 @@ struct MenubarSettingsView: View {
     }
 }
 
-private struct ProviderSettingsCard: View {
-    let provider: ProviderSettings
-    @Binding var enabled: Bool
-    @Binding var sourcePreference: SourcePreference
+// MARK: - Providers
+
+private struct ProvidersPane: View {
+    @ObservedObject var store: MenubarSettingsStore
 
     var body: some View {
-        SettingsSection(title: provider.displayLabel) {
-            HStack(alignment: .center, spacing: 12) {
-                Circle()
-                    .fill(toneColor(provider.status.statusTone))
-                    .frame(width: 9, height: 9)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(provider.status.statusText)
-                        .font(.subheadline.weight(.medium))
-                    Text(provider.provider)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        Form {
+            if let providers = store.settings?.providers {
+                ForEach(providers) { provider in
+                    Section(provider.displayLabel) {
+                        HStack(spacing: 10) {
+                            Circle()
+                                .fill(toneColor(provider.status.statusTone))
+                                .frame(width: 9, height: 9)
+                            Text(provider.status.statusText)
+                                .font(.subheadline)
+                            Spacer()
+                            Toggle("Enabled", isOn: Binding(
+                                get: { provider.enabled },
+                                set: { store.updateProviderEnabled(provider, enabled: $0) }
+                            ))
+                            .labelsHidden()
+                        }
+
+                        if shouldShowSource(provider) {
+                            HStack(spacing: 4) {
+                                Picker("Usage data source", selection: Binding(
+                                    get: { provider.sourcePreference },
+                                    set: { store.updateProviderSource(provider, sourcePreference: $0) }
+                                )) {
+                                    ForEach(provider.sourceOptions) { option in
+                                        Text(option.label)
+                                            .tag(option.value)
+                                            .disabled(option.disabledReason != nil)
+                                    }
+                                }
+                                HelpButton(text: "Auto uses the healthiest supported local source first. Local only disables future remote usage collection for this provider.")
+                            }
+                        }
+
+                        ForEach(Array(provider.diagnostics.enumerated()), id: \.offset) { _, diagnostic in
+                            SettingsBanner(text: diagnostic.message, systemImage: "exclamationmark.triangle.fill", color: .orange)
+                        }
+                    }
                 }
-                Spacer()
-                Toggle("Enabled", isOn: $enabled)
-                    .toggleStyle(.switch)
             }
 
-            Picker("Usage data source", selection: $sourcePreference) {
-                ForEach(provider.sourceOptions) { option in
-                    Text(option.label)
-                        .tag(option.value)
-                        .disabled(option.disabledReason != nil)
-                }
-            }
-            .pickerStyle(.segmented)
-
-            Text("Auto uses the healthiest supported local source first. Local only disables future remote usage collection for this provider.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            ForEach(Array(provider.diagnostics.enumerated()), id: \.offset) { _, diagnostic in
-                SettingsBanner(text: diagnostic.message, systemImage: "exclamationmark.triangle.fill", color: .orange)
+            Section {
+                Text("Sign in, import profiles, and switch the active account or gateway profile from the OpenMux popover.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
+        .formStyle(.grouped)
+    }
+
+    // Only surface the source toggle when the provider actually exposes a
+    // meaningful choice — a single non-disabled option is no choice at all.
+    private func shouldShowSource(_ provider: ProviderSettings) -> Bool {
+        provider.sourceOptions.filter { $0.disabledReason == nil }.count > 1
     }
 
     private func toneColor(_ tone: String) -> Color {
@@ -261,38 +253,142 @@ private struct ProviderSettingsCard: View {
     }
 }
 
-private struct SettingsSection<Content: View>: View {
-    let title: String
-    @ViewBuilder let content: Content
+// MARK: - About
+
+private struct AboutPane: View {
+    @ObservedObject var store: MenubarSettingsStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.headline)
-            VStack(alignment: .leading, spacing: 10) {
-                content
+        Form {
+            if let about = store.about {
+                Section {
+                    VStack(spacing: 6) {
+                        Image(nsImage: NSApp.applicationIconImage)
+                            .resizable()
+                            .frame(width: 64, height: 64)
+                        Text("OpenMux")
+                            .font(.title3.weight(.semibold))
+                        Text("Version \(about.appVersion)")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Text("CLI helper \(store.cliStatus.helperVersion ?? "unavailable")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(about.runtime.statusText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        Text("Local account switcher for AI coding tools")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                }
+
+                Section("Project") {
+                    ForEach(about.links) { link in
+                        LinkRow(link: link) { store.openLink(link.url) }
+                    }
+                }
+
+                if !about.authorLinks.isEmpty {
+                    Section("Author") {
+                        ForEach(about.authorLinks) { link in
+                            LinkRow(link: link) { store.openLink(link.url) }
+                        }
+                    }
+                }
+
+                Section("Storage") {
+                    PathRow(title: "State root", path: about.stateRoot) { store.reveal(about.stateRoot) }
+                    PathRow(title: "Settings", path: about.settingsPath) { store.reveal(about.settingsPath) }
+                }
+
+                Section("Support") {
+                    Button("Copy Version Info") { store.copyVersionInfo() }
+                    Button("Copy Redacted Support Report") {
+                        Task { await store.copySupportReport() }
+                    }
+                    if let status = store.supportStatus {
+                        Text(status).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
+                Section {
+                    Text("MIT License")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+            } else {
+                Section { Text("About information is unavailable.").foregroundStyle(.secondary) }
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - Shared rows
+
+private struct LinkRow: View {
+    let link: AboutLink
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                Text(link.label)
+                Spacer()
+                Image(systemName: "arrow.up.right")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct StatusChip: View {
+    let text: String
+    let tone: String
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text(text).font(.caption)
+        }
+    }
+
+    private var color: Color {
+        switch tone {
+        case "success": .green
+        case "warning": .orange
+        case "danger": .red
+        default: .secondary
         }
     }
 }
 
-private struct SettingsKeyValueRow: View {
-    let label: String
-    let value: String
+private struct HelpButton: View {
+    let text: String
+    @State private var showing = false
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(label)
+        Button {
+            showing.toggle()
+        } label: {
+            Image(systemName: "questionmark.circle")
                 .foregroundStyle(.secondary)
-            Spacer()
-            Text(value)
-                .multilineTextAlignment(.trailing)
-                .textSelection(.enabled)
         }
-        .font(.subheadline)
+        .buttonStyle(.borderless)
+        .popover(isPresented: $showing) {
+            Text(text)
+                .font(.caption)
+                .padding(12)
+                .frame(width: 240)
+        }
     }
 }
 
@@ -302,20 +398,17 @@ private struct PathRow: View {
     let reveal: () -> Void
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.subheadline.weight(.medium))
+        LabeledContent(title) {
+            HStack(spacing: 8) {
                 Text(path.display)
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
+                Button("Reveal") { reveal() }
+                    .disabled(path.revealPath == nil)
             }
-            Spacer()
-            Button("Reveal") { reveal() }
-                .disabled(path.revealPath == nil)
         }
     }
 }

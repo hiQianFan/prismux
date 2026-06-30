@@ -16,6 +16,7 @@ pub struct AboutView {
     pub state_root: AboutPath,
     pub settings_path: AboutPath,
     pub links: Vec<AboutLink>,
+    pub author_links: Vec<AboutLink>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,12 +60,34 @@ pub fn about_view() -> Result<AboutView> {
         },
         links: vec![
             AboutLink {
-                label: "Repository".to_string(),
-                url: "https://github.com/Sitoi/OpenMux".to_string(),
+                label: "GitHub".to_string(),
+                url: "https://github.com/hiQianFan/openmux".to_string(),
             },
             AboutLink {
                 label: "Documentation".to_string(),
-                url: "https://github.com/Sitoi/OpenMux/tree/main/docs".to_string(),
+                url: "https://github.com/hiQianFan/openmux/tree/main/docs".to_string(),
+            },
+            AboutLink {
+                label: "Issues".to_string(),
+                url: "https://github.com/hiQianFan/openmux/issues".to_string(),
+            },
+            AboutLink {
+                label: "Releases".to_string(),
+                url: "https://github.com/hiQianFan/openmux/releases".to_string(),
+            },
+        ],
+        author_links: vec![
+            AboutLink {
+                label: "GitHub".to_string(),
+                url: "https://github.com/hiQianFan".to_string(),
+            },
+            AboutLink {
+                label: "Website".to_string(),
+                url: "https://blog.mapin.net/".to_string(),
+            },
+            AboutLink {
+                label: "Twitter/X".to_string(),
+                url: "https://x.com/hiQianFan".to_string(),
             },
         ],
     })

@@ -1,47 +1,50 @@
 # 任务
 
-> 依赖：本变更消费 `compose-overview-aggregate-primitives` 的后端原子（`ProviderAggregateView`、`QuotaHealthRollup`、period-aware `UsageHeadline`、聚合 diagnostics）。需在该后端变更对接后实现。
+> 依赖：本变更消费并扩展 `compose-overview-aggregate-primitives` 的后端原子。新增字段（in/out token、按窗口类平均）在本变更内随该后端 projection 一并落地。
 
 ## 1. 后端字段补充
 
-- [x] 1.1 `ProviderAggregateView` 新增 `usage_headline: UsageHeadline`，由 control-plane 用该 provider 的 period usage 折叠产生（period 随 `DashboardQuery.usage_period`）。
-- [x] 1.2 bump `CONTROL_PLANE_SCHEMA_VERSION`，更新 fixtures 与 contract 测试。
+- [x] 1.1 `UsageHeadline` 加 `input_tokens` / `output_tokens`，从 `UsageTokenBreakdown` 折叠填充（全局 headline 与 per-provider headline 都填）。
+- [x] 1.2 `QuotaHealthRollup`（或 `ProviderAggregateView`）加按窗口类聚合的平均剩余：5h(short/session) 与 7d(weekly) 各一个 `avg_remaining_percent_x100`（None 表示该类无上报）。窗口分类沿用 frontend `quotaWindow` 的 id/label 文本判定。
+- [x] 1.3 bump `CONTROL_PLANE_SCHEMA_VERSION`，重生成 fixtures（`OMX_UPDATE_FIXTURES=1`），更新 Rust contract 测试的版本断言。
 
 ## 2. Swift DTO 对接
 
-- [x] 2.1 `DTO.swift`：`ProviderAggregateView` 补 `usageHeadline` 解码。
-- [x] 2.2 确认 `QuotaHealthRollup`（facts.avg/min、healthy/low/exhausted 计数、worstTarget、bestAlternative、soonestResetAtUnix、resetCreditTotal）与 `UsageHeadline`（period、totalTokens、estimatedCostUsd、costStatus）解码齐全。
+- [x] 2.1 `DTO.swift`：`UsageHeadline` 补 `inputTokens` / `outputTokens` 解码。
+- [x] 2.2 `DTO.swift`：provider aggregate 补按窗口类平均（5h/7d）解码。
 
-## 3. provider 行（ProviderSummaryRow）
+## 3. 共享 QuotaLine
 
-- [x] 3.1 新增 `ProviderSummaryRow`：三行结构——身份 + avg%（None→"—"）+ tone 条 + 红绿灯计数（零段省略）/ 当前 active 身份（+ low 时 reset 倒计时）/ token + 花费（按 cost_status 降级）。
-- [x] 3.2 颜色/分类用后端 `quotaHealth.statusTone`，移除前端阈值。
-- [x] 3.3 token/花费 period 绑定 `store.usagePeriod`，与 UsageCard 同源；金额缺失省略不显示 `$0`。
-- [x] 3.4 active 身份受脱敏设置影响；点击行跳转对应 provider tab。
+- [x] 3.1 把 `QuotaLine` 从 `TargetRows.swift` private 提升为共享组件（保持阈值刻度 + health 着色不变）。
+- [x] 3.2 账号卡改用共享 `QuotaLine`，确认账号页视觉不变（回归）。
 
-## 4. Overview 组装与清理
+## 4. 用量汇总条（UsageStatsStrip）
 
-- [x] 4.1 `DashboardView.overview(_:)` 改为：providers 列表（`ProviderSummaryRow`）→ 聚合告警 → UsageCard。
-- [x] 4.2 聚合 `ProviderAggregateView.diagnostics` 与 `DashboardAggregateView.diagnostics`（concat，按 provider_id 去重），仅非空时渲染"需要处理"区块，复用 `DiagnosticView`。
-- [x] 4.3 删除全局 capacity hero / `lowestQuota` / 平均 / 红绿灯 / `15/40` 阈值 / 相关 helper。
-- [x] 4.4 `OverviewProviderRow` 被替换；若无其他引用则删除。
+- [x] 4.1 新增 `UsageStatsStrip`：total token + 金额（双焦点，金额按 cost_status 降级、missing 省略）+ in/out（缩进注解，↓/↑ 箭头，中性色）。
+- [x] 4.2 输入 `UsageHeadline`，不取数；period 由调用方传入。
 
-## 5. 单 provider 页 Overview 重构
+## 5. provider 健康卡（ProviderSummaryCard）
 
-- [x] 5.1 新增 `ProviderOverviewCard`：当前 active（突出）、容量分解（healthy/low/exhausted）、平均剩余 + tone 条、最佳备选（+reset，可切）、reset credit（>0 才显示）。
-- [x] 5.2 替换 `providerOverview`，移除 Targets/Alerts 裸 MetricCell。
-- [x] 5.3 provider Overview 主数字用 average，与全局口径一致。
+- [x] 5.1 新增 `ProviderSummaryCard`：身份 + `{n} accts · {m} prof` + `→ active`（脱敏）+ 5h/7d 共享 `QuotaLine` 两行。
+- [x] 5.2 5h/7d 条喂后端按窗口类平均；无该窗口类数据时该行省略或占位。
+- [x] 5.3 点击卡跳转对应 provider tab；`accessibilityElement` 合并为可读语句。
+- [x] 5.4 移除 healthy/low/exhausted 计数。
 
-## 6. 可访问性与视觉
+## 6. Overview 与 provider 页组装、清理
 
-- [x] 6.1 红绿灯/金额成色均配文字，不单靠颜色或符号。
-- [x] 6.2 provider 行合并 `accessibilityElement` 为可读语句。
-- [x] 6.3 空字段省略策略落实（reportingCount 0 显 "—"、全 healthy 无 reset 行、missing 金额省略、无告警块）。
-- [x] 6.4 沿用 DESIGN.md：系统色、radius ≤ 8pt、不嵌 card。
+- [x] 6.1 `DashboardView.overview(_:)` 改为：`UsageStatsStrip(全局 headline)` → provider 卡列表 → UsageCard。
+- [x] 6.2 provider 页 Overview 改为：`UsageStatsStrip(该 provider headline)` → `ProviderSummaryCard(该 provider)`；移除四个裸 MetricCell。
+- [x] 6.3 删除 `OverviewProviderRow`、全局 capacity hero、`lowestQuota`、平均/红绿灯/阈值 helper 及上一轮的 `ProviderSummaryRow`（被 Card 取代）/ `ProviderOverviewCard`（被复用组合取代）等死代码。
 
-## 7. 验证
+## 7. 可访问性与视觉
 
-- [x] 7.1 Swift 编译 + 现有 menubar 测试通过。
-- [x] 7.2 contract fixtures 渲染验证（含 missing cost、无 quota、全 healthy、有告警、avg 高但有 low 等边界）。
-- [x] 7.3 `openspec validate redesign-overview-aggregate-view` 通过。
-- [ ] 7.4 视觉回归：UsageCard 行为不变；Overview 在 0/1/多 provider、深浅色下正常；provider 多时纵向滚动正常。（需人工跑起 GUI 目检；编译 + 契约测试已过）
+- [x] 7.1 5h/7d 条配文字标签（5h/7d + %），金额配 `est.`，in/out 配箭头，不单靠颜色。
+- [x] 7.2 空字段省略策略落实（missing 金额省略、无该窗口类则该行省略、无 active 占位）。
+- [x] 7.3 沿用 DESIGN.md：系统色、radius ≤ 8pt、不嵌 card。
+
+## 8. 验证
+
+- [x] 8.1 Rust：`cargo test -p omx-app -p omx-menubar-ffi` 通过；`cargo build -p omx-cli` 通过。
+- [x] 8.2 Swift：`swift build` + `OmxMenubarContractTests` 通过（先 `xattr -cr .build`）。
+- [x] 8.3 `openspec validate redesign-overview-aggregate-view` 通过。
+- [ ] 8.4 视觉回归（人工跑 GUI）：账号卡 QuotaLine 不变；Overview 与 provider 页用同组件；0/1/多 provider、深浅色、missing cost 边界正常。

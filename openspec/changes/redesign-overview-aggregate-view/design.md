@@ -1,146 +1,139 @@
 ## Context
 
-这次重设计建立在 UX/PM 联合评估的结论上：
+这次重设计建立在多轮 UX 评估的收敛结论上：
 
-1. **Overview = 总览，不是导航**。导航由 `ProviderTabBar`（Overview tab + 每 provider 一个 icon tab）承担，Overview 内容不该再放"逐 provider 点击跳转"的列表样式。
-2. **砍掉全局聚合**。`avg(各 provider)` 是没人照着行动的数，会把危险平均没。Overview 主体直接是 **providers 列表**，每行即一个 provider 的总览，不在其上再加全局大数字块。
-3. **每行带入"总视角"**。每行 = 该 provider 的池子健康（avg% + 红绿灯计数）+ 当前 active 身份 + 该 provider 本期 token/花费总量。容量用 average（回答"池子整体多满"），红绿灯计数回答"有没有要出事的"——avg 单独出现是漂亮的谎言，必须配计数。
-4. **金额诚实展示**。token 是骨架（永远在），金额是注解（带 `CostStatus` 成色，reported 强调、estimated 加 `~`、missing 隐藏不占位）。
+1. **Overview = 全平台账号总览**。用量（token/金额）跨所有 provider 汇总成一条；每个 provider 的健康与库存各自成卡。导航由 `ProviderTabBar` 承担。
+2. **明确视觉层级**。menubar 的天职是"我还能不能继续干活"——quota 健康（彩色 5h/7d 条）是焦点，用量汇总是安静的事实带，图表垫底。砍掉不能触发决策的数字。
+3. **组件复用、两种组合**。同一组组件在 Overview 喂全平台/全列表，在单 provider 页喂该 provider 单份。
 
-信息排序原则：按**时效性 + 行动性**——会出事的（容量红绿灯）在前，路由状态紧跟，回顾性的（token/花费）居后，要动手的（告警）单列，分析性的（趋势图）垫底。
-
-数据全部来自 `compose-overview-aggregate-primitives` 的 control-plane projection：`QuotaHealthRollup`（挂在每个 `ProviderAggregateView`）与 period 化的 `UsageHeadline`。本提案不复算任何聚合。
+数据全部来自 `compose-overview-aggregate-primitives` 的 control-plane projection。本提案不复算任何聚合。
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- 定义 Overview tab 的区块构成（providers 列表 → 告警 → UsageCard）、排序与各区块数据来源（全部指向后端原子）。
-- 定义 provider 行的字段构成与降级行为。
-- 定义单 provider 页 Overview 区块的新构成。
-- 定义金额/红绿灯的展示规则与降级行为。
-- 复用现有视觉语言（Card、ProviderStyle、ProviderIcon、UsageCard、DiagnosticView、脱敏逻辑）。
+- 定义 Overview tab 的两块构成（用量汇总条 → provider 健康卡列表 → UsageCard）与视觉层级。
+- 定义用量汇总条字段（total token + in/out + cost）与降级行为。
+- 定义 provider 卡构成（account/profile 数 + active + 5h/7d 平均条）。
+- 定义 5h/7d 条复用账号卡 `QuotaLine` 的封装方式。
+- 定义单 provider 页用相同组件渲染单份数据。
 
 **Non-Goals:**
 
-- 后端聚合算法、阈值、cost 折叠（在另一提案）。
+- 后端聚合算法、阈值、cost 折叠（在另一提案，本提案在其内补字段）。
 - UsageCard 图表内部、tab bar 导航、账号操作入口。
-- provider 过多时的折叠/虚拟列表（YAGNI，纵向滚动即可）。
-- per-account 用量拆分（源数据无账号归属）。
+- provider 过多时的折叠/虚拟列表。
+- per-account 用量拆分、cache/reasoning 细分 token。
 
 ## Decisions
 
-### 1. Overview tab 区块构成与排序
+### 1. Overview tab 区块构成与视觉层级
 
-砍掉独立的全局容量 Hero。自上而下只剩三段（告警块空则消失，实际常态两段）：
+两个视觉块 + 图表，自上而下：
 
 ```
-┌─ Providers ───────────────────────────────┐
-│ ◗ Codex     72% avg ▕▔▔▔▔▔▏   3 · 1 low   │  ← 行 1：身份 · avg% · tone 条 · 红绿灯计数
-│   → 现在用 #2 Account                       │  ← 行 2：当前 active 身份（路由状态）
-│   1.2M tokens · ~$4.10 est.                 │  ← 行 3：该 provider 本期 token + 花费
-│ ──────────────────────────────────────────│
-│ ◖ Claude    18% avg ▕▔▏       2 · 1 low   │
-│   → 现在用 #1 · resets 2h                   │  ← low/exhausted：active 行尾附 reset 倒计时
-│   840k tokens · $6.20                       │
-│ ──────────────────────────────────────────│
-│ ○ Gemini    95% avg ▕▔▔▔▔▔▏   1 healthy   │
-│   → 现在用 #3                               │
-│   320k tokens · ~$1                         │
-├─ 需要处理（有才显示）──────────────────────┤
-│ ⚠ Claude · auth 过期 / 刷新失败 …           │  ← 跨 provider diagnostics 聚合
+┌─ 用量汇总条（全平台）──────────────────────┐
+│ 2.4M tokens            ~$11.40 est.        │  ← 焦点：量 | 钱（双 hero）
+│ ↓ 1.6M in   ↑ 0.8M out                     │  ← 注解：in/out 是 total 的拆解，缩进从属
+├─ provider 健康卡列表 ──────────────────────┤
+│ ◗ Codex          3 accts · 1 prof   → #2   │  ← 身份 + 库存 + active
+│   5h  ▕▔▔▔▔|▔▔▔:░░▏           72%          │  ← 焦点：5h/7d 平均条（QuotaLine 复用）
+│   7d  ▕▔▔▔▔|▔▔:░░░▏           58%          │
+│ ───────────────────────────────────────── │
+│ ◖ Claude         2 accts            → #1   │
+│   5h  ▕|▔:░░░░░░░░▏           18%  ← 红     │
+│   7d  ▕▔▔|:░░░░░░▏            30%  ← 黄     │
 ├─ Token Usage（保持不动）──────────────────┤
 │ 2.4M tokens · 30d        Today│7d│30d       │
-│ [▁▂▅▇▆▃▁ stacked chart] + 分段图例          │
+│ [stacked chart] + 分段图例                  │
 └─────────────────────────────────────────────┘
 ```
 
-砍掉现有的全局 pool/capacity 聚合块（不再有"平均剩余 62%"这类全局大数字）。`OverviewProviderRow` 改为承载上述三行结构（或新建 `ProviderSummaryRow` 替换它）。
+视觉层级（squint test 下的优先级）：provider 的彩色 5h/7d 条 = 焦点；用量汇总条 = 安静事实带（数字 semibold，但无彩色）；图表 = 细节。
 
-### 2. provider 行的展示规则
+### 2. 用量汇总条（UsageStatsStrip）
 
-一个 provider 一行（最多三行高），按行动性排列字段：
+全平台汇总，内部三档层级：
 
-- **avg%**：`providerAggregate.quotaHealth.facts.avgRemainingPercentX100` → "72% avg"。`reportingCount == 0` 时显示 "—"，不显示 0%。
-- **tone 条**：横向 headroom 条，宽度 = avg%，颜色用后端 `quotaHealth.statusTone`（low=橙、exhausted=红、healthy=绿）。前端不持有 `15/40` 阈值。
-- **红绿灯计数**：`healthyCount / lowCount / exhaustedCount` → "3 · 1 low"（零值段省略；全 healthy 时简化为 "3 healthy"）。这是 avg 的防骗补丁——avg 高但有 low/exhausted 时此处暴露。
-- **当前 active**：`providerAggregate.activeTarget` → "现在用 #2 Account"。无 active 显示 "—"。受 `hidePersonalIdentifiers` 影响，沿用现有脱敏逻辑。active 只表达路由身份，不带用量。
-- **reset 倒计时**：仅当该 provider 非全 healthy（low/exhausted 计数 > 0）时，在 active 行尾附 `· resets {相对时间}`，来自 `quotaHealth.facts.soonestResetAtUnix`。全 healthy 省略。
-- **token + 花费**：该 provider 本期 token 总量 + 花费，来自 `providerAggregate.usageHeadline`（见决策 5）。period 跟随 UsageCard 的 toggle。金额按 `cost_status` 降级（见决策 3）。
+- **总 token**（hero）：`aggregate.usageHeadline.totalTokens`，大号 semibold。
+- **金额**（hero，与 token 并列）：`aggregate.usageHeadline` 的 cost，按 `cost_status` 降级。量和钱是用户最关心的两个总览数，并列双焦点。
+- **in / out**（二级注解，缩进从属 total）：`↓ {in} in   ↑ {out} out`。↓ = 输入（喂给模型），↑ = 输出（模型生成），与下载/上传同构。颜色中性（secondary），箭头表方向不表状态。
 
-点击行跳转对应 provider tab（保留轻导航）。
-
-### 3. token / 花费的金额规则
-
-`{token} tokens · {金额}`，金额按 `cost_status` 降级：
+金额降级：
 
 | cost_status | 展示 |
 |---|---|
-| ProviderReported | `$4.10` |
-| Estimated | `~$4.10 est.` |
-| Mixed | `~$4.10` |
-| Missing | 省略金额，只显示 token |
+| ProviderReported | `$11.40` |
+| Estimated | `~$11.40 est.` |
+| Mixed | `~$11.40` |
+| Missing | 省略金额位，只剩单焦点 `2.4M tokens` |
 
-provider 行的 token/花费 period 跟随 `store.usagePeriod`（同一个 toggle），与下方 UsageCard 同口径同源。趋势/环比不在本次 scope。
+**不展示**全局 account/profile 汇总总数——该数不能触发决策，是噪音；数量落回各 provider 卡。也不展示 cache/reasoning 细分（analytics 级）。
 
-### 4. 需要处理（聚合告警）
+period 跟随 `store.usagePeriod`，与下方 UsageCard 同源。
 
-把各 `ProviderAggregateView.diagnostics` 与 `DashboardAggregateView.diagnostics` 聚合成一个列表，仅在非空时显示该区块，复用现有 `DiagnosticView`。让用户不用逐 tab 翻就知道哪里要动手。这是砍掉全局聚合后的两个保命信号之一（另一个是每行红绿灯计数）。
+### 3. provider 健康卡（ProviderSummaryCard）
 
-> 去重：provider diagnostics 按 `provider_id` filter 得到；`DashboardAggregateView.diagnostics` 来自账号级（无 provider_id）的诊断。两者直接 concat 不重复。
+每个 provider 一张卡，是该平台的完整缩影：
 
-### 5. 后端字段补充：per-provider usage headline
+- **身份**：图标 + provider 名。
+- **库存**：`{n} accts · {m} prof`（account/profile 数量，来自 `providerAggregate.account_count / profile_count`）。数量是 per-provider 属性，落在这里语境完整。
+- **当前 active**：`→ {active 身份}`，来自 `providerAggregate.activeTarget`，受脱敏设置影响，无 active 显占位。
+- **5h/7d 平均条**：两行，复用账号卡的 `QuotaLine`（见决策 4）。值为该 provider 所有账号在该窗口类的**平均剩余**。
 
-provider 行要展示"该 provider 本期 token + 花费"。数据已存在于 `report.providerUsage[provider].usage`（含 `total_tokens` / `estimated_cost_usd` / `cost_status`），但挂载点不顺手。
+点击卡跳转对应 provider tab。
 
-**后端补充**：在 `ProviderAggregateView` 上新增 `usage_headline: UsageHeadline`，由 control-plane 用该 provider 的 period usage 折叠产生。这样 provider 行只读 `providerAggregate.usageHeadline`，不必再去 `providerUsage` 里按 provider 名 join。period 随 `DashboardQuery.usage_period` 变化，与图表同源。
+### 4. 5h/7d 条复用 QuotaLine
 
-> 这是唯一的后端字段新增。其余（avg/min、红绿灯计数、active、soonest reset）`QuotaHealthRollup` 已全部具备。
+把账号卡里现有的 `QuotaLine`（`TargetRows.swift`，当前 private）提升为共享组件，Overview 的 provider 卡与账号卡渲染**同一套** 5h/7d 条：
 
-### 6. 单 provider 页 Overview 重构
+- **阈值刻度竖线**：`warnThreshold`（0.50）/ `criticalThreshold` 各一条竖线，给"离麻烦多远"固定参照。
+- **health 着色**：`remaining ≤ critical → 红`、`≤ warn → 黄`、否则绿。条色编码剩余健康，窗口身份由 "5h"/"7d" label 表达。
 
-替换现有四个裸数字，改为围绕"现在用谁 / 能切到谁 / 何时缓解"：
+provider 卡喂进去的是**聚合后的平均窗口**（后端 per-window-class 平均），账号卡喂的是单账号窗口；同一组件，不同输入。"进去和外面长一样"靠共用组件天然满足。
 
-```
-┌─ {Provider} Overview ─────────────────────┐
-│ 现在用 #2 Account（突出）                  │  ← provider active
-│ 3 accounts · 2 healthy · 1 exhausted       │  ← providerAggregate.quotaHealth 计数
-│ 平均剩余 68% ▕▔▔▔▔▏                        │  ← quotaHealth.facts.avgRemainingPercentX100 + tone 条
-│ 最佳备选 #3 · 95% · resets 1h  ↪可切        │  ← quotaHealth.bestAlternative（+ reset）
-│ Reset credits：2 可用                      │  ← quotaHealth.facts.resetCreditTotal（>0 才显示）
-└─────────────────────────────────────────────┘
-```
+> 取舍：平均会抹平单个快死的账号（池子 `[95,95,20]` 平均 70%，条显绿，20% 那个看不见）。这是有意接受的代价——想看单账号进 provider tab 的账号列表。
 
-主数字与全局口径一致（average），下方补 drill-down 才有的"具体哪个能切"。`Targets`/`Alerts` 裸计数移除（信息已在 Accounts 卡头 / Diagnostics）。
+### 5. 单 provider 页 Overview 用相同组件
 
-> 最佳备选只放在 provider 页：Overview 行已三行高，再加备选会过挤，且备选是"决定切到谁"的下钻动作，属于 provider 页职责。
+单 provider 页顶部 = `UsageStatsStrip(该 provider 的 usageHeadline)`，下面 = `ProviderSummaryCard(该 provider)`。Codex 页就只展示 Codex 的用量与健康。靠传单 provider 数据进同一组件实现，无特判。
 
-### 7. 复用与新增的 Swift 组件
+移除现有四个裸 MetricCell（Targets/Alerts 信息已在 Accounts 卡头与 Diagnostics）。
 
-- 复用：`Card`、`ProviderStyle`、`ProviderIcon`、`UsageCard`、`DiagnosticView`、脱敏逻辑。
-- 新增：`ProviderSummaryRow`（三行结构：身份+avg+tone条+计数 / active+reset / token+花费）、provider 页的 `ProviderOverviewCard`（替换 `providerOverview`）。
-- `OverviewProviderRow` 被 `ProviderSummaryRow` 替换；若无其他引用则删除。
-- 移除全局 capacity hero 相关 helper（`lowestQuota` / 平均 / 红绿灯 / 阈值）。
+### 6. 复用与新增的 Swift 组件
+
+- 复用：`Card`、`ProviderStyle`、`ProviderIcon`、`UsageCard`、脱敏逻辑。
+- 提升为共享：`QuotaLine`（从 `TargetRows.swift` private 提出）。
+- 新增：`UsageStatsStrip`（total + cost 双焦点 + in/out 注解）、`ProviderSummaryCard`（身份 + 库存 + active + 5h/7d 条）。
+- 移除：`OverviewProviderRow`、`DashboardView` 中 `lowestQuota` / 平均 / 红绿灯 / 阈值 / 全局 capacity hero 及相关死组件。
+
+## 后端字段补充（在 compose-overview-aggregate-primitives 内）
+
+1. `UsageHeadline` 加 `input_tokens` / `output_tokens`（来自 `UsageTokenBreakdown`），供用量汇总条的 in/out。
+2. `QuotaHealthRollup`（或 `ProviderAggregateView`）加 **per-window-class 平均剩余**：按 5h(short/session) / 7d(weekly) 分类，对该 provider 所有账号在该窗口类求平均剩余。窗口分类沿用现有 frontend `quotaWindow` picker 的 id/label 文本判定（`5h|session|short` / `7d|week`）。
+3. `ProviderAggregateView.usage_headline` 已具备（前一轮已加），保留。
+4. account/profile count 已具备。
 
 ## 视觉与可访问性
 
-- 沿用 DESIGN.md：原生 macOS 系统色、系统字体、Restrained、无装饰、radius ≤ 8pt、section 不嵌 card。
-- 颜色沿用品牌色（ProviderStyle）与 tone（success/warning/danger），红绿灯不仅靠颜色，配文字（healthy/low/exhausted）满足色觉无障碍。
-- 金额成色用文字（`est.`）而非仅靠 `~`。
-- provider 行 `accessibilityElement` 合并为可读语句（如 "Codex, 平均剩余 72%, 3 个账号 1 个偏低, 现在用 2 号账号, 本期 1.2M tokens 约 4.1 美元"）。
+- 沿用 DESIGN.md：原生 macOS 系统色、系统字体、Restrained、无装饰、radius ≤ 8pt、section 不嵌 card（用量汇总条与 provider 卡是同级 card，不互相嵌套）。
+- 5h/7d 条颜色配 "5h"/"7d" 文字标签与百分比数字，不单靠颜色。
+- 金额成色用文字（`est.`），in/out 用箭头 + 文字。
+- provider 卡 `accessibilityElement` 合并为可读语句。
 
 ## Risks / Trade-offs
 
-- **删全局聚合后丢失"一眼扫危险"的能力**：通过每行红绿灯计数 + 聚合告警块两条信号兜底。只要这两个在，删 pool 是净赚。
-- **provider 行信息密度上升（三行）**：通过"空字段省略"（全 healthy 无 reset 行、reportingCount 0 显 "—"、missing 金额省略）控制。三行仍比当前 5 段堆叠轻。
-- **provider 过多**：现实 ~5-8 个，纵向滚动（popover 已支持 560-640pt 可滚）即可，不做特殊布局。真超出再加，是一句话功能不是当下债。
-- **依赖后端原子先落地**：本提案数据全部来自 `compose-overview-aggregate-primitives`，需在其之后实现；新增的 `ProviderAggregateView.usage_headline` 也在该后端变更内落地。
+- **平均抹平单个快死账号**：接受；想看单账号进 provider tab。Overview 的彩色条仍会因平均偏低而变色，提供粗粒度预警。
+- **删全局计数后"扫危险"靠条色**：5h/7d 彩色条比文字计数 squint test 更强，净赚。
+- **per-window-class 平均是新后端 fold**：数据已在（每账号 windows 全在），是新增折叠，复用现有窗口分类逻辑。
+- **provider 过多**：纵向滚动（popover 已支持 560-640pt），不做特殊布局。
 
 ## Migration
 
-- 纯前端渲染变化 + 一个后端字段新增（`ProviderAggregateView.usage_headline`），无状态迁移。
-- 删除前端聚合代码（`lowestQuota` / 平均 / 红绿灯 / 阈值 / 全局 capacity hero）在对接 rollup 时一并完成。
+- 前端渲染重排 + 后端补字段（in/out token、per-window 平均），无状态迁移。
+- bump `CONTROL_PLANE_SCHEMA_VERSION`，重生成 fixtures，更新 contract 测试。
+- 删除前端聚合代码与死组件在对接时一并完成。
 
 ## Open Questions
 
-- 无。（per-account 用量、provider 折叠、趋势/环比均已明确移出 scope。）
+- 无。

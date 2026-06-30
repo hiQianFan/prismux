@@ -508,8 +508,40 @@ fn quota_health_rollup(
         exhausted_count,
         worst_target: worst_account.map(active_target_from_account),
         best_alternative: best_alternative(accounts, profiles),
+        window_averages: window_averages(statuses),
         status,
         status_tone,
+    }
+}
+
+/// Average remaining percent per window class (5h / 7d) across reporting
+/// accounts. Classifies each core `UsageLimit` by its id/label text the same way
+/// the frontend window picker does, then averages within each class. None when
+/// no account reported that class.
+fn window_averages(statuses: &[&AccountStatus]) -> WindowAverages {
+    let mut short_total = 0_u32;
+    let mut short_count = 0_u32;
+    let mut weekly_total = 0_u32;
+    let mut weekly_count = 0_u32;
+    for status in statuses {
+        let Some(usage) = &status.usage else { continue };
+        for limit in &usage.limits {
+            let Some(remaining) = limit.remaining_percent_x100 else {
+                continue;
+            };
+            let text = format!("{} {}", limit.id, limit.label).to_lowercase();
+            if text.contains("5h") || text.contains("session") || text.contains("short") {
+                short_total += remaining;
+                short_count += 1;
+            } else if text.contains("7d") || text.contains("week") {
+                weekly_total += remaining;
+                weekly_count += 1;
+            }
+        }
+    }
+    WindowAverages {
+        short_remaining_percent_x100: short_total.checked_div(short_count),
+        weekly_remaining_percent_x100: weekly_total.checked_div(weekly_count),
     }
 }
 
@@ -744,6 +776,8 @@ fn menubar_usage_for_client(
     Ok(UsageSummaryView {
         period,
         total_tokens: total.normalized_total_tokens,
+        input_tokens: total.tokens.input,
+        output_tokens: total.tokens.output,
         top_client,
         top_model,
         model_breakdown: usage_model_breakdown(&models),
@@ -918,6 +952,8 @@ fn usage_headline(usage: &UsageSummaryView) -> UsageHeadline {
     UsageHeadline {
         period: usage.period.clone(),
         total_tokens: usage.total_tokens,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
         estimated_cost_usd: usage.estimated_cost_usd.clone(),
         cost_status: usage.cost_status.clone(),
         top_client: usage.top_client.clone(),
@@ -931,6 +967,8 @@ fn empty_usage_headline(period: UsagePeriod) -> UsageHeadline {
     UsageHeadline {
         period,
         total_tokens: 0,
+        input_tokens: 0,
+        output_tokens: 0,
         estimated_cost_usd: None,
         cost_status: CostStatus::Missing,
         top_client: None,
@@ -981,6 +1019,8 @@ fn empty_usage(generated_at_unix: u64, status: &str, period: UsagePeriod) -> Usa
     UsageSummaryView {
         period,
         total_tokens: 0,
+        input_tokens: 0,
+        output_tokens: 0,
         top_client: None,
         top_model: None,
         model_breakdown: Vec::new(),

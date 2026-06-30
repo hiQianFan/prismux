@@ -1,5 +1,5 @@
 {
-  "control_plane_schema_version": 3,
+  "control_plane_schema_version": 4,
   "error": {
     "code": "application_error",
     "message": "`missing-local-id` did not match any account or profile for `codex`"

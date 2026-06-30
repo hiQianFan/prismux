@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const CONTROL_PLANE_SCHEMA_VERSION: u32 = 3;
+pub const CONTROL_PLANE_SCHEMA_VERSION: u32 = 4;
 pub const STATE_SCHEMA_VERSION: u32 = 1;
 pub const MIN_BACKEND_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MIN_FRONTEND_VERSION: &str = "0.1.0";

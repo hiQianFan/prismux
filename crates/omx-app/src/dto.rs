@@ -140,8 +140,22 @@ pub struct QuotaHealthRollup {
     pub exhausted_count: u32,
     pub worst_target: Option<ActiveTarget>,
     pub best_alternative: Option<TargetRecommendation>,
+    /// Average remaining percent (x100) per window class across this scope's
+    /// reporting accounts. Lets the Overview render 5h / 7d bars identical to
+    /// the account card without re-averaging on the frontend. None = no account
+    /// reported that window class.
+    pub window_averages: WindowAverages,
     pub status: TargetStatus,
     pub status_tone: ViewTone,
+}
+
+/// Per-window-class average remaining, folded from raw reporting accounts.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WindowAverages {
+    /// 5h / session / short window class.
+    pub short_remaining_percent_x100: Option<u32>,
+    /// 7d / weekly window class.
+    pub weekly_remaining_percent_x100: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -155,6 +169,8 @@ pub struct TargetRecommendation {
 pub struct UsageHeadline {
     pub period: UsagePeriod,
     pub total_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
     pub estimated_cost_usd: Option<String>,
     pub cost_status: CostStatus,
     pub top_client: Option<String>,
@@ -381,6 +397,10 @@ pub struct Diagnostic {
 pub struct UsageSummaryView {
     pub period: UsagePeriod,
     pub total_tokens: u64,
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
     pub top_client: Option<String>,
     pub top_model: Option<String>,
     pub model_breakdown: Vec<UsageModelBreakdown>,

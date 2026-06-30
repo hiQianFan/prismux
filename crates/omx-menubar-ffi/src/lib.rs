@@ -484,7 +484,7 @@ mod tests {
             ffi["data"]["control_plane_schema_version"],
             omx_app::compatibility::CONTROL_PLANE_SCHEMA_VERSION
         );
-        assert_eq!(direct.control_plane_schema_version, 3);
+        assert_eq!(direct.control_plane_schema_version, 4);
         assert_eq!(
             ffi["data"]["aggregate"],
             serde_json::to_value(&direct.aggregate).unwrap()

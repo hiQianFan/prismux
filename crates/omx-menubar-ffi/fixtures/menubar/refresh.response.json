@@ -1,12 +1,12 @@
 {
-  "control_plane_schema_version": 3,
+  "control_plane_schema_version": 4,
   "data": {
     "accounts": {
       "accounts": [],
       "active_local_id": null,
       "active_target_key": null,
       "active_target_kind": null,
-      "control_plane_schema_version": 3,
+      "control_plane_schema_version": 4,
       "diagnostics": [],
       "generated_at_unix": 0,
       "observed_target": null,
@@ -20,14 +20,14 @@
       "state_schema_version": 1,
       "system_active_target": null
     },
-    "control_plane_schema_version": 3,
+    "control_plane_schema_version": 4,
     "dashboard": {
       "accounts": {
         "accounts": [],
         "active_local_id": null,
         "active_target_key": null,
         "active_target_kind": null,
-        "control_plane_schema_version": 3,
+        "control_plane_schema_version": 4,
         "diagnostics": [],
         "generated_at_unix": 0,
         "observed_target": null,
@@ -68,6 +68,10 @@
               "low_count": 0,
               "status": "unavailable",
               "status_tone": "danger",
+              "window_averages": {
+                "short_remaining_percent_x100": null,
+                "weekly_remaining_percent_x100": null
+              },
               "worst_target": null
             },
             "status": "unavailable",
@@ -78,6 +82,8 @@
               "breakdown": [],
               "cost_status": "Missing",
               "estimated_cost_usd": null,
+              "input_tokens": 0,
+              "output_tokens": 0,
               "period": "ThirtyDays",
               "top_client": null,
               "top_model": null,
@@ -107,6 +113,10 @@
               "low_count": 0,
               "status": "unavailable",
               "status_tone": "danger",
+              "window_averages": {
+                "short_remaining_percent_x100": null,
+                "weekly_remaining_percent_x100": null
+              },
               "worst_target": null
             },
             "status": "unavailable",
@@ -117,6 +127,8 @@
               "breakdown": [],
               "cost_status": "Missing",
               "estimated_cost_usd": null,
+              "input_tokens": 0,
+              "output_tokens": 0,
               "period": "ThirtyDays",
               "top_client": null,
               "top_model": null,
@@ -140,19 +152,25 @@
           "low_count": 0,
           "status": "unavailable",
           "status_tone": "danger",
+          "window_averages": {
+            "short_remaining_percent_x100": null,
+            "weekly_remaining_percent_x100": null
+          },
           "worst_target": null
         },
         "usage_headline": {
           "breakdown": [],
           "cost_status": "Missing",
           "estimated_cost_usd": null,
+          "input_tokens": 0,
+          "output_tokens": 0,
           "period": "ThirtyDays",
           "top_client": null,
           "top_model": null,
           "total_tokens": 0
         }
       },
-      "control_plane_schema_version": 3,
+      "control_plane_schema_version": 4,
       "generated_at_unix": 0,
       "provider_usage": [
         {
@@ -172,7 +190,9 @@
               "stale": true
             },
             "hourly_buckets": [],
+            "input_tokens": 0,
             "model_breakdown": [],
+            "output_tokens": 0,
             "period": "ThirtyDays",
             "series": [],
             "top_client": null,
@@ -197,7 +217,9 @@
               "stale": true
             },
             "hourly_buckets": [],
+            "input_tokens": 0,
             "model_breakdown": [],
+            "output_tokens": 0,
             "period": "ThirtyDays",
             "series": [],
             "top_client": null,
@@ -231,6 +253,10 @@
               "low_count": 0,
               "status": "unavailable",
               "status_tone": "danger",
+              "window_averages": {
+                "short_remaining_percent_x100": null,
+                "weekly_remaining_percent_x100": null
+              },
               "worst_target": null
             },
             "status": "unavailable",
@@ -241,6 +267,8 @@
               "breakdown": [],
               "cost_status": "Missing",
               "estimated_cost_usd": null,
+              "input_tokens": 0,
+              "output_tokens": 0,
               "period": "ThirtyDays",
               "top_client": null,
               "top_model": null,
@@ -279,6 +307,10 @@
               "low_count": 0,
               "status": "unavailable",
               "status_tone": "danger",
+              "window_averages": {
+                "short_remaining_percent_x100": null,
+                "weekly_remaining_percent_x100": null
+              },
               "worst_target": null
             },
             "status": "unavailable",
@@ -289,6 +321,8 @@
               "breakdown": [],
               "cost_status": "Missing",
               "estimated_cost_usd": null,
+              "input_tokens": 0,
+              "output_tokens": 0,
               "period": "ThirtyDays",
               "top_client": null,
               "top_model": null,
@@ -320,7 +354,9 @@
           "stale": true
         },
         "hourly_buckets": [],
+        "input_tokens": 0,
         "model_breakdown": [],
+        "output_tokens": 0,
         "period": "ThirtyDays",
         "series": [],
         "top_client": null,

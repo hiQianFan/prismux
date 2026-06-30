@@ -3,8 +3,9 @@ pub use crate::compatibility::{
 };
 pub use crate::dto::*;
 pub use crate::mutation::{
-    activate_target, consume_reset_credit, menubar_refresh, menubar_remove, menubar_switch,
-    refresh_all, refresh_provider, remove_target,
+    activate_target, consume_reset_credit, import_profile, login_account, menubar_import_profile,
+    menubar_login, menubar_refresh, menubar_remove, menubar_save_existing_login, menubar_switch,
+    refresh_all, refresh_provider, remove_target, save_existing_login,
 };
 pub use crate::query::{
     account_statuses, active_account_status, config_profiles, dashboard_view, menubar_accounts,
@@ -195,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_is_rejected_while_an_operation_is_in_progress() {
+    fn refresh_skips_while_an_operation_is_in_progress() {
         let _test_guard = TEST_OPERATION_LOCK
             .lock()
             .unwrap_or_else(|err| err.into_inner());
@@ -204,7 +205,7 @@ mod tests {
             Box::new(FakePlugin::new(vec![account(1, true, None)])) as Box<dyn PlatformPlugin>
         ];
 
-        let err = menubar_refresh(
+        let report = menubar_refresh(
             &plugins,
             RefreshCommand {
                 provider: "codex".to_string(),
@@ -212,12 +213,26 @@ mod tests {
                 local_id: None,
                 target_kind: None,
                 request_generation: None,
+                usage_period: None,
             },
             None,
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(err.to_string().contains("operation already in progress"));
+        // A background refresh that collides with an in-flight write must NOT
+        // block on the lock (that would hang it for the duration of, e.g., a
+        // login browser wait) nor error (which would mark the UI stale). It
+        // skips this round and returns the current dashboard; the next tick
+        // catches up once the write releases the lock.
+        assert_eq!(report.operation.status, OperationStatus::Skipped);
+        assert!(!report.refreshed);
+        assert!(
+            report
+                .skipped_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("another operation is in progress")
+        );
     }
 
     #[test]
@@ -239,6 +254,7 @@ mod tests {
                 local_id: None,
                 target_kind: None,
                 request_generation: None,
+                usage_period: None,
             },
             None,
         )
@@ -251,6 +267,7 @@ mod tests {
                 local_id: None,
                 target_kind: None,
                 request_generation: None,
+                usage_period: None,
             },
             None,
         )
@@ -282,6 +299,7 @@ mod tests {
                 local_id: None,
                 target_kind: None,
                 request_generation: None,
+                usage_period: None,
             },
             None,
         )
@@ -311,6 +329,7 @@ mod tests {
                 local_id: Some("codex-account-2".to_string()),
                 target_kind: Some(TargetKindView::Account),
                 request_generation: None,
+                usage_period: None,
             },
             None,
         )
@@ -344,6 +363,7 @@ mod tests {
                 local_id: None,
                 target_kind: None,
                 request_generation: Some(10),
+                usage_period: None,
             },
             None,
         )
@@ -356,6 +376,7 @@ mod tests {
                 local_id: None,
                 target_kind: None,
                 request_generation: Some(9),
+                usage_period: None,
             },
             None,
         )
@@ -391,6 +412,7 @@ mod tests {
                 local_id: None,
                 target_kind: None,
                 request_generation: None,
+                usage_period: None,
             },
             None,
         )
@@ -403,6 +425,7 @@ mod tests {
                 local_id: None,
                 target_kind: None,
                 request_generation: None,
+                usage_period: None,
             },
             None,
         )
@@ -438,6 +461,7 @@ mod tests {
                 local_id: "codex-account-1".to_string(),
                 idempotency_key: "attempt-1".to_string(),
                 target_kind: Some(TargetKindView::Account),
+                usage_period: None,
             },
             None,
         )
@@ -468,6 +492,7 @@ mod tests {
                 local_id: "codex-account-1".to_string(),
                 idempotency_key: "attempt-1".to_string(),
                 target_kind: Some(TargetKindView::Account),
+                usage_period: None,
             },
             None,
         )
@@ -554,6 +579,7 @@ mod tests {
                 local_id: None,
                 target_kind: None,
                 request_generation: None,
+                usage_period: None,
             },
             None,
         )
@@ -921,6 +947,7 @@ mod tests {
             provider: "codex".to_string(),
             local_id: local_id.to_string(),
             target_kind: None,
+            usage_period: None,
         }
     }
 

@@ -1,8 +1,9 @@
 use omx_app::{
-    ClientDescriptor, ConsumeResetCreditCommand, DashboardQuery, RefreshCommand, RemoveCommand,
-    SupportReportCommand, SwitchCommand, UpdateSettingsCommand, about_view, activate_target,
-    compatibility_view, consume_reset_credit, dashboard_view, refresh_provider, remove_target,
-    settings_view, support_report, update_settings,
+    ClientDescriptor, ConsumeResetCreditCommand, DashboardQuery, ImportProfileCommand,
+    LoginCommand, RefreshCommand, RemoveCommand, SaveExistingLoginCommand, SupportReportCommand,
+    SwitchCommand, UpdateSettingsCommand, about_view, activate_target, compatibility_view,
+    consume_reset_credit, dashboard_view, import_profile, login_account, refresh_provider,
+    remove_target, save_existing_login, settings_view, support_report, update_settings,
 };
 use omx_core::{
     PlatformPlugin, StateStore, UsageScanBudget, UsageScanOptions,
@@ -38,6 +39,10 @@ struct ResponseEnvelope {
     minimum_backend_version: String,
     minimum_frontend_version: String,
     ok: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    data_stale: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    served_from_snapshot: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -50,6 +55,30 @@ struct ResponseEnvelope {
 struct ResponseError {
     code: String,
     message: String,
+}
+
+struct DispatchSuccess {
+    data: Value,
+    data_stale: bool,
+    served_from_snapshot: bool,
+}
+
+impl DispatchSuccess {
+    fn fresh(data: Value) -> Self {
+        Self {
+            data,
+            data_stale: false,
+            served_from_snapshot: false,
+        }
+    }
+
+    fn snapshot(data: Value) -> Self {
+        Self {
+            data,
+            data_stale: true,
+            served_from_snapshot: true,
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -101,16 +130,17 @@ fn call_request(request_json: &str) -> String {
         );
     }
     let request_id = request.request_id.clone();
-    let result = dispatch(request);
-    match result {
-        Ok(data) => encode(ResponseEnvelope {
+    match dispatch(request) {
+        Ok(success) => encode(ResponseEnvelope {
             schema_version: SCHEMA_VERSION,
             control_plane_schema_version: omx_app::compatibility::CONTROL_PLANE_SCHEMA_VERSION,
             state_schema_version: omx_app::compatibility::STATE_SCHEMA_VERSION,
             minimum_backend_version: omx_app::compatibility::MIN_BACKEND_VERSION.to_string(),
             minimum_frontend_version: omx_app::compatibility::MIN_FRONTEND_VERSION.to_string(),
             ok: true,
-            data: Some(data),
+            data_stale: success.data_stale,
+            served_from_snapshot: success.served_from_snapshot,
+            data: Some(success.data),
             error: None,
             request_id,
         }),
@@ -118,7 +148,7 @@ fn call_request(request_json: &str) -> String {
     }
 }
 
-fn dispatch(request: RequestEnvelope) -> Result<Value, (&'static str, String)> {
+fn dispatch(request: RequestEnvelope) -> Result<DispatchSuccess, (&'static str, String)> {
     #[cfg(test)]
     if request.op == "__panic" {
         panic!("test panic");
@@ -130,7 +160,7 @@ fn dispatch(request: RequestEnvelope) -> Result<Value, (&'static str, String)> {
     match request.op.as_str() {
         "accounts" => {
             let query: DashboardQuery = payload_or_default(request.payload)?;
-            json_value(omx_app::menubar_accounts(&plugins, query))
+            json_value(omx_app::menubar_accounts(&plugins, query)).map(DispatchSuccess::fresh)
         }
         "dashboard" => {
             let query: DashboardQuery = payload_or_default(request.payload)?;
@@ -138,44 +168,72 @@ fn dispatch(request: RequestEnvelope) -> Result<Value, (&'static str, String)> {
             match json_value(dashboard_view(&plugins, query, store.as_ref())) {
                 Ok(value) => {
                     persist_dashboard_snapshot(&value);
-                    Ok(value)
+                    Ok(DispatchSuccess::fresh(value))
                 }
-                Err(err) => load_dashboard_snapshot().ok_or(err),
+                Err(err) => load_dashboard_snapshot()
+                    .map(DispatchSuccess::snapshot)
+                    .ok_or(err),
             }
         }
         "switch" => {
             let command: SwitchCommand = payload(request.payload)?;
             refresh_usage_cache(store.as_ref(), Some(&command.provider));
             json_value(activate_target(&plugins, command, store.as_ref()))
+                .map(DispatchSuccess::fresh)
         }
         "refresh" => {
             let command: RefreshCommand = payload(request.payload)?;
             refresh_usage_cache(store.as_ref(), Some(&command.provider));
             json_value(refresh_provider(&plugins, command, store.as_ref()))
+                .map(DispatchSuccess::fresh)
         }
         "remove" => {
             let command: RemoveCommand = payload(request.payload)?;
             refresh_usage_cache(store.as_ref(), Some(&command.provider));
-            json_value(remove_target(&plugins, command, store.as_ref()))
+            json_value(remove_target(&plugins, command, store.as_ref())).map(DispatchSuccess::fresh)
         }
         "consume_reset_credit" => {
             let command: ConsumeResetCreditCommand = payload(request.payload)?;
             refresh_usage_cache(store.as_ref(), Some(&command.provider));
             json_value(consume_reset_credit(&plugins, command, store.as_ref()))
+                .map(DispatchSuccess::fresh)
+        }
+        "login" => {
+            let command: LoginCommand = payload(request.payload)?;
+            json_value(login_account(&plugins, command, store.as_ref())).map(DispatchSuccess::fresh)
+        }
+        "save_existing_login" => {
+            let command: SaveExistingLoginCommand = payload(request.payload)?;
+            json_value(save_existing_login(&plugins, command, store.as_ref()))
+                .map(DispatchSuccess::fresh)
+        }
+        "import_profile" => {
+            let command: ImportProfileCommand = payload(request.payload)?;
+            json_value(import_profile(&plugins, command, store.as_ref()))
+                .map(DispatchSuccess::fresh)
+        }
+        "cancel_login" => {
+            // Runs on its own FFI call/thread while `login` holds the operation
+            // lock; only flips the cancel flag so the parked login child dies.
+            omx_core::request_login_cancel();
+            Ok(DispatchSuccess::fresh(
+                serde_json::json!({ "cancelled": true }),
+            ))
         }
         "compatibility" => {
             let client: ClientDescriptor = payload_or_default(request.payload)?;
-            json_value(Ok(compatibility_view(client)))
+            json_value(Ok(compatibility_view(client))).map(DispatchSuccess::fresh)
         }
-        "settings_view" => json_value(settings_view()),
+        "settings_view" => json_value(settings_view()).map(DispatchSuccess::fresh),
         "update_settings" => {
             let command: UpdateSettingsCommand = payload(request.payload)?;
-            json_value(update_settings(command))
+            json_value(update_settings(command)).map(DispatchSuccess::fresh)
         }
-        "about_view" => json_value(about_view()),
+        "about_view" => json_value(about_view()).map(DispatchSuccess::fresh),
         "support_report" => {
             let command: SupportReportCommand = payload_or_default(request.payload)?;
             serde_json::to_value(support_report(command))
+                .map(DispatchSuccess::fresh)
                 .map_err(|_| ("encode_error", "failed to encode response".to_string()))
         }
         _ => Err(("unknown_op", "unknown menubar operation".to_string())),
@@ -279,6 +337,8 @@ fn error_envelope(
         minimum_backend_version: omx_app::compatibility::MIN_BACKEND_VERSION.to_string(),
         minimum_frontend_version: omx_app::compatibility::MIN_FRONTEND_VERSION.to_string(),
         ok: false,
+        data_stale: false,
+        served_from_snapshot: false,
         data: None,
         error: Some(ResponseError {
             code: code.into(),
@@ -286,6 +346,10 @@ fn error_envelope(
         }),
         request_id,
     })
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn encode(response: ResponseEnvelope) -> String {
@@ -515,8 +579,35 @@ mod tests {
         }
 
         assert_eq!(live["ok"], true);
+        assert_ne!(live["data_stale"], true);
+        assert_ne!(live["served_from_snapshot"], true);
         assert_eq!(fallback["ok"], true);
+        assert_eq!(fallback["data_stale"], true);
+        assert_eq!(fallback["served_from_snapshot"], true);
         assert_eq!(fallback["data"]["accounts"]["providers"][0], "codex");
+    }
+
+    #[test]
+    fn dashboard_accepts_usage_period_payload() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("OMUX_STATE_ROOT", temp.path());
+            std::env::set_var("CODEX_HOME", temp.path().join("codex-home"));
+        }
+
+        let payload: Value = serde_json::from_str(&call_json(
+            r#"{"schema_version":1,"op":"dashboard","payload":{"usage_period":"Today"}}"#,
+        ))
+        .unwrap();
+
+        unsafe {
+            std::env::remove_var("OMUX_STATE_ROOT");
+            std::env::remove_var("CODEX_HOME");
+        }
+
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["data"]["usage"]["period"], "Today");
     }
 
     #[test]

@@ -8,11 +8,11 @@ use comfy_table::{
     Attribute, Cell, Color, ContentArrangement, Table, modifiers::UTF8_ROUND_CORNERS,
     presets::UTF8_FULL_CONDENSED,
 };
-use inquire::Select;
+use inquire::{Confirm, Select};
 use omx_core::{
     AccountRef, AccountStatus, ConfigProfile, ImportConfigOptions, LoginOptions, PlatformPlugin,
-    RemoveReport, SaveOptions, StateStore, TargetKind, UsageAccounting, UsageCoverage,
-    UsageFreshness, UsageGroupBy, UsageLimit, UsagePeriod, UsageQuery, UsageReport,
+    RemoveReport, ResetCreditOutcome, SaveOptions, StateStore, TargetKind, UsageAccounting,
+    UsageCoverage, UsageFreshness, UsageGroupBy, UsageLimit, UsagePeriod, UsageQuery, UsageReport,
     UsageReportScan, UsageScanBudget, UsageScanDiagnostic, UsageScanOptions, UsageSnapshot,
     UsageSummary, UsageSummaryQuery, UseReport,
     storage::{state_root, unix_now},
@@ -21,7 +21,11 @@ use omx_plugin_claude::ClaudePlugin;
 use omx_plugin_codex::CodexPlugin;
 use omx_usage_tokscale::TokscaleUsageBackend;
 use serde_json::{Value, json};
-use std::{fmt, path::PathBuf};
+use std::{
+    fmt,
+    io::{self, IsTerminal},
+    path::PathBuf,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "omx", version, about = "OpenMux CLI")]
@@ -46,6 +50,8 @@ enum Command {
     Refresh {
         /// Platform id, for example: codex.
         platform: String,
+        /// Optional account number or alias to refresh one account.
+        selector: Option<String>,
     },
     /// Login through a platform's official flow and record the account.
     Login {
@@ -117,6 +123,16 @@ enum Command {
         platform: String,
         /// Account number or existing alias.
         selector: String,
+    },
+    /// Consume one Codex reset credit for an account.
+    ResetCredit {
+        /// Platform id. Currently only codex supports reset credits.
+        platform: String,
+        /// Account number or alias.
+        selector: String,
+        /// Confirm without prompting. Required in non-interactive use.
+        #[arg(long)]
+        yes: bool,
     },
     /// Run platform diagnostics.
     Doctor {
@@ -266,10 +282,18 @@ pub fn run() -> Result<()> {
                 println!("{table}");
             }
         }
-        Command::Refresh { platform } => {
+        Command::Refresh { platform, selector } => {
             let plugin = find_plugin(&plugins, &platform)?;
-            let accounts = plugin.refresh_accounts()?;
-            print_account_section_from_statuses(plugin.name(), &accounts, None);
+            match selector {
+                Some(selector) => {
+                    let account = refresh_selected_account(plugin, &selector)?;
+                    print_account_section_from_statuses(plugin.name(), &[account], None);
+                }
+                None => {
+                    let accounts = plugin.refresh_accounts()?;
+                    print_account_section_from_statuses(plugin.name(), &accounts, None);
+                }
+            }
             print_hint(
                 "Proxy: set OMUX_HTTPS_PROXY, HTTPS_PROXY, or ALL_PROXY before running refresh.",
             );
@@ -291,13 +315,9 @@ pub fn run() -> Result<()> {
                 "Imported {display_name} account {}",
                 account_label(&account)
             ));
-            let account_is_active = if platform == "claude" {
-                true
-            } else {
-                StateStore::open(&state_root()?)?
-                    .active_account(plugin.id())?
-                    .is_some_and(|active| active.local_id == account.local_id)
-            };
+            let account_is_active = StateStore::open(&state_root()?)?
+                .active_account(plugin.id())?
+                .is_some_and(|active| active.local_id == account.local_id);
             if account_is_active {
                 print_success(format!(
                     "Using {display_name} account {}",
@@ -523,6 +543,14 @@ pub fn run() -> Result<()> {
                 account.number
             ));
         }
+        Command::ResetCredit {
+            platform,
+            selector,
+            yes,
+        } => {
+            let plugin = find_plugin(&plugins, &platform)?;
+            consume_reset_credit_cli(plugin, &selector, yes)?;
+        }
         Command::Doctor { platform } => {
             if let Some(platform) = platform {
                 print_doctor(find_plugin(&plugins, &platform)?)?;
@@ -573,6 +601,79 @@ fn visible_plugins(
     plugins: &[Box<dyn PlatformPlugin>],
 ) -> impl Iterator<Item = &dyn PlatformPlugin> {
     plugins.iter().map(|plugin| plugin.as_ref())
+}
+
+fn refresh_selected_account(plugin: &dyn PlatformPlugin, selector: &str) -> Result<AccountStatus> {
+    let target = resolve_target(plugin, selector)?;
+    if target.kind != TargetKind::Account {
+        bail!("`{selector}` matched a profile; refresh only supports account targets");
+    }
+    plugin
+        .refresh_account(&target.target_id)
+        .map_err(Into::into)
+}
+
+fn consume_reset_credit_cli(plugin: &dyn PlatformPlugin, selector: &str, yes: bool) -> Result<()> {
+    if plugin.id() != "codex" {
+        bail!("reset-credit currently supports codex accounts only");
+    }
+    let target = resolve_target(plugin, selector)?;
+    if target.kind != TargetKind::Account {
+        bail!("`{selector}` matched a profile; reset-credit only supports account targets");
+    }
+    confirm_reset_credit(plugin.name(), selector, yes)?;
+    let outcome =
+        plugin.consume_reset_credit(&target.target_id, &reset_credit_idempotency_key())?;
+    print_success(reset_credit_outcome_message(&outcome));
+    match plugin.refresh_account(&target.target_id) {
+        Ok(account) => print_account_section_from_statuses(plugin.name(), &[account], None),
+        Err(err) => print_hint(format!(
+            "Reset credit operation completed, but quota refresh failed: {err}"
+        )),
+    }
+    Ok(())
+}
+
+fn confirm_reset_credit(platform_name: &str, selector: &str, yes: bool) -> Result<()> {
+    require_reset_credit_confirmation_flag(yes, io::stdin().is_terminal())?;
+    if yes {
+        return Ok(());
+    }
+    let confirmed = Confirm::new(&format!(
+        "Consume 1 {platform_name} reset credit for `{selector}`?"
+    ))
+    .with_default(false)
+    .prompt()?;
+    if !confirmed {
+        bail!("reset-credit cancelled");
+    }
+    Ok(())
+}
+
+fn require_reset_credit_confirmation_flag(yes: bool, stdin_is_tty: bool) -> Result<()> {
+    if !yes && !stdin_is_tty {
+        bail!("reset-credit requires --yes when stdin is not a TTY");
+    }
+    Ok(())
+}
+
+fn reset_credit_idempotency_key() -> String {
+    format!("omx-cli-{}-{}", unix_now(), std::process::id())
+}
+
+fn reset_credit_outcome_message(outcome: &ResetCreditOutcome) -> String {
+    match outcome {
+        ResetCreditOutcome::Reset { windows_reset } => {
+            format!("Consumed reset credit; reset {windows_reset} usage window(s)")
+        }
+        ResetCreditOutcome::NothingToReset => {
+            "No eligible usage limit to reset; no credit was consumed".to_string()
+        }
+        ResetCreditOutcome::NoCredit => "No reset credits available".to_string(),
+        ResetCreditOutcome::AlreadyRedeemed => {
+            "Reset credit request was already redeemed".to_string()
+        }
+    }
 }
 
 struct UsageCommandOptions {
@@ -1971,6 +2072,102 @@ mod tests {
         assert!(help.contains("Clear a local alias for an account"));
         assert!(help.contains("usage"));
         assert!(help.contains("Show parsed local token usage"));
+        assert!(help.contains("reset-credit"));
+        assert!(help.contains("Consume one Codex reset credit"));
+    }
+
+    #[test]
+    fn refresh_selected_account_uses_resolved_account_target() {
+        let plugin = FakePlugin {
+            id: "codex",
+            name: "Codex",
+            accounts: vec![account_status_with_alias_for("codex", 2, Some("work"))],
+            profiles: Vec::new(),
+            reset_outcome: None,
+        };
+
+        let refreshed = refresh_selected_account(&plugin, "work").unwrap();
+
+        assert_eq!(refreshed.account.local_id, "codex-account-2");
+    }
+
+    #[test]
+    fn refresh_selected_account_rejects_profile_target() {
+        let plugin = FakePlugin {
+            id: "codex",
+            name: "Codex",
+            accounts: Vec::new(),
+            profiles: vec![config_profile_for("codex", 1, "gateway")],
+            reset_outcome: None,
+        };
+
+        let err = refresh_selected_account(&plugin, "gateway").unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("refresh only supports account targets")
+        );
+    }
+
+    #[test]
+    fn reset_credit_cli_rejects_non_codex_provider_before_prompt() {
+        let plugin = FakePlugin {
+            id: "claude",
+            name: "Claude",
+            accounts: vec![account_status_with_alias_for("claude", 1, Some("work"))],
+            profiles: Vec::new(),
+            reset_outcome: Some(ResetCreditOutcome::NoCredit),
+        };
+
+        let err = consume_reset_credit_cli(&plugin, "work", true).unwrap_err();
+
+        assert!(err.to_string().contains("supports codex accounts only"));
+    }
+
+    #[test]
+    fn reset_credit_cli_consumes_confirmed_codex_account() {
+        let plugin = FakePlugin {
+            id: "codex",
+            name: "Codex",
+            accounts: vec![account_status_with_alias_for("codex", 1, Some("work"))],
+            profiles: Vec::new(),
+            reset_outcome: Some(ResetCreditOutcome::Reset { windows_reset: 1 }),
+        };
+
+        consume_reset_credit_cli(&plugin, "work", true).unwrap();
+    }
+
+    #[test]
+    fn reset_credit_cli_rejects_profile_target() {
+        let plugin = FakePlugin {
+            id: "codex",
+            name: "Codex",
+            accounts: Vec::new(),
+            profiles: vec![config_profile_for("codex", 1, "gateway")],
+            reset_outcome: Some(ResetCreditOutcome::NoCredit),
+        };
+
+        let err = consume_reset_credit_cli(&plugin, "gateway", true).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("reset-credit only supports account targets")
+        );
+    }
+
+    #[test]
+    fn reset_credit_requires_yes_without_tty() {
+        let err = require_reset_credit_confirmation_flag(false, false).unwrap_err();
+        assert!(err.to_string().contains("requires --yes"));
+        require_reset_credit_confirmation_flag(true, false).unwrap();
+    }
+
+    #[test]
+    fn reset_credit_outcome_messages_are_clear() {
+        assert_eq!(
+            reset_credit_outcome_message(&ResetCreditOutcome::NoCredit),
+            "No reset credits available"
+        );
     }
 
     #[test]
@@ -2175,6 +2372,7 @@ mod tests {
                 account_status_with_alias(2, Some("personal")),
             ],
             profiles: vec![config_profile(1, "gateway"), config_profile(2, "work")],
+            reset_outcome: None,
         };
 
         assert_eq!(
@@ -2213,6 +2411,7 @@ mod tests {
                 account_status_with_alias(3, None),
             ],
             profiles: vec![config_profile_without_number("api-apikey-fun")],
+            reset_outcome: None,
         };
 
         assert_eq!(
@@ -2285,10 +2484,18 @@ mod tests {
     }
 
     fn account_status_with_alias(number: u32, alias: Option<&str>) -> AccountStatus {
+        account_status_with_alias_for("claude", number, alias)
+    }
+
+    fn account_status_with_alias_for(
+        platform: &'static str,
+        number: u32,
+        alias: Option<&str>,
+    ) -> AccountStatus {
         AccountStatus {
             account: AccountRef {
-                platform: "claude".to_string(),
-                local_id: format!("claude-account-{number}"),
+                platform: platform.to_string(),
+                local_id: format!("{platform}-account-{number}"),
                 number,
                 alias: alias.map(str::to_string),
             },
@@ -2306,9 +2513,13 @@ mod tests {
     }
 
     fn config_profile(number: u32, name: &str) -> ConfigProfile {
+        config_profile_for("claude", number, name)
+    }
+
+    fn config_profile_for(platform: &'static str, number: u32, name: &str) -> ConfigProfile {
         ConfigProfile {
-            platform: omx_core::platform_info("claude", "Claude"),
-            local_id: format!("claude-profile-{name}"),
+            platform: omx_core::platform_info(platform, platform),
+            local_id: format!("{platform}-profile-{name}"),
             name: name.to_string(),
             active: false,
             config_path: format!("{name}.profile.json"),
@@ -2340,6 +2551,7 @@ mod tests {
         name: &'static str,
         accounts: Vec<AccountStatus>,
         profiles: Vec<ConfigProfile>,
+        reset_outcome: Option<ResetCreditOutcome>,
     }
 
     impl PlatformPlugin for FakePlugin {
@@ -2392,6 +2604,16 @@ mod tests {
 
         fn set_alias(&self, _selector: &str, _alias: &str) -> omx_core::Result<AccountRef> {
             Err(omx_core::OpenMuxError::Message("unused".to_string()))
+        }
+
+        fn consume_reset_credit(
+            &self,
+            _selector: &str,
+            _idempotency_key: &str,
+        ) -> omx_core::Result<ResetCreditOutcome> {
+            self.reset_outcome
+                .clone()
+                .ok_or_else(|| omx_core::OpenMuxError::Message("unused".to_string()))
         }
 
         fn doctor(&self) -> omx_core::Result<omx_core::DoctorReport> {

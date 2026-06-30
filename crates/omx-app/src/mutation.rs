@@ -7,12 +7,40 @@ use crate::runtime::{
     release_refresh_request,
 };
 use omx_core::{
-    OpenMuxError, PlatformPlugin, ResetCreditOutcome, Result, TargetCatalog, TargetKind,
-    TargetResolution, storage::unix_now,
+    ImportConfigOptions, LoginOptions, OpenMuxError, PlatformPlugin, ResetCreditOutcome, Result,
+    SaveOptions, TargetCatalog, TargetKind, TargetResolution, storage::unix_now,
 };
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
+/// Serializes everything that mutates local truth (the on-disk credentials and
+/// the OpenMux state DB). One writer at a time is a hard physical constraint —
+/// concurrent writes to `auth.json` corrupt it.
 pub(crate) static OPERATION_LOCK: Mutex<()> = Mutex::new(());
+
+/// Acquire the operation lock for a user-initiated write, BLOCKING until it is
+/// free. A user's intent to sign in / import / switch must run; it must never
+/// be dropped just because a background usage refresh briefly held the lock.
+/// (This replaces the old `try_lock`-or-fail, which surfaced lock contention as
+/// a spurious "operation already in progress" error and made the just-imported
+/// profile or just-added account silently fail to appear.)
+fn write_guard() -> MutexGuard<'static, ()> {
+    OPERATION_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Try to acquire the lock for an opportunistic background refresh. A refresh
+/// must NEVER block on the lock: it competes with user writes and even with the
+/// long-running login wait, so blocking could hang the refresh for minutes.
+/// Colliding with an in-flight operation simply means "skip this round" — the
+/// operation returns fresh data anyway, and the next refresh tick will catch up.
+fn try_refresh_guard() -> Option<MutexGuard<'static, ()>> {
+    match OPERATION_LOCK.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+    }
+}
 
 pub fn activate_target(
     plugins: &[Box<dyn PlatformPlugin>],
@@ -54,20 +82,116 @@ pub fn consume_reset_credit(
     menubar_consume_reset_credit(plugins, command, store)
 }
 
+pub fn login_account(
+    plugins: &[Box<dyn PlatformPlugin>],
+    command: LoginCommand,
+    store: Option<&omx_core::StateStore>,
+) -> Result<OnboardingOperationReport> {
+    menubar_login(plugins, command, store)
+}
+
+pub fn save_existing_login(
+    plugins: &[Box<dyn PlatformPlugin>],
+    command: SaveExistingLoginCommand,
+    store: Option<&omx_core::StateStore>,
+) -> Result<OnboardingOperationReport> {
+    menubar_save_existing_login(plugins, command, store)
+}
+
+pub fn import_profile(
+    plugins: &[Box<dyn PlatformPlugin>],
+    command: ImportProfileCommand,
+    store: Option<&omx_core::StateStore>,
+) -> Result<OnboardingOperationReport> {
+    menubar_import_profile(plugins, command, store)
+}
+
+pub fn menubar_login(
+    plugins: &[Box<dyn PlatformPlugin>],
+    command: LoginCommand,
+    store: Option<&omx_core::StateStore>,
+) -> Result<OnboardingOperationReport> {
+    let _guard = write_guard();
+    let plugin = find_plugin(plugins, &command.provider)?;
+    let before_catalog = target_catalog(plugin)?;
+    let active_before = active_target(plugin.id(), &before_catalog);
+    let _account = plugin.login(LoginOptions {
+        device_auth: command.device_auth,
+        alias: command.alias,
+        activate: command.activate,
+    })?;
+    onboarding_report(
+        plugins,
+        store,
+        command.provider,
+        command.usage_period,
+        active_before,
+        "Account signed in.",
+    )
+}
+
+pub fn menubar_save_existing_login(
+    plugins: &[Box<dyn PlatformPlugin>],
+    command: SaveExistingLoginCommand,
+    store: Option<&omx_core::StateStore>,
+) -> Result<OnboardingOperationReport> {
+    let _guard = write_guard();
+    let plugin = find_plugin(plugins, &command.provider)?;
+    let before_catalog = target_catalog(plugin)?;
+    let active_before = active_target(plugin.id(), &before_catalog);
+    let _account = plugin.save_current(SaveOptions {
+        alias: command.alias,
+    })?;
+    onboarding_report(
+        plugins,
+        store,
+        command.provider,
+        command.usage_period,
+        active_before,
+        "Existing login imported.",
+    )
+}
+
+pub fn menubar_import_profile(
+    plugins: &[Box<dyn PlatformPlugin>],
+    command: ImportProfileCommand,
+    store: Option<&omx_core::StateStore>,
+) -> Result<OnboardingOperationReport> {
+    if command.content.trim().is_empty() {
+        return Err(OpenMuxError::Message(
+            "profile import content cannot be empty".to_string(),
+        ));
+    }
+    let _guard = write_guard();
+    let plugin = find_plugin(plugins, &command.provider)?;
+    let before_catalog = target_catalog(plugin)?;
+    let active_before = active_target(plugin.id(), &before_catalog);
+    let _profile = plugin.import_config(ImportConfigOptions {
+        name: command.name,
+        content: command.content,
+    })?;
+    onboarding_report(
+        plugins,
+        store,
+        command.provider,
+        command.usage_period,
+        active_before,
+        "Profile imported.",
+    )
+}
+
 pub fn menubar_switch(
     plugins: &[Box<dyn PlatformPlugin>],
     command: SwitchCommand,
     store: Option<&omx_core::StateStore>,
 ) -> Result<SwitchReport> {
-    let _guard = OPERATION_LOCK
-        .try_lock()
-        .map_err(|_| OpenMuxError::Message("menubar operation already in progress".to_string()))?;
+    let _guard = write_guard();
     let plugin = find_plugin(plugins, &command.provider)?;
     let before_catalog = target_catalog(plugin)?;
     let active_before = active_target(plugin.id(), &before_catalog);
     let target = resolve_menubar_target(plugin.id(), &before_catalog, &command)?;
     plugin.use_target(&target.target_id)?;
-    let dashboard = menubar_dashboard(plugins, DashboardQuery::default(), store)?;
+    let dashboard = operation_dashboard(plugins, command.usage_period.clone(), store)?;
     let active_after = active_target_for_provider_from_report(plugin.id(), &dashboard.accounts);
     let changed = active_before.as_ref().map(|target| &target.account_key)
         != active_after.as_ref().map(|target| &target.account_key);
@@ -95,14 +219,41 @@ pub fn menubar_switch(
     })
 }
 
+fn onboarding_report(
+    plugins: &[Box<dyn PlatformPlugin>],
+    store: Option<&omx_core::StateStore>,
+    provider: String,
+    usage_period: Option<omx_core::UsagePeriod>,
+    active_before: Option<ActiveTarget>,
+    message: &str,
+) -> Result<OnboardingOperationReport> {
+    let dashboard = operation_dashboard(plugins, usage_period, store)?;
+    let active_after = active_target_for_provider_from_report(&provider, &dashboard.accounts);
+    let accounts = dashboard.accounts.clone();
+    Ok(OnboardingOperationReport {
+        control_plane_schema_version: CONTROL_PLANE_SCHEMA_VERSION,
+        state_schema_version: STATE_SCHEMA_VERSION,
+        generated_at_unix: unix_now(),
+        provider,
+        operation: OperationResult {
+            status: OperationStatus::Success,
+            changed: true,
+            active_before,
+            active_after,
+            message: message.to_string(),
+            diagnostics: Vec::new(),
+        },
+        dashboard,
+        accounts,
+    })
+}
+
 pub fn menubar_remove(
     plugins: &[Box<dyn PlatformPlugin>],
     command: RemoveCommand,
     store: Option<&omx_core::StateStore>,
 ) -> Result<RemoveReportView> {
-    let _guard = OPERATION_LOCK
-        .try_lock()
-        .map_err(|_| OpenMuxError::Message("menubar operation already in progress".to_string()))?;
+    let _guard = write_guard();
     let plugin = find_plugin(plugins, &command.provider)?;
     let before_catalog = target_catalog(plugin)?;
     let active_before = active_target(plugin.id(), &before_catalog);
@@ -113,10 +264,11 @@ pub fn menubar_remove(
             provider: command.provider.clone(),
             local_id: command.local_id.clone(),
             target_kind: command.target_kind,
+            usage_period: command.usage_period.clone(),
         },
     )?;
     plugin.remove_target(&target.target_id)?;
-    let dashboard = menubar_dashboard(plugins, DashboardQuery::default(), store)?;
+    let dashboard = operation_dashboard(plugins, command.usage_period.clone(), store)?;
     let active_after = active_target_for_provider_from_report(plugin.id(), &dashboard.accounts);
     let accounts = dashboard.accounts.clone();
     Ok(RemoveReportView {
@@ -144,9 +296,7 @@ pub fn menubar_consume_reset_credit(
     command: ConsumeResetCreditCommand,
     store: Option<&omx_core::StateStore>,
 ) -> Result<ConsumeResetCreditReport> {
-    let _guard = OPERATION_LOCK
-        .try_lock()
-        .map_err(|_| OpenMuxError::Message("menubar operation already in progress".to_string()))?;
+    let _guard = write_guard();
     let plugin = find_plugin(plugins, &command.provider)?;
     let before_catalog = target_catalog(plugin)?;
     let active = active_target(plugin.id(), &before_catalog);
@@ -157,6 +307,7 @@ pub fn menubar_consume_reset_credit(
             provider: command.provider.clone(),
             local_id: command.local_id.clone(),
             target_kind: command.target_kind,
+            usage_period: command.usage_period.clone(),
         },
     )?;
     let consume_result = plugin.consume_reset_credit(&target.target_id, &command.idempotency_key);
@@ -186,7 +337,7 @@ pub fn menubar_consume_reset_credit(
             )
         }
     };
-    let dashboard = menubar_dashboard(plugins, DashboardQuery::default(), store)?;
+    let dashboard = operation_dashboard(plugins, command.usage_period.clone(), store)?;
     let active_after = active_target_for_provider_from_report(plugin.id(), &dashboard.accounts);
     let accounts = dashboard.accounts.clone();
     Ok(ConsumeResetCreditReport {
@@ -214,9 +365,7 @@ pub fn menubar_refresh(
     command: RefreshCommand,
     store: Option<&omx_core::StateStore>,
 ) -> Result<RefreshReport> {
-    let _guard = OPERATION_LOCK
-        .try_lock()
-        .map_err(|_| OpenMuxError::Message("menubar operation already in progress".to_string()))?;
+    let lock = try_refresh_guard();
     let now = unix_now();
     let plugin = find_plugin(plugins, &command.provider)?;
     let refresh_target = match command.local_id.as_ref() {
@@ -229,6 +378,7 @@ pub fn menubar_refresh(
                     provider: command.provider.clone(),
                     local_id: local_id.clone(),
                     target_kind: command.target_kind,
+                    usage_period: command.usage_period.clone(),
                 },
             )?;
             if target.kind != TargetKind::Account {
@@ -241,10 +391,23 @@ pub fn menubar_refresh(
         }
         None => None,
     };
-    let generation = match begin_refresh_request(&command.provider, command.request_generation) {
+    // A refresh that collides with an in-flight write skips this round rather
+    // than blocking or erroring — the write returns fresh data anyway, and the
+    // skip carries the current dashboard so the UI never goes stale over it.
+    // `lock` is held (when Some) through the rest of the function, guarding the
+    // plugin refresh below.
+    let admission = if lock.is_some() {
+        begin_refresh_request(&command.provider, command.request_generation)
+    } else {
+        RefreshAdmission::Skipped {
+            generation: 0,
+            reason: "another operation is in progress".to_string(),
+        }
+    };
+    let generation = match admission {
         RefreshAdmission::Accepted(generation) => generation,
         RefreshAdmission::Skipped { generation, reason } => {
-            let dashboard = menubar_dashboard(plugins, DashboardQuery::default(), store)?;
+            let dashboard = operation_dashboard(plugins, command.usage_period.clone(), store)?;
             let active =
                 active_target_for_provider_from_report(&command.provider, &dashboard.accounts);
             let operation = OperationResult {
@@ -318,7 +481,7 @@ pub fn menubar_refresh(
     } else {
         release_refresh_request(&command.provider, generation);
     }
-    let dashboard = menubar_dashboard(plugins, DashboardQuery::default(), store)?;
+    let dashboard = operation_dashboard(plugins, command.usage_period.clone(), store)?;
     let active = active_target_for_provider_from_report(&command.provider, &dashboard.accounts);
     let refreshed = refreshed && operation_status == OperationStatus::Success;
     let operation = OperationResult {
@@ -355,6 +518,21 @@ fn menubar_reset_credit_outcome(outcome: &ResetCreditOutcome) -> ResetCreditOutc
         ResetCreditOutcome::NoCredit => ResetCreditOutcomeView::NoCredit,
         ResetCreditOutcome::AlreadyRedeemed => ResetCreditOutcomeView::AlreadyRedeemed,
     }
+}
+
+fn operation_dashboard(
+    plugins: &[Box<dyn PlatformPlugin>],
+    usage_period: Option<omx_core::UsagePeriod>,
+    store: Option<&omx_core::StateStore>,
+) -> Result<DashboardReport> {
+    menubar_dashboard(
+        plugins,
+        DashboardQuery {
+            provider: None,
+            usage_period,
+        },
+        store,
+    )
 }
 
 fn reset_credit_message(outcome: &ResetCreditOutcome) -> String {

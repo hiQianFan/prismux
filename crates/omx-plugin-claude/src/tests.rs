@@ -137,13 +137,34 @@ fn login_runs_official_claude_cli_then_imports_account_snapshot() {
 
     assert_eq!(account.number, 1);
     assert_eq!(account.alias.as_deref(), Some("work"));
-    assert_eq!(plugin.current().unwrap().unwrap().account.number, 1);
+    // activate: false must NOT auto-switch the active account.
+    assert!(plugin.current().unwrap().is_none());
     let args_log = fs::read_to_string(fake_claude.with_extension("args")).unwrap();
     assert_eq!(args_log.trim(), "auth login");
     let state_db = fs::read(state_root.join("omx-state.sqlite")).unwrap();
     let state_text = String::from_utf8_lossy(&state_db);
     assert!(!state_text.contains("login-access"));
     assert!(!state_text.contains("login-refresh"));
+}
+
+#[test]
+fn login_with_activate_switches_to_the_new_account() {
+    let temp = test_temp_dir("claude-account-login-activate");
+    let claude_home = temp.join("claude-home");
+    let state_root = temp.join("openmux-state");
+    let fake_claude = fake_claude_login_executable(&temp);
+    let plugin =
+        ClaudePlugin::with_paths_and_claude_executable(&claude_home, &state_root, &fake_claude);
+
+    let account = plugin
+        .login(LoginOptions {
+            activate: true,
+            ..LoginOptions::default()
+        })
+        .unwrap();
+
+    assert_eq!(account.number, 1);
+    assert_eq!(plugin.current().unwrap().unwrap().account.number, 1);
 }
 
 #[test]

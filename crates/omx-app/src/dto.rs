@@ -1,9 +1,45 @@
 use omx_core::{CostStatus, UsagePeriod};
 use serde::{Deserialize, Serialize};
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DashboardQuery {
     pub provider: Option<String>,
+    #[serde(default)]
+    pub usage_period: Option<UsagePeriod>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LoginCommand {
+    pub provider: String,
+    #[serde(default)]
+    pub alias: Option<String>,
+    #[serde(default = "default_true")]
+    pub activate: bool,
+    #[serde(default)]
+    pub device_auth: bool,
+    #[serde(default)]
+    pub usage_period: Option<UsagePeriod>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SaveExistingLoginCommand {
+    pub provider: String,
+    #[serde(default)]
+    pub alias: Option<String>,
+    #[serde(default)]
+    pub usage_period: Option<UsagePeriod>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImportProfileCommand {
+    pub provider: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    pub content: String,
     #[serde(default)]
     pub usage_period: Option<UsagePeriod>,
 }
@@ -14,6 +50,8 @@ pub struct SwitchCommand {
     pub local_id: String,
     #[serde(default)]
     pub target_kind: Option<TargetKindView>,
+    #[serde(default)]
+    pub usage_period: Option<UsagePeriod>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -22,6 +60,8 @@ pub struct RemoveCommand {
     pub local_id: String,
     #[serde(default)]
     pub target_kind: Option<TargetKindView>,
+    #[serde(default)]
+    pub usage_period: Option<UsagePeriod>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -31,6 +71,8 @@ pub struct ConsumeResetCreditCommand {
     pub idempotency_key: String,
     #[serde(default)]
     pub target_kind: Option<TargetKindView>,
+    #[serde(default)]
+    pub usage_period: Option<UsagePeriod>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -43,6 +85,8 @@ pub struct RefreshCommand {
     pub target_kind: Option<TargetKindView>,
     #[serde(default)]
     pub request_generation: Option<u64>,
+    #[serde(default)]
+    pub usage_period: Option<UsagePeriod>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -230,6 +274,17 @@ pub struct ConsumeResetCreditReport {
     pub operation: OperationResult,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<ResetCreditOutcomeView>,
+    pub dashboard: DashboardReport,
+    pub accounts: AccountsReport,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OnboardingOperationReport {
+    pub control_plane_schema_version: u32,
+    pub state_schema_version: u32,
+    pub generated_at_unix: u64,
+    pub provider: String,
+    pub operation: OperationResult,
     pub dashboard: DashboardReport,
     pub accounts: AccountsReport,
 }

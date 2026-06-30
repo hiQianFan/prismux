@@ -1,10 +1,10 @@
 use omx_core::{
     AccountRecord, AccountRef, AccountStatus, Availability, ConfigProfile, ConfigSwitchReport,
-    DoctorCheck, DoctorReport, ImportConfigOptions, ImportedConfig, LoginOptions, OpenMuxError,
-    PlatformCapabilities, PlatformInfo, PlatformInstall, PlatformPlugin, PlatformPoolSummary,
-    ProfileRecord, RemoveReport, RemovedAccount, RemovedConfig, Result, SaveOptions, StateStore,
-    SwitchReport, TargetCatalog, TargetKind, TargetResolution, UpsertAccount, UpsertProfile,
-    UseReport, platform_info,
+    DoctorCheck, DoctorReport, ImportConfigOptions, ImportedConfig, LOGIN_TIMEOUT, LoginOptions,
+    OpenMuxError, PlatformCapabilities, PlatformInfo, PlatformInstall, PlatformPlugin,
+    PlatformPoolSummary, ProfileRecord, RemoveReport, RemovedAccount, RemovedConfig, Result,
+    SaveOptions, StateStore, SwitchReport, TargetCatalog, TargetKind, TargetResolution,
+    UpsertAccount, UpsertProfile, UseReport, platform_info, run_cancellable_login,
     storage::{
         create_dir_private, display_path, home_dir, io_error, prune_backup_files, read_file,
         sha256_hex, state_root as default_state_root, unix_now, unix_now_nanos,
@@ -708,12 +708,11 @@ impl ClaudePlugin {
             command.env("CLAUDE_CONFIG_DIR", path);
         }
 
-        let status = command.status().map_err(|err| {
-            OpenMuxError::Message(format!(
-                "failed to run {} auth login: {err}",
-                display_path(&self.claude_executable)
-            ))
-        })?;
+        let status = run_cancellable_login(
+            &mut command,
+            LOGIN_TIMEOUT,
+            &display_path(&self.claude_executable),
+        )?;
         if !status.success() {
             return Err(OpenMuxError::Message(
                 "Claude official login did not complete successfully".to_string(),
@@ -721,8 +720,12 @@ impl ClaudePlugin {
         }
 
         let account = self.import_account(options.alias)?;
-        self.switch_to(&account.number.to_string())
-            .map(|report| report.current)
+        if options.activate {
+            self.switch_to(&account.number.to_string())
+                .map(|report| report.current)
+        } else {
+            Ok(account)
+        }
     }
 
     fn import_account(&self, name: Option<String>) -> Result<AccountRef> {
@@ -824,7 +827,7 @@ impl PlatformPlugin for ClaudePlugin {
             account_import: true,
             profiles: true,
             profile_import: true,
-            account_save: false,
+            account_save: true,
         }
     }
 

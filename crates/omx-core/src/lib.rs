@@ -1,5 +1,6 @@
 mod account;
 mod error;
+mod login_control;
 mod platform;
 mod plugin;
 mod profile;
@@ -11,6 +12,7 @@ mod usage;
 
 pub use account::*;
 pub use error::*;
+pub use login_control::*;
 pub use platform::*;
 pub use plugin::*;
 pub use profile::*;

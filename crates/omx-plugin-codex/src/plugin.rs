@@ -9,12 +9,12 @@ use chrono::DateTime;
 use omx_core::{
     AccountRecord, AccountRef, AccountStatus, AccountSubjectUpdate, Availability,
     AvailabilityState, ConfigProfile, ConfigSwitchReport, DoctorCheck, DoctorReport,
-    ImportConfigOptions, ImportedConfig, LoginOptions, OpenMuxError, PlatformCapabilities,
-    PlatformInfo, PlatformInstall, PlatformPlugin, PlatformPoolSummary, ProfileRecord,
-    RemoveReport, RemovedAccount, RemovedConfig, ResetCreditOutcome, Result, SaveOptions,
-    StateStore, SwitchReport, UpsertAccount, UpsertProfile, UsageDiagnostic, UsageLimit,
-    UsageLimitKind, UsageLimitScope, UsageResetCredit, UsageResetCredits, UsageSnapshot,
-    UsageSource, UseReport, platform_info,
+    ImportConfigOptions, ImportedConfig, LOGIN_TIMEOUT, LoginOptions, OpenMuxError,
+    PlatformCapabilities, PlatformInfo, PlatformInstall, PlatformPlugin, PlatformPoolSummary,
+    ProfileRecord, RemoveReport, RemovedAccount, RemovedConfig, ResetCreditOutcome, Result,
+    SaveOptions, StateStore, SwitchReport, UpsertAccount, UpsertProfile, UsageDiagnostic,
+    UsageLimit, UsageLimitKind, UsageLimitScope, UsageResetCredit, UsageResetCredits,
+    UsageSnapshot, UsageSource, UseReport, platform_info, run_cancellable_login,
     storage::{
         create_dir_private, display_path, home_dir, io_error, prune_backup_files, read_file,
         sha256_hex, state_root as default_state_root, unix_now, unix_now_nanos,
@@ -1460,17 +1460,19 @@ impl PlatformPlugin for CodexPlugin {
             command.arg("--device-auth");
         }
 
-        let status = command.status().map_err(|err| {
-            OpenMuxError::Message(format!(
-                "failed to run {} login: {err}",
-                display_path(&self.codex_executable)
-            ))
-        });
-        if let Err(err) = status {
-            let _ = fs::remove_dir_all(&login_home);
-            return Err(err);
-        }
-        if !status.expect("status checked").success() {
+        let status = run_cancellable_login(
+            &mut command,
+            LOGIN_TIMEOUT,
+            &display_path(&self.codex_executable),
+        );
+        let status = match status {
+            Ok(status) => status,
+            Err(err) => {
+                let _ = fs::remove_dir_all(&login_home);
+                return Err(err);
+            }
+        };
+        if !status.success() {
             let _ = fs::remove_dir_all(&login_home);
             return Err(OpenMuxError::Message(
                 "codex login did not complete successfully".into(),

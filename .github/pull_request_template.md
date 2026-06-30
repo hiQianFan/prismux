@@ -5,6 +5,7 @@
 - [ ] `cargo fmt --all`
 - [ ] `cargo test --locked`
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings`
+- [ ] `scripts/build-menubar.sh` / `scripts/bundle-menubar.sh` when Menubar or release packaging changes
 - [ ] Docs/CHANGELOG updated where needed
 
 ## Safety

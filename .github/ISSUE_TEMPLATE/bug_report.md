@@ -11,6 +11,8 @@ labels: bug
 
 - OS and architecture:
 - OpenMux version (`omx --version`):
+- Install source: `OpenMux.app` / `cargo install` / source build
+- App path if using Menubar:
 - Tool: Codex / Claude Code / other
 - Overrides used: `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `OMUX_STATE_ROOT`
 
@@ -28,4 +30,3 @@ labels: bug
 
 Do not paste tokens, `auth.json`, `.credentials.json`, snapshots, backups, or
 private account file contents.
-

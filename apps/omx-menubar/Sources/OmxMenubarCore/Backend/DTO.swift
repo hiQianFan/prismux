@@ -68,7 +68,7 @@ public struct ProviderAggregateView: Decodable, Sendable {
     public let targetCount: UInt32
     public let activeTarget: ActiveTarget?
     public let quotaHealth: QuotaHealthRollup
-    /// This provider's token/cost headline for the selected period.
+    /// This provider's token/cost headline for the headline period.
     public let usageHeadline: UsageHeadline?
     public let status: String
     public let statusTone: String
@@ -155,6 +155,7 @@ public struct TargetRecommendation: Decodable, Sendable {
 }
 
 public struct UsageHeadline: Decodable, Sendable {
+    public let period: UsagePeriod
     public let totalTokens: UInt64
     public let inputTokens: UInt64?
     public let outputTokens: UInt64?
@@ -165,6 +166,7 @@ public struct UsageHeadline: Decodable, Sendable {
     public let breakdown: [UsageModelBreakdown]
 
     enum CodingKeys: String, CodingKey {
+        case period
         case totalTokens = "total_tokens"
         case inputTokens = "input_tokens"
         case outputTokens = "output_tokens"

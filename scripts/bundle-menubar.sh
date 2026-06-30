@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-"$ROOT/target"}"
 
 VERSION="$(awk '/^version = / { gsub(/"/, "", $3); print $3; exit }' Cargo.toml)"
 APP_DIR="$ROOT/target/menubar/OpenMux.app"
@@ -17,7 +18,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS"
 mkdir -p "$RESOURCES"
 cp "$ROOT/apps/omx-menubar/.build/release/OmxMenubarApp" "$MACOS/OpenMux"
-cp "$ROOT/target/release/omx" "$MACOS/omx"
+cp "$CARGO_TARGET_DIR/release/omx" "$MACOS/omx"
 find "$ROOT/apps/omx-menubar/.build/out/Products/Release" -maxdepth 1 -name '*.bundle' -exec cp -R {} "$RESOURCES/" \;
 
 cat > "$CONTENTS/Info.plist" <<PLIST

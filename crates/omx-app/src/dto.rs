@@ -156,7 +156,7 @@ pub struct ProviderAggregateView {
     pub target_count: u32,
     pub active_target: Option<ActiveTarget>,
     pub quota_health: QuotaHealthRollup,
-    /// This provider's token/cost headline for the selected period. Lets the
+    /// This provider's token/cost headline for the headline period. Lets the
     /// Overview render a per-provider usage line without re-joining provider_usage.
     pub usage_headline: UsageHeadline,
     pub status: TargetStatus,

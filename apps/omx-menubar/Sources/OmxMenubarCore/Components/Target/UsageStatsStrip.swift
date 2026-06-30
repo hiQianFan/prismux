@@ -8,29 +8,44 @@ import SwiftUI
 /// Pure presentation: reads a `UsageHeadline`, computes nothing.
 struct UsageStatsStrip: View {
     let headline: UsageHeadline
+    var title: String?
+    var showsPeriodLabel = true
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Focal row: how much (tokens) and how much it cost ($), paired.
-            HStack(alignment: .firstTextBaseline) {
-                Text("\(tokenText(headline.totalTokens)) tokens")
-                    .font(.title3.monospacedDigit().weight(.semibold))
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                if let cost = costText {
-                    Text(cost)
-                        .font(.callout.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+        VStack(alignment: .leading, spacing: 10) {
+            if let title {
+                Text(title)
+                    .font(.headline)
             }
 
-            // Subordinate: input/output breakdown of the total above.
-            if let split = splitText {
-                Text(split)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+            // Focal row: how much (tokens) and how much it cost ($), paired.
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("\(tokenText(headline.totalTokens)) tokens")
+                        .font(.title3.monospacedDigit().weight(.semibold))
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    if let cost = costText {
+                        Text(cost)
+                            .font(.callout.monospacedDigit().weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+
+                // Subordinate: input/output breakdown of the total above.
+                if let split = splitText {
+                    Text(split)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+
+                if showsPeriodLabel {
+                    Text(headline.period.label)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
         .padding(12)
@@ -71,6 +86,9 @@ struct UsageStatsStrip: View {
             parts.append("\(tokenText(input)) input, \(tokenText(output)) output")
         }
         if let cost = costText { parts.append(cost) }
+        if showsPeriodLabel {
+            parts.append(headline.period.label)
+        }
         return parts.joined(separator: ", ")
     }
 

@@ -213,12 +213,24 @@ pub fn menubar_dashboard(
         .find(|account| account.active)
         .cloned();
     let provider_usage = menubar_provider_usage(store, &accounts.providers, usage_period.clone())?;
-    let provider_headlines: std::collections::HashMap<String, UsageHeadline> = provider_usage
-        .iter()
-        .map(|entry| (entry.provider.clone(), usage_headline(&entry.usage)))
-        .collect();
+    let headline_period = UsagePeriod::Today;
+    let provider_headline_usage = if usage_period == headline_period {
+        provider_usage.clone()
+    } else {
+        menubar_provider_usage(store, &accounts.providers, headline_period.clone())?
+    };
+    let provider_headlines: std::collections::HashMap<String, UsageHeadline> =
+        provider_headline_usage
+            .iter()
+            .map(|entry| (entry.provider.clone(), usage_headline(&entry.usage)))
+            .collect();
     let provider_views = provider_views(&accounts, &statuses, &provider_headlines);
     let usage = dashboard_usage(store, usage_period.clone())?;
+    let headline_usage = if usage_period == headline_period {
+        usage.clone()
+    } else {
+        dashboard_usage(store, headline_period.clone())?
+    };
     let aggregate = DashboardAggregateView {
         quota_health: quota_health_rollup(
             &statuses.iter().collect::<Vec<_>>(),
@@ -229,7 +241,7 @@ pub fn menubar_dashboard(
             .iter()
             .map(|view| view.aggregate.clone())
             .collect(),
-        usage_headline: usage_headline(&usage),
+        usage_headline: usage_headline(&headline_usage),
         diagnostics: accounts.diagnostics.clone(),
     };
     Ok(DashboardReport {
@@ -296,7 +308,7 @@ fn provider_views(
                 usage_headline: provider_headlines
                     .get(provider)
                     .cloned()
-                    .unwrap_or_else(|| empty_usage_headline(UsagePeriod::ThirtyDays)),
+                    .unwrap_or_else(|| empty_usage_headline(UsagePeriod::Today)),
                 status: status.clone(),
                 status_tone: status_tone.clone(),
                 status_text: status_text.clone(),

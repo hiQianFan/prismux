@@ -611,6 +611,33 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_usage_headline_stays_today_when_chart_period_changes() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("OMUX_STATE_ROOT", temp.path());
+            std::env::set_var("CODEX_HOME", temp.path().join("codex-home"));
+        }
+
+        let payload: Value = serde_json::from_str(&call_json(
+            r#"{"schema_version":1,"op":"dashboard","payload":{"usage_period":"ThirtyDays"}}"#,
+        ))
+        .unwrap();
+
+        unsafe {
+            std::env::remove_var("OMUX_STATE_ROOT");
+            std::env::remove_var("CODEX_HOME");
+        }
+
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["data"]["usage"]["period"], "ThirtyDays");
+        assert_eq!(
+            payload["data"]["aggregate"]["usage_headline"]["period"],
+            "Today"
+        );
+    }
+
+    #[test]
     fn dashboard_refreshes_usage_cache_from_local_codex_sessions() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         let temp = tempfile::tempdir().unwrap();

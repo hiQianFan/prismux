@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-"$ROOT/target"}"
 
 # SwiftUI macros (@State etc.) need the full Xcode toolchain; CommandLineTools
 # ships no SwiftUIMacros plugin and the build fails on SDK 27. Pin DEVELOPER_DIR
@@ -24,6 +25,29 @@ if [ -z "${DEVELOPER_DIR:-}" ] && ! xcode-select -p 2>/dev/null | grep -q "Xcode
 fi
 
 cargo build --release -p omx-menubar-ffi
-swift build --package-path apps/omx-menubar -c release
-swift run --package-path apps/omx-menubar -c release OmxMenubarContractTests
+export HOME="${OMUX_SWIFT_HOME:-"$ROOT/target/swift-home"}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-"$ROOT/target/swift-cache"}"
+export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-"$ROOT/target/swift-module-cache"}"
+SWIFT_CONFIG_PATH="${OMUX_SWIFT_CONFIG_PATH:-"$ROOT/target/swift-config"}"
+SWIFT_SECURITY_PATH="${OMUX_SWIFT_SECURITY_PATH:-"$ROOT/target/swift-security"}"
+mkdir -p "$HOME" "$XDG_CACHE_HOME" "$CLANG_MODULE_CACHE_PATH" "$SWIFT_CONFIG_PATH" "$SWIFT_SECURITY_PATH"
+swift build \
+  --package-path apps/omx-menubar \
+  --cache-path "$XDG_CACHE_HOME" \
+  --config-path "$SWIFT_CONFIG_PATH" \
+  --security-path "$SWIFT_SECURITY_PATH" \
+  --disable-sandbox \
+  -Xswiftc -disable-sandbox \
+  -debug-info-format none \
+  -c release
+swift run \
+  --package-path apps/omx-menubar \
+  --cache-path "$XDG_CACHE_HOME" \
+  --config-path "$SWIFT_CONFIG_PATH" \
+  --security-path "$SWIFT_SECURITY_PATH" \
+  --disable-sandbox \
+  -Xswiftc -disable-sandbox \
+  -debug-info-format none \
+  -c release \
+  OmxMenubarContractTests
 "$ROOT/scripts/check-menubar-privacy.sh"

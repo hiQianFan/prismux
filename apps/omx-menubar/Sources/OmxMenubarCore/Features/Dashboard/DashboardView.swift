@@ -174,7 +174,11 @@ struct DashboardView: View {
         let providers = providerNames(report)
         let alerts = aggregatedDiagnostics(report)
         return VStack(alignment: .leading, spacing: 12) {
-            UsageStatsStrip(headline: report.aggregate.usageHeadline)
+            UsageStatsStrip(
+                headline: report.aggregate.usageHeadline,
+                title: "Today Usage",
+                showsPeriodLabel: false
+            )
 
             Card(title: "Providers") {
                 if providers.isEmpty {
@@ -262,7 +266,7 @@ struct DashboardView: View {
     @ViewBuilder
     private func providerOverview(provider: String, accounts: [TargetAccount], profiles: [TargetProfile], active: TargetAccount?, activeProfile: TargetProfile?, usage: UsageSummary, report: DashboardReport) -> some View {
         if let headline = providerAggregate(provider, in: report)?.usageHeadline {
-            UsageStatsStrip(headline: headline)
+            UsageStatsStrip(headline: headline, title: "Today Usage", showsPeriodLabel: false)
         }
     }
 

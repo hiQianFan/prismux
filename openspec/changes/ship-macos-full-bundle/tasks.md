@@ -40,19 +40,21 @@
 
 ## 5. Validation
 
-- [ ] 5.1 运行 `cargo fmt --all`、`cargo test --locked`、`cargo clippy --all-targets --all-features -- -D warnings`。
-- [ ] 5.2 运行 `scripts/build-menubar.sh` 和 `scripts/bundle-menubar.sh`。
-- [ ] 5.3 对 bundle 运行 `codesign --verify`、version check、privacy check 和 bundle audit。
-- [ ] 5.4 使用隔离 `OMUX_STATE_ROOT`、`CODEX_HOME`、`CLAUDE_CONFIG_DIR` 运行 bundled helper `omx status` smoke test。
-- [ ] 5.5 执行 public repo surface audit：`git ls-files` 不应包含本地 agent/BMad 输出、auth payload、token、snapshot、backup、private account files 或无说明的生成物。
-- [ ] 5.6 执行 release readiness audit：README、INSTALL、RELEASE、ROADMAP、CHANGELOG、workflow artifact 名称和 bundle layout 互相一致。
-- [ ] 5.7 执行 secret scan（gitleaks 或等价命令）；如果工具不可用，记录手动 grep 审计命令和结果。
-- [ ] 5.8 验证 GitHub source archive build path：从 clean checkout/source archive 能执行 Rust checks，且 macOS + full Xcode 环境能执行 Menubar bundle script。
+- [x] 5.1 运行 `cargo fmt --all`、`cargo test --locked`、`cargo clippy --all-targets --all-features -- -D warnings`。
+- [x] 5.2 运行 `scripts/build-menubar.sh` 和 `scripts/bundle-menubar.sh`。
+- [x] 5.3 对 bundle 运行 `codesign --verify`、version check、privacy check 和 bundle audit。
+- [x] 5.4 使用隔离 `OMUX_STATE_ROOT`、`CODEX_HOME`、`CLAUDE_CONFIG_DIR` 运行 bundled helper `omx status` smoke test。
+- [x] 5.5 执行 public repo surface audit：`git ls-files` 不应包含本地 agent/BMad 输出、auth payload、token、snapshot、backup、private account files 或无说明的生成物。
+- [x] 5.6 执行 release readiness audit：README、INSTALL、RELEASE、ROADMAP、CHANGELOG、workflow artifact 名称和 bundle layout 互相一致。
+- [x] 5.7 执行 secret scan（gitleaks 或等价命令）；如果工具不可用，记录手动 grep 审计命令和结果。
+- [x] 5.8 验证 GitHub source archive build path：从 clean checkout/source archive 能执行 Rust checks，且 macOS + full Xcode 环境能执行 Menubar bundle script。
 
 ## 6. GitHub repository setup
 
 - [ ] 6.1 确认 GitHub repo description、website/about、topics、license detection 和 default branch 正确。
 - [ ] 6.2 启用 branch protection：required CI checks、PR-only、禁止 force push、禁止删除。
 - [ ] 6.3 启用 GitHub private vulnerability reporting（如果当前 repo 支持）。
-- [ ] 6.4 确认 issue templates 不要求用户粘贴 auth/token/snapshot/backups，并提供环境/version/path override 字段。
-- [ ] 6.5 确认 release workflow 权限最小化；PR CI 不需要 `contents: write`。
+- [x] 6.4 确认 issue templates 不要求用户粘贴 auth/token/snapshot/backups，并提供环境/version/path override 字段。
+- [x] 6.5 确认 release workflow 权限最小化；PR CI 不需要 `contents: write`。
+
+> 远端状态：本地当前没有配置 git remote；文档中的 `hiQianFan/openmux` 仓库对 `gh repo view` 不可解析，branch protection 和 private vulnerability reporting API 返回 404。因此 6.1-6.3 需要在 GitHub 仓库创建/授权/remote 配置完成后再核验并勾选。

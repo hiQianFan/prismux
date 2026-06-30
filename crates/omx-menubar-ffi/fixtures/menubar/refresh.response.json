@@ -84,7 +84,7 @@
               "estimated_cost_usd": null,
               "input_tokens": 0,
               "output_tokens": 0,
-              "period": "ThirtyDays",
+              "period": "Today",
               "top_client": null,
               "top_model": null,
               "total_tokens": 0
@@ -129,7 +129,7 @@
               "estimated_cost_usd": null,
               "input_tokens": 0,
               "output_tokens": 0,
-              "period": "ThirtyDays",
+              "period": "Today",
               "top_client": null,
               "top_model": null,
               "total_tokens": 0
@@ -164,7 +164,7 @@
           "estimated_cost_usd": null,
           "input_tokens": 0,
           "output_tokens": 0,
-          "period": "ThirtyDays",
+          "period": "Today",
           "top_client": null,
           "top_model": null,
           "total_tokens": 0
@@ -269,7 +269,7 @@
               "estimated_cost_usd": null,
               "input_tokens": 0,
               "output_tokens": 0,
-              "period": "ThirtyDays",
+              "period": "Today",
               "top_client": null,
               "top_model": null,
               "total_tokens": 0
@@ -323,7 +323,7 @@
               "estimated_cost_usd": null,
               "input_tokens": 0,
               "output_tokens": 0,
-              "period": "ThirtyDays",
+              "period": "Today",
               "top_client": null,
               "top_model": null,
               "total_tokens": 0

@@ -1,6 +1,8 @@
 // swift-tools-version: 5.10
 import PackageDescription
 
+let rustTargetDir = Context.environment["CARGO_TARGET_DIR"] ?? "../../target"
+
 let package = Package(
     name: "omx-menubar",
     platforms: [.macOS(.v14)],
@@ -12,7 +14,7 @@ let package = Package(
             name: "OmxMenubarCore",
             resources: [.copy("Resources/ProviderIcons")],
             linkerSettings: [
-                .unsafeFlags(["../../target/release/libomx_menubar_ffi.a"])
+                .unsafeFlags(["\(rustTargetDir)/release/libomx_menubar_ffi.a"])
             ]
         ),
         .executableTarget(

@@ -2,7 +2,7 @@ import Foundation
 
 /// The period selector shown on the usage card. Today renders hourly bars;
 /// 7d / 30d roll the same hourly series up into daily bars.
-public enum UsagePeriod: String, CaseIterable, Identifiable, Sendable {
+public enum UsagePeriod: String, CaseIterable, Identifiable, Sendable, Decodable {
     case today
     case sevenDays
     case thirtyDays
@@ -22,6 +22,22 @@ public enum UsagePeriod: String, CaseIterable, Identifiable, Sendable {
         case .today: return "Today"
         case .sevenDays: return "SevenDays"
         case .thirtyDays: return "ThirtyDays"
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        switch value {
+        case "Today", "today":
+            self = .today
+        case "SevenDays", "sevenDays":
+            self = .sevenDays
+        case "ThirtyDays", "thirtyDays":
+            self = .thirtyDays
+        default:
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: decoder.codingPath, debugDescription: "Unknown usage period \(value)")
+            )
         }
     }
 

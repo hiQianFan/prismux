@@ -118,8 +118,6 @@ jobs:
         include:
           - suffix: macos-arm64
             runner: macos-14
-          - suffix: macos-x86_64
-            runner: macos-13
     runs-on: ${{ matrix.runner }}
 
     steps:

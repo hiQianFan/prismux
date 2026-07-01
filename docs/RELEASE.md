@@ -52,8 +52,7 @@ real tool home unless that is the explicit intent.
 
 ## macOS Artifacts
 
-- `Prismux-vX.Y.Z-macos-arm64.zip` and `Prismux-vX.Y.Z-macos-x86_64.zip`
-  archives, each containing `Prismux.app`
+- `Prismux-vX.Y.Z-macos-arm64.zip`, containing `Prismux.app`
 - bundled CLI helper at `Prismux.app/Contents/MacOS/prismux`
 - `SHA256SUMS`
 

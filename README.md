@@ -17,7 +17,7 @@ number or alias without repeatedly walking through browser login flows.
 | Platform | v0.1 status | Notes |
 | --- | --- | --- |
 | macOS Apple Silicon | Supported | Official `Prismux.app` GitHub Release target. |
-| macOS Intel | Supported | Official `Prismux.app` GitHub Release target. |
+| macOS Intel | Not planned | Source builds may work; no official app bundle. |
 | Linux | Planned | Source builds may work; no official v0.1 binary. |
 | Windows | Planned | Requires credential, permission, and external CLI validation. |
 

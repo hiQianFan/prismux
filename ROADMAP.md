@@ -6,7 +6,7 @@
 
 - Codex account login, save, list, alias, switch, and profile import.
 - Claude Code profile import/switch and OAuth account snapshot import/switch.
-- macOS `Prismux.app` full bundle releases for Apple Silicon and Intel, with a
+- macOS `Prismux.app` full bundle releases for Apple Silicon, with a
   bundled same-version `prismux` helper.
 - `cargo install --git` developer install path.
 - Bilingual README and user docs.

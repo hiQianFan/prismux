@@ -36,8 +36,8 @@ may include breaking changes to the CLI or internal plugin API.
 - Unified Claude account/profile selector resolution with ambiguity detection.
 - Native macOS Menubar app for dashboard, refresh, explicit account/profile
   activation, onboarding actions, Settings, About, and support report copying.
-- macOS full bundle release path: `Prismux.app` archives for Apple Silicon and
-  Intel, with bundled same-version `prismux` helper at
+- macOS full bundle release path: `Prismux.app` archives for Apple Silicon,
+  with bundled same-version `prismux` helper at
   `Prismux.app/Contents/MacOS/prismux`.
 - Explicit `Enable prismux command` setup that creates a user-controlled symlink to
   the bundled helper without copying auth/state or modifying shell startup

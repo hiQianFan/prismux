@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Suggest an OpenMux capability
+about: Suggest an Prismux capability
 title: "feat: "
 labels: enhancement
 ---

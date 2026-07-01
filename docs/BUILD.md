@@ -1,6 +1,6 @@
 # Build from Source
 
-OpenMux can be built from a Git clone or GitHub's generated source archive.
+Prismux can be built from a Git clone or GitHub's generated source archive.
 
 ## Requirements
 
@@ -17,14 +17,14 @@ rustup component add rustfmt clippy
 ## CLI Only
 
 ```sh
-cargo build --release -p omx-cli --locked
-./target/release/omx --version
+cargo build --release -p prismux-cli --locked
+./target/release/prismux --version
 ```
 
 Developer install from Git builds only the CLI:
 
 ```sh
-cargo install --git https://github.com/hiQianFan/openmux -p omx-cli --locked
+cargo install --git https://github.com/hiQianFan/prismux -p prismux-cli --locked
 ```
 
 ## Menubar App
@@ -37,14 +37,14 @@ scripts/bundle-menubar.sh
 The bundle script writes:
 
 ```text
-target/menubar/OpenMux.app
+target/menubar/Prismux.app
 ```
 
 The app contains:
 
 ```text
-OpenMux.app/Contents/MacOS/OpenMux
-OpenMux.app/Contents/MacOS/omx
+Prismux.app/Contents/MacOS/Prismux
+Prismux.app/Contents/MacOS/prismux
 ```
 
 ## Local Checks
@@ -58,5 +58,5 @@ cargo clippy --all-targets --all-features -- -D warnings
 Use isolated state when running manual checks:
 
 ```sh
-OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home ./target/release/omx status
+PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home ./target/release/prismux status
 ```

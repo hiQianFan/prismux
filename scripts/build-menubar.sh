@@ -24,15 +24,15 @@ if [ -z "${DEVELOPER_DIR:-}" ] && ! xcode-select -p 2>/dev/null | grep -q "Xcode
   echo "using $DEVELOPER_DIR"
 fi
 
-cargo build --release -p omx-menubar-ffi
-export HOME="${OMUX_SWIFT_HOME:-"$ROOT/target/swift-home"}"
+cargo build --release -p prismux-menubar-ffi
+export HOME="${PRISMUX_SWIFT_HOME:-"$ROOT/target/swift-home"}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-"$ROOT/target/swift-cache"}"
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-"$ROOT/target/swift-module-cache"}"
-SWIFT_CONFIG_PATH="${OMUX_SWIFT_CONFIG_PATH:-"$ROOT/target/swift-config"}"
-SWIFT_SECURITY_PATH="${OMUX_SWIFT_SECURITY_PATH:-"$ROOT/target/swift-security"}"
+SWIFT_CONFIG_PATH="${PRISMUX_SWIFT_CONFIG_PATH:-"$ROOT/target/swift-config"}"
+SWIFT_SECURITY_PATH="${PRISMUX_SWIFT_SECURITY_PATH:-"$ROOT/target/swift-security"}"
 mkdir -p "$HOME" "$XDG_CACHE_HOME" "$CLANG_MODULE_CACHE_PATH" "$SWIFT_CONFIG_PATH" "$SWIFT_SECURITY_PATH"
 swift build \
-  --package-path apps/omx-menubar \
+  --package-path apps/prismux-menubar \
   --cache-path "$XDG_CACHE_HOME" \
   --config-path "$SWIFT_CONFIG_PATH" \
   --security-path "$SWIFT_SECURITY_PATH" \
@@ -41,7 +41,7 @@ swift build \
   -debug-info-format none \
   -c release
 swift run \
-  --package-path apps/omx-menubar \
+  --package-path apps/prismux-menubar \
   --cache-path "$XDG_CACHE_HOME" \
   --config-path "$SWIFT_CONFIG_PATH" \
   --security-path "$SWIFT_SECURITY_PATH" \
@@ -49,5 +49,5 @@ swift run \
   -Xswiftc -disable-sandbox \
   -debug-info-format none \
   -c release \
-  OmxMenubarContractTests
+  PrismuxMenubarContractTests
 "$ROOT/scripts/check-menubar-privacy.sh"

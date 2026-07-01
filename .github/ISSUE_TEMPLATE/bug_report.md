@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a reproducible OpenMux bug
+about: Report a reproducible Prismux bug
 title: "bug: "
 labels: bug
 ---
@@ -10,11 +10,11 @@ labels: bug
 ## Environment
 
 - OS and architecture:
-- OpenMux version (`omx --version`):
-- Install source: `OpenMux.app` / `cargo install` / source build
+- Prismux version (`prismux --version`):
+- Install source: `Prismux.app` / `cargo install` / source build
 - App path if using Menubar:
 - Tool: Codex / Claude Code / other
-- Overrides used: `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `OMUX_STATE_ROOT`
+- Overrides used: `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `PRISMUX_STATE_ROOT`
 
 ## Command
 

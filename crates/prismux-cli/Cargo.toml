@@ -1,0 +1,27 @@
+[package]
+name = "prismux-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anstream = { workspace = true }
+anstyle = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+comfy-table = { workspace = true }
+inquire = { workspace = true }
+prismux-core = { path = "../prismux-core" }
+prismux-app = { path = "../prismux-app" }
+prismux-plugin-claude = { path = "../prismux-plugin-claude" }
+prismux-plugin-codex = { path = "../prismux-plugin-codex" }
+
+[[bin]]
+name = "prismux"
+path = "src/main.rs"
+
+[[bin]]
+name = "pmx"
+path = "src/pmx.rs"

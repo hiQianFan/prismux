@@ -2,12 +2,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_DIR="${1:-"$ROOT/target/menubar/OpenMux.app"}"
+APP_DIR="${1:-"$ROOT/target/menubar/Prismux.app"}"
 VERSION="$(awk '/^version = / { gsub(/"/, "", $3); print $3; exit }' "$ROOT/Cargo.toml")"
 
 if [[ -d "$APP_DIR" ]]; then
-  APP_EXEC="$APP_DIR/Contents/MacOS/OpenMux"
-  HELPER="$APP_DIR/Contents/MacOS/omx"
+  APP_EXEC="$APP_DIR/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_DIR/Contents/Info.plist")"
+  HELPER="$APP_DIR/Contents/MacOS/prismux"
 
   if [[ ! -x "$APP_EXEC" ]]; then
     echo "bundle executable missing or not executable: $APP_EXEC" >&2
@@ -15,7 +15,7 @@ if [[ -d "$APP_DIR" ]]; then
   fi
 
   if [[ ! -x "$HELPER" ]]; then
-    echo "bundled omx helper missing or not executable: $HELPER" >&2
+    echo "bundled prismux helper missing or not executable: $HELPER" >&2
     exit 1
   fi
 
@@ -27,11 +27,11 @@ if [[ -d "$APP_DIR" ]]; then
 
   CLI_VERSION="$("$HELPER" --version | awk '{print $2}')"
 else
-  CLI_VERSION="$(cargo run -q -p omx-cli -- --version | awk '{print $2}')"
+  CLI_VERSION="$(cargo run -q -p prismux-cli -- --version | awk '{print $2}')"
 fi
 
 if [[ "$CLI_VERSION" != "$VERSION" ]]; then
-  echo "omx --version mismatch: Cargo=$VERSION CLI=$CLI_VERSION" >&2
+  echo "prismux --version mismatch: Cargo=$VERSION CLI=$CLI_VERSION" >&2
   exit 1
 fi
 
@@ -40,4 +40,4 @@ if [[ -n "${RELEASE_TAG:-}" && "${RELEASE_TAG#v}" != "$VERSION" ]]; then
   exit 1
 fi
 
-echo "OpenMux version consistent: $VERSION"
+echo "Prismux version consistent: $VERSION"

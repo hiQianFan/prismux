@@ -1,6 +1,6 @@
 ---
 version: "alpha"
-name: "OpenMux Menubar"
+name: "Prismux Menubar"
 description: "macOS menu bar control plane for switching AI provider accounts and watching quota."
 colors:
   # Provider brand identity. Official tones, lightly desaturated so the three
@@ -94,11 +94,11 @@ components:
     rounded: "{rounded.control}"
 ---
 
-# OpenMux Menubar Design System
+# Prismux Menubar Design System
 
 ## Overview
 
-OpenMux Menubar 是一个 macOS 原生菜单栏控制面板，用来管理多个 AI provider（Codex、Claude、Gemini）的账号池与 profile，并随手查看 quota 健康度。它不是营销页，也不是完整 analytics dashboard。交互模型是“短暂打开、快速确认、立即关闭”。
+Prismux Menubar 是一个 macOS 原生菜单栏控制面板，用来管理多个 AI provider（Codex、Claude、Gemini）的账号池与 profile，并随手查看 quota 健康度。它不是营销页，也不是完整 analytics dashboard。交互模型是“短暂打开、快速确认、立即关闭”。
 
 第一屏服务三类高频任务：
 
@@ -106,7 +106,7 @@ OpenMux Menubar 是一个 macOS 原生菜单栏控制面板，用来管理多个
 2. 判断哪条 quota window（5h / 7d）接近耗尽，哪个账号 stale 或报错。
 3. 安全切换、新增、导入或重置账号，并在后端确认后看到结果。
 
-文件采用 Google `DESIGN.md` 结构：顶部 YAML 是机器可读 design tokens，正文解释如何应用。OpenMux 不引入 Google 工具链，格式只用于给后续 agent 和实现代码稳定的 UI 约束。
+文件采用 Google `DESIGN.md` 结构：顶部 YAML 是机器可读 design tokens，正文解释如何应用。Prismux 不引入 Google 工具链，格式只用于给后续 agent 和实现代码稳定的 UI 约束。
 
 外观立场介于“系统工具面板”与“轻品牌产品”之间：深色模式下 popover 带一层很淡的靛紫品牌底色，provider 用各自官方品牌色做强调，其余一律走 Apple HIG——系统字体、系统动态色、SF Symbols、原生 popover 行为、动态深浅色、Reduce Motion。除非系统控件无法表达状态，否则不自造主题系统。
 
@@ -142,7 +142,7 @@ OpenMux Menubar 是一个 macOS 原生菜单栏控制面板，用来管理多个
 
 只用系统字体，不引入自定义字体，不做负字距，不按 viewport 缩放。层级保持克制——这是密集小面板，不是落地页。
 
-- `title`：`title3.bold`，仅用于 Header 的 “OpenMux”。
+- `title`：`title3.bold`，仅用于 Header 的 “Prismux”。
 - `section`：`headline`，card 标题。
 - `body`：行主标签、正文。
 - `label`：`caption` + secondary，metadata、时间、empty/diagnostic 文案。
@@ -197,11 +197,11 @@ Active/选中态用品牌色低透明度填充表达（tab pill `tint 16%`，act
 
 ### Status Item
 
-SF Symbol `arrow.triangle.2.circlepath` + 短 tray title（来自 `store.trayTitle`）。title 绝不展示 email、token、raw account id 或 auth payload。Settings 提供 `icon_only` 模式隐藏文字；icon-only 时仍保留 tooltip “OpenMux account switcher”。点击 toggle popover 并触发一次 interactive refresh。
+SF Symbol `arrow.triangle.2.circlepath` + 短 tray title（来自 `store.trayTitle`）。title 绝不展示 email、token、raw account id 或 auth payload。Settings 提供 `icon_only` 模式隐藏文字；icon-only 时仍保留 tooltip “Prismux account switcher”。点击 toggle popover 并触发一次 interactive refresh。
 
 ### Header
 
-左侧 provider 图标块（`switch.2`，stale 时换警告 symbol）+ “OpenMux” + 刷新状态副标题（`Updated 3:42 PM` / stale 时橙色 `Stale …`）。右侧两个 icon button：Refresh（`arrow.clockwise`，进行中换 `ProgressView` 并 disable）、Settings（`gearshape`）。icon button 用 borderless pressable chrome，必须有 `.help()` 和 accessibility label。
+左侧 provider 图标块（`switch.2`，stale 时换警告 symbol）+ “Prismux” + 刷新状态副标题（`Updated 3:42 PM` / stale 时橙色 `Stale …`）。右侧两个 icon button：Refresh（`arrow.clockwise`，进行中换 `ProgressView` 并 disable）、Settings（`gearshape`）。icon button 用 borderless pressable chrome，必须有 `.help()` 和 accessibility label。
 
 ### Tab Bar
 

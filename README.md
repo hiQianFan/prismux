@@ -1,8 +1,8 @@
-# OpenMux
+# Prismux
 
 English | [简体中文](README.zh-CN.md)
 
-OpenMux is a local account and profile switcher for AI coding tools.
+Prismux is a local account and profile switcher for AI coding tools.
 
 It helps you keep multiple local accounts for tools such as Codex and Claude
 Code, inspect the current account pool, and switch accounts by a platform-local
@@ -16,8 +16,8 @@ number or alias without repeatedly walking through browser login flows.
 
 | Platform | v0.1 status | Notes |
 | --- | --- | --- |
-| macOS Apple Silicon | Supported | Official `OpenMux.app` GitHub Release target. |
-| macOS Intel | Supported | Official `OpenMux.app` GitHub Release target. |
+| macOS Apple Silicon | Supported | Official `Prismux.app` GitHub Release target. |
+| macOS Intel | Supported | Official `Prismux.app` GitHub Release target. |
 | Linux | Planned | Source builds may work; no official v0.1 binary. |
 | Windows | Planned | Requires credential, permission, and external CLI validation. |
 
@@ -25,7 +25,7 @@ number or alias without repeatedly walking through browser login flows.
 
 | Tool | Status | Capabilities |
 | --- | --- | --- |
-| Codex | Implemented | Official login wrapper, device auth, numbered account pool, aliases, save, list, switch, profile import, best-effort usage. |
+| Codex | Implemented | Official login wrapper, device auth, numbered account pool, aliases, save, list, switch, profile import, quota/limit display. |
 | Claude Code | Implemented | Gateway/API profile import and switch, OAuth account snapshot import and switch, macOS Keychain support, plaintext fallback outside macOS. |
 | Gemini CLI | Planned | Not implemented yet. |
 
@@ -36,16 +36,16 @@ number or alias without repeatedly walking through browser login flows.
 For v0.1, download the macOS app archive from:
 
 ```text
-https://github.com/hiQianFan/openmux/releases
+https://github.com/hiQianFan/prismux/releases
 ```
 
-Unpack it, move `OpenMux.app` to `/Applications`, and open it from Finder.
-The app contains the matching `omx` CLI helper. In Settings, use
-`Enable omx command` if you want `omx` available in Terminal, then verify:
+Unpack it, move `Prismux.app` to `/Applications`, and open it from Finder.
+The app contains the matching `prismux` CLI helper. In Settings, use
+`Enable prismux command` if you want `prismux` available in Terminal, then verify:
 
 ```sh
-omx --version
-omx status
+prismux --version
+prismux status
 ```
 
 ### Cargo from Git
@@ -53,8 +53,8 @@ omx status
 For developers with Rust installed:
 
 ```sh
-cargo install --git https://github.com/hiQianFan/openmux -p omx-cli --locked
-omx --version
+cargo install --git https://github.com/hiQianFan/prismux -p prismux-cli --locked
+prismux --version
 ```
 
 Homebrew and crates.io distribution are planned, but are not v0.1 install paths.
@@ -64,49 +64,49 @@ Homebrew and crates.io distribution are planned, but are not v0.1 install paths.
 Inspect detected tool homes:
 
 ```sh
-omx status
+prismux status
 ```
 
 Add a Codex account through the official Codex login flow:
 
 ```sh
-omx login codex
+prismux login codex
 ```
 
 For remote machines or browserless environments:
 
 ```sh
-omx login codex --device-auth
+prismux login codex --device-auth
 ```
 
 List all platform pools:
 
 ```sh
-omx list
+prismux list
 ```
 
 List one platform in detail:
 
 ```sh
-omx list codex
+prismux list codex
 ```
 
 Switch by number or alias:
 
 ```sh
-omx use codex 2
-omx use codex work
+prismux use codex 2
+prismux use codex work
 ```
 
 Set an alias:
 
 ```sh
-omx alias codex 2 work
+prismux alias codex 2 work
 ```
 
 ## Claude Code Accounts and Profiles
 
-Claude Code has two distinct layers in OpenMux:
+Claude Code has two distinct layers in Prismux:
 
 - **OAuth accounts** are official Claude.ai/Console login snapshots.
 - **Profiles** are gateway/API settings written to Claude Code `settings.json`
@@ -115,29 +115,29 @@ Claude Code has two distinct layers in OpenMux:
 Import a gateway/API profile:
 
 ```sh
-omx import claude --name gateway-work "
+prismux import claude --name gateway-work "
 ANTHROPIC_BASE_URL=https://gateway.example.com
 ANTHROPIC_AUTH_TOKEN=<your-token>
 ANTHROPIC_MODEL=sonnet
 "
-omx use claude gateway-work
+prismux use claude gateway-work
 ```
 
 Login and record a Claude OAuth account:
 
 ```sh
-omx login claude --alias work
-omx list claude
-omx use claude work
+prismux login claude --alias work
+prismux list claude
+prismux use claude work
 ```
 
-OpenMux does not implement its own Anthropic OAuth token exchange and does not
+Prismux does not implement its own Anthropic OAuth token exchange and does not
 call private Anthropic endpoints. It wraps the official Claude Code CLI login
 flow or imports local official credential artifacts.
 
 ## Safety Model
 
-- OpenMux does not print raw tokens or raw auth payloads.
+- Prismux does not print raw tokens or raw auth payloads.
 - Registry files store metadata and hashes, not raw auth material.
 - Active credentials are backed up before replacement.
 - Snapshot and registry writes use private files where the platform supports it.
@@ -159,7 +159,7 @@ Report suspected credential handling vulnerabilities privately. See
 
 ## Development
 
-OpenMux uses the stable Rust toolchain selected by `rust-toolchain.toml`. The
+Prismux uses the stable Rust toolchain selected by `rust-toolchain.toml`. The
 project does not currently guarantee a minimum supported Rust version.
 
 ```sh
@@ -178,15 +178,15 @@ cargo clippy --all-targets --all-features -- -D warnings
 Run from source:
 
 ```sh
-cargo run -p omx-cli -- status
-cargo run -p omx-cli -- list
-cargo run -p omx-cli -- list codex
+cargo run -p prismux-cli -- status
+cargo run -p prismux-cli -- list
+cargo run -p prismux-cli -- list codex
 ```
 
 Use isolated state for manual checks that touch tool homes:
 
 ```sh
-OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p omx-cli -- status
+PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p prismux-cli -- status
 ```
 
 ## License

@@ -1,0 +1,20 @@
+[package]
+name = "prismux-menubar-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+prismux-app = { path = "../prismux-app" }
+prismux-core = { path = "../prismux-core" }
+prismux-plugin-claude = { path = "../prismux-plugin-claude" }
+prismux-plugin-codex = { path = "../prismux-plugin-codex" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

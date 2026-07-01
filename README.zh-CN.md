@@ -1,8 +1,8 @@
-# OpenMux
+# Prismux
 
 [English](README.md) | 简体中文
 
-OpenMux 是面向 AI coding tools 的本地账号和 profile 切换工具。
+Prismux 是面向 AI coding tools 的本地账号和 profile 切换工具。
 
 它帮助你在 Codex、Claude Code 等工具中管理多个本地账号，查看账号池状态，并通过平台内编号或 alias 快速切换账号，减少重复浏览器登录。
 
@@ -12,8 +12,8 @@ OpenMux 是面向 AI coding tools 的本地账号和 profile 切换工具。
 
 | 平台 | v0.1 状态 | 说明 |
 | --- | --- | --- |
-| macOS Apple Silicon | 支持 | 官方 `OpenMux.app` GitHub Release target。 |
-| macOS Intel | 支持 | 官方 `OpenMux.app` GitHub Release target。 |
+| macOS Apple Silicon | 支持 | 官方 `Prismux.app` GitHub Release target。 |
+| macOS Intel | 支持 | 官方 `Prismux.app` GitHub Release target。 |
 | Linux | 计划中 | 源码构建可能可用；v0.1 不提供官方 binary。 |
 | Windows | 计划中 | 需要验证 credential、权限和外部 CLI 行为。 |
 
@@ -21,7 +21,7 @@ OpenMux 是面向 AI coding tools 的本地账号和 profile 切换工具。
 
 | 工具 | 状态 | 能力 |
 | --- | --- | --- |
-| Codex | 已实现 | 官方 login 包装、device auth、编号账号池、alias、save、list、switch、profile import、best-effort usage。 |
+| Codex | 已实现 | 官方 login 包装、device auth、编号账号池、alias、save、list、switch、profile import、额度/限流展示。 |
 | Claude Code | 已实现 | Gateway/API profile 导入与切换、OAuth account snapshot 导入与切换、macOS Keychain、非 macOS plaintext fallback。 |
 | Gemini CLI | 计划中 | 尚未实现。 |
 
@@ -32,14 +32,14 @@ OpenMux 是面向 AI coding tools 的本地账号和 profile 切换工具。
 v0.1 从 GitHub Releases 下载 macOS app archive：
 
 ```text
-https://github.com/hiQianFan/openmux/releases
+https://github.com/hiQianFan/prismux/releases
 ```
 
-解压后把 `OpenMux.app` 拖到 `/Applications`，再从 Finder 打开。App 内置同版本 `omx` CLI helper；如果希望在 Terminal 使用 `omx`，在 Settings 中点击 `Enable omx command`，然后验证：
+解压后把 `Prismux.app` 拖到 `/Applications`，再从 Finder 打开。App 内置同版本 `prismux` CLI helper；如果希望在 Terminal 使用 `prismux`，在 Settings 中点击 `Enable prismux command`，然后验证：
 
 ```sh
-omx --version
-omx status
+prismux --version
+prismux status
 ```
 
 ### 从 Git 安装 Cargo package
@@ -47,8 +47,8 @@ omx status
 如果本机已有 Rust：
 
 ```sh
-cargo install --git https://github.com/hiQianFan/openmux -p omx-cli --locked
-omx --version
+cargo install --git https://github.com/hiQianFan/prismux -p prismux-cli --locked
+prismux --version
 ```
 
 Homebrew 和 crates.io 是后续计划，不是 v0.1 安装路径。
@@ -58,49 +58,49 @@ Homebrew 和 crates.io 是后续计划，不是 v0.1 安装路径。
 查看已识别的工具 home：
 
 ```sh
-omx status
+prismux status
 ```
 
 通过 Codex 官方登录流程添加账号：
 
 ```sh
-omx login codex
+prismux login codex
 ```
 
 远程机器或无浏览器环境：
 
 ```sh
-omx login codex --device-auth
+prismux login codex --device-auth
 ```
 
 查看全平台账号池：
 
 ```sh
-omx list
+prismux list
 ```
 
 查看单个平台明细：
 
 ```sh
-omx list codex
+prismux list codex
 ```
 
 按编号或 alias 切换：
 
 ```sh
-omx use codex 2
-omx use codex work
+prismux use codex 2
+prismux use codex work
 ```
 
 设置 alias：
 
 ```sh
-omx alias codex 2 work
+prismux alias codex 2 work
 ```
 
 ## Claude Code account 与 profile
 
-OpenMux 中 Claude Code 有两个不同层次：
+Prismux 中 Claude Code 有两个不同层次：
 
 - **OAuth account**：官方 Claude.ai/Console 登录快照。
 - **Profile**：写入 Claude Code `settings.json` env 的 gateway/API 配置。
@@ -108,23 +108,23 @@ OpenMux 中 Claude Code 有两个不同层次：
 导入 gateway/API profile：
 
 ```sh
-omx import claude --name gateway-work "
+prismux import claude --name gateway-work "
 ANTHROPIC_BASE_URL=https://gateway.example.com
 ANTHROPIC_AUTH_TOKEN=<your-token>
 ANTHROPIC_MODEL=sonnet
 "
-omx use claude gateway-work
+prismux use claude gateway-work
 ```
 
 登录并记录 Claude OAuth account：
 
 ```sh
-omx login claude --alias work
-omx list claude
-omx use claude work
+prismux login claude --alias work
+prismux list claude
+prismux use claude work
 ```
 
-OpenMux 不实现自己的 Anthropic OAuth token exchange，也不调用 Anthropic 私有 endpoint。它只包装官方 Claude Code CLI 登录流程，或导入本机已有官方 credential。
+Prismux 不实现自己的 Anthropic OAuth token exchange，也不调用 Anthropic 私有 endpoint。它只包装官方 Claude Code CLI 登录流程，或导入本机已有官方 credential。
 
 ## 安全模型
 
@@ -149,7 +149,7 @@ OpenMux 不实现自己的 Anthropic OAuth token exchange，也不调用 Anthrop
 
 ## 开发
 
-OpenMux 使用 `rust-toolchain.toml` 选择的 stable Rust。当前不承诺具体 MSRV。
+Prismux 使用 `rust-toolchain.toml` 选择的 stable Rust。当前不承诺具体 MSRV。
 
 ```sh
 rustup default stable
@@ -167,15 +167,15 @@ cargo clippy --all-targets --all-features -- -D warnings
 从源码运行：
 
 ```sh
-cargo run -p omx-cli -- status
-cargo run -p omx-cli -- list
-cargo run -p omx-cli -- list codex
+cargo run -p prismux-cli -- status
+cargo run -p prismux-cli -- list
+cargo run -p prismux-cli -- list codex
 ```
 
 涉及工具 home 的手动检查建议隔离状态：
 
 ```sh
-OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p omx-cli -- status
+PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p prismux-cli -- status
 ```
 
 ## License

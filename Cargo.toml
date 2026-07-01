@@ -1,23 +1,19 @@
 [workspace]
 resolver = "3"
 members = [
-  "crates/omx-core",
-  "crates/omx-app",
-  "crates/omx-menubar-ffi",
-  "crates/omx-plugin-codex",
-  "crates/omx-plugin-claude",
-  "crates/omx-usage-tokscale",
-  "crates/omx-cli",
-]
-exclude = [
-  "vendor/tokscale-core",
+  "crates/prismux-core",
+  "crates/prismux-app",
+  "crates/prismux-menubar-ffi",
+  "crates/prismux-plugin-codex",
+  "crates/prismux-plugin-claude",
+  "crates/prismux-cli",
 ]
 
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
 license = "MIT"
-repository = "https://github.com/hiQianFan/openmux"
+repository = "https://github.com/hiQianFan/prismux"
 
 [workspace.dependencies]
 anstream = "1"

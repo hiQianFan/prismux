@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to OpenMux will be documented in this file.
+All notable changes to Prismux will be documented in this file.
 
 The project follows Semantic Versioning. During the `0.x` phase, minor versions
 may include breaking changes to the CLI or internal plugin API.
@@ -16,8 +16,8 @@ may include breaking changes to the CLI or internal plugin API.
 
 ### Added
 
-- Initial Rust workspace with `omx-core`, `omx-plugin-codex`,
-  `omx-plugin-claude`, and `omx-cli`.
+- Initial Rust workspace with `prismux-core`, `prismux-plugin-codex`,
+  `prismux-plugin-claude`, and `prismux-cli`.
 - Account-pool CLI commands: `login`, `save`, `list [platform]`, `current
   [platform]`, `status`, `use`, `alias`, `import`, and `doctor [platform]`.
 - Codex official login wrapping, `--device-auth`, numbered account registry,
@@ -36,15 +36,15 @@ may include breaking changes to the CLI or internal plugin API.
 - Unified Claude account/profile selector resolution with ambiguity detection.
 - Native macOS Menubar app for dashboard, refresh, explicit account/profile
   activation, onboarding actions, Settings, About, and support report copying.
-- macOS full bundle release path: `OpenMux.app` archives for Apple Silicon and
-  Intel, with bundled same-version `omx` helper at
-  `OpenMux.app/Contents/MacOS/omx`.
-- Explicit `Enable omx command` setup that creates a user-controlled symlink to
+- macOS full bundle release path: `Prismux.app` archives for Apple Silicon and
+  Intel, with bundled same-version `prismux` helper at
+  `Prismux.app/Contents/MacOS/prismux`.
+- Explicit `Enable prismux command` setup that creates a user-controlled symlink to
   the bundled helper without copying auth/state or modifying shell startup
   files.
 - Product, architecture, OpenSpec, contribution, security, roadmap, install,
   source-build, and release documentation.
-- GitHub Release automation for official v0.1 `OpenMux.app` archives and
+- GitHub Release automation for official v0.1 `Prismux.app` archives and
   `SHA256SUMS`.
 
 ### Security

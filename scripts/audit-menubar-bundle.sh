@@ -21,17 +21,17 @@ if [[ ! -f "$APP_DIR/Contents/Resources/$ICON_FILE" ]]; then
   exit 1
 fi
 
-if find "$APP_DIR" -type f | rg -n 'TokenBar|TBCore|tb_core_ffi|tokscale|scanner|pricing|appcast|Sparkle'; then
+if find "$APP_DIR" -type f | grep -nE 'TokenBar|TBCore|tb_core_ffi|tokscale|scanner|pricing|appcast|Sparkle'; then
   echo "menubar bundle audit failed: forbidden resource name found" >&2
   exit 1
 fi
 
-if find "$APP_DIR" -type f \( -name '*.png' -o -name '*.gif' -o -name '*.mov' -o -name '*.mp4' -o -name '*.json' \) | rg .; then
+if find "$APP_DIR" -type f \( -name '*.png' -o -name '*.gif' -o -name '*.mov' -o -name '*.mp4' -o -name '*.json' \) | grep .; then
   echo "menubar bundle audit failed: unreviewed asset/resource found" >&2
   exit 1
 fi
 
-if strings "$APP_DIR/Contents/MacOS/$EXECUTABLE" | rg -n 'TBCore|tb_core_ffi|TokenBar|com\.tokenbar|Sparkle|SUUpdater|appcast'; then
+if strings "$APP_DIR/Contents/MacOS/$EXECUTABLE" | grep -nE 'TBCore|tb_core_ffi|TokenBar|com\.tokenbar|Sparkle|SUUpdater|appcast'; then
   echo "menubar bundle audit failed: forbidden linked symbol/string found" >&2
   exit 1
 fi

@@ -31,7 +31,7 @@ for products_dir in \
     find "$products_dir" -maxdepth 1 -name '*PrismuxMenubarCore.bundle' -exec cp -R {} "$RESOURCES/" \;
   fi
 done
-if ! find "$RESOURCES" -maxdepth 1 -name '*.bundle' | rg -q .; then
+if ! find "$RESOURCES" -maxdepth 1 -name '*.bundle' | grep -q .; then
   echo "error: Swift resource bundle not found; Prismux.app would exit on launch." >&2
   exit 1
 fi

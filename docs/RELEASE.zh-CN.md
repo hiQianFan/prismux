@@ -47,7 +47,7 @@ PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_D
 
 ## macOS Artifacts
 
-- `Prismux-vX.Y.Z-macos-arm64.zip` 和 `Prismux-vX.Y.Z-macos-x86_64.zip`，每个 archive 内包含 `Prismux.app`
+- `Prismux-vX.Y.Z-macos-arm64.zip`，archive 内包含 `Prismux.app`
 - 内置 CLI helper：`Prismux.app/Contents/MacOS/prismux`
 - `SHA256SUMS`
 

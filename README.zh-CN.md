@@ -13,7 +13,7 @@ Prismux 是面向 AI coding tools 的本地账号和 profile 切换工具。
 | 平台 | v0.1 状态 | 说明 |
 | --- | --- | --- |
 | macOS Apple Silicon | 支持 | 官方 `Prismux.app` GitHub Release target。 |
-| macOS Intel | 支持 | 官方 `Prismux.app` GitHub Release target。 |
+| macOS Intel | 不计划 | 源码构建可能可用；不发布官方 app bundle。 |
 | Linux | 计划中 | 源码构建可能可用；v0.1 不提供官方 binary。 |
 | Windows | 计划中 | 需要验证 credential、权限和外部 CLI 行为。 |
 

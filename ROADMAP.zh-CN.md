@@ -6,7 +6,7 @@
 
 - Codex account login、save、list、alias、switch 和 profile import。
 - Claude Code profile 导入/切换，以及 OAuth account snapshot 导入/切换。
-- macOS Apple Silicon 和 Intel `Prismux.app` full bundle release，内置同版本 `prismux` helper。
+- macOS Apple Silicon `Prismux.app` full bundle release，内置同版本 `prismux` helper。
 - `cargo install --git` 开发者安装路径。
 - README 和用户文档双语。
 - 仓库清理、CI、issue/PR templates 和安全政策。

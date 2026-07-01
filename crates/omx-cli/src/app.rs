@@ -770,18 +770,25 @@ fn usage_report(
     let groups = omx_app::usage_groups(group_by, summaries, &model_summaries);
     let totals = omx_app::usage_total(&groups);
     let requested_clients = client.iter().cloned().collect::<Vec<_>>();
-    let available_clients = groups
-        .iter()
-        .map(|summary| summary.client.clone())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let missing_clients = if let Some(client) = client.as_ref() {
-        if available_clients.iter().any(|value| value == client) {
-            Vec::new()
-        } else {
+    let available_clients = if let Some(client) = client.as_ref() {
+        if totals.event_count > 0 {
             vec![client.clone()]
+        } else {
+            Vec::new()
         }
+    } else {
+        groups
+            .iter()
+            .map(|summary| summary.client.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    let missing_clients = if let Some(client) = client.as_ref() {
+        (totals.event_count == 0)
+            .then(|| client.clone())
+            .into_iter()
+            .collect()
     } else {
         Vec::new()
     };

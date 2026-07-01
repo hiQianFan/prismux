@@ -164,7 +164,11 @@ fn dispatch(request: RequestEnvelope) -> Result<DispatchSuccess, (&'static str, 
         }
         "dashboard" => {
             let query: DashboardQuery = payload_or_default(request.payload)?;
-            refresh_usage_cache(store.as_ref(), query.provider.as_deref());
+            refresh_usage_cache(
+                store.as_ref(),
+                query.provider.as_deref(),
+                query.usage_period.as_ref(),
+            );
             match json_value(dashboard_view(&plugins, query, store.as_ref())) {
                 Ok(value) => {
                     persist_dashboard_snapshot(&value);
@@ -177,24 +181,40 @@ fn dispatch(request: RequestEnvelope) -> Result<DispatchSuccess, (&'static str, 
         }
         "switch" => {
             let command: SwitchCommand = payload(request.payload)?;
-            refresh_usage_cache(store.as_ref(), Some(&command.provider));
+            refresh_usage_cache(
+                store.as_ref(),
+                Some(&command.provider),
+                command.usage_period.as_ref(),
+            );
             json_value(activate_target(&plugins, command, store.as_ref()))
                 .map(DispatchSuccess::fresh)
         }
         "refresh" => {
             let command: RefreshCommand = payload(request.payload)?;
-            refresh_usage_cache(store.as_ref(), Some(&command.provider));
+            refresh_usage_cache(
+                store.as_ref(),
+                Some(&command.provider),
+                command.usage_period.as_ref(),
+            );
             json_value(refresh_provider(&plugins, command, store.as_ref()))
                 .map(DispatchSuccess::fresh)
         }
         "remove" => {
             let command: RemoveCommand = payload(request.payload)?;
-            refresh_usage_cache(store.as_ref(), Some(&command.provider));
+            refresh_usage_cache(
+                store.as_ref(),
+                Some(&command.provider),
+                command.usage_period.as_ref(),
+            );
             json_value(remove_target(&plugins, command, store.as_ref())).map(DispatchSuccess::fresh)
         }
         "consume_reset_credit" => {
             let command: ConsumeResetCreditCommand = payload(request.payload)?;
-            refresh_usage_cache(store.as_ref(), Some(&command.provider));
+            refresh_usage_cache(
+                store.as_ref(),
+                Some(&command.provider),
+                command.usage_period.as_ref(),
+            );
             json_value(consume_reset_credit(&plugins, command, store.as_ref()))
                 .map(DispatchSuccess::fresh)
         }
@@ -287,21 +307,36 @@ fn default_plugins() -> Vec<Box<dyn PlatformPlugin>> {
     vec![Box::new(CodexPlugin::new()), Box::new(ClaudePlugin::new())]
 }
 
-fn refresh_usage_cache(store: Option<&StateStore>, provider: Option<&str>) {
+fn refresh_usage_cache(
+    store: Option<&StateStore>,
+    provider: Option<&str>,
+    period: Option<&omx_core::UsagePeriod>,
+) {
     let Some(store) = store else {
         return;
     };
+    let now = omx_core::storage::unix_now();
     let scan = TokscaleUsageBackend::new().scan(UsageScanOptions {
         clients: provider
             .map(|value| vec![value.to_string()])
             .unwrap_or_default(),
-        since_unix: None,
+        since_unix: usage_refresh_since_unix(period, now),
         until_unix: None,
         budget: UsageScanBudget::default(),
     });
     if let Ok(report) = scan {
         let _ = store.ingest_usage_events(&report.events, None, omx_core::storage::unix_now());
     }
+}
+
+fn usage_refresh_since_unix(period: Option<&omx_core::UsagePeriod>, now: u64) -> Option<i64> {
+    let days = match period.unwrap_or(&omx_core::UsagePeriod::Today) {
+        omx_core::UsagePeriod::Today => 1,
+        omx_core::UsagePeriod::SevenDays => 7,
+        omx_core::UsagePeriod::ThirtyDays => 30,
+        omx_core::UsagePeriod::All | omx_core::UsagePeriod::Custom => return None,
+    };
+    Some(now.saturating_sub(days * 86_400).min(i64::MAX as u64) as i64)
 }
 
 fn payload<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, (&'static str, String)> {
@@ -681,6 +716,25 @@ mod tests {
         assert_eq!(payload["data"]["usage"]["top_client"], "codex");
         assert_eq!(payload["data"]["usage"]["top_model"], "gpt-5");
         assert_eq!(payload["data"]["usage"]["coverage"]["status"], "complete");
+    }
+
+    #[test]
+    fn usage_refresh_since_matches_selected_period() {
+        let now = 4_102_531_200;
+
+        assert_eq!(usage_refresh_since_unix(None, now), Some(4_102_444_800));
+        assert_eq!(
+            usage_refresh_since_unix(Some(&omx_core::UsagePeriod::SevenDays), now),
+            Some(4_101_926_400)
+        );
+        assert_eq!(
+            usage_refresh_since_unix(Some(&omx_core::UsagePeriod::ThirtyDays), now),
+            Some(4_099_939_200)
+        );
+        assert_eq!(
+            usage_refresh_since_unix(Some(&omx_core::UsagePeriod::All), now),
+            None
+        );
     }
 
     #[test]

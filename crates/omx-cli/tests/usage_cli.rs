@@ -220,6 +220,37 @@ fn usage_group_by_day_reports_daily_rows() {
 }
 
 #[test]
+fn usage_group_by_day_keeps_requested_client_available() {
+    let home = unique_temp_root("openmux-usage-cli-home");
+    write_codex_session_fixture(&home);
+
+    let payload = parse_json_stdout(run_omx_usage_with_home(
+        &[
+            "usage",
+            "codex",
+            "--since",
+            "2026-04-30",
+            "--until",
+            "2026-04-30",
+            "--group-by",
+            "day",
+            "--json",
+        ],
+        Some(&home),
+    ));
+
+    assert_eq!(payload["coverage"]["available_clients"][0], "codex");
+    assert!(
+        payload["coverage"]["missing_clients"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    fs::remove_dir_all(&home).unwrap();
+}
+
+#[test]
 fn usage_json_scans_claude_fixture_ingests_and_summarizes() {
     let home = unique_temp_root("openmux-usage-cli-home");
     write_claude_session_fixture(&home);

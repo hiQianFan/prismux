@@ -3,12 +3,13 @@ use omx_core::{
     UsageScanDiagnostic, UsageScanOptions, UsageScanReport, UsageTokenBreakdown,
 };
 use std::{
+    collections::HashSet,
     fs,
     path::PathBuf,
     sync::Arc,
     sync::mpsc::{self, Receiver, RecvTimeoutError},
     thread,
-    time::Duration,
+    time::{Duration, UNIX_EPOCH},
 };
 
 pub const TOKSCALE_BACKEND: &str = "tokscale-core";
@@ -51,35 +52,67 @@ impl TokscaleUsageBackend {
             .home_dir
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned());
-        if let Some(diagnostic) =
-            source_budget_diagnostic(home_dir.as_deref(), &clients, &options.budget)?
-        {
+        if let Some(diagnostic) = source_budget_diagnostic(
+            home_dir.as_deref(),
+            &clients,
+            &options.budget,
+            options.since_unix,
+        )? {
             let mut diagnostics = diagnostics;
             diagnostics.push(diagnostic);
             return Ok(usage_scan_report(Vec::new(), diagnostics));
         }
-        let Some(parsed) =
-            parse_local_clients_with_timeout(home_dir, clients.clone(), options.budget.timeout_ms)?
-        else {
-            return Ok(usage_scan_report(
-                Vec::new(),
-                diagnostics_with_budget_exceeded(diagnostics, &clients),
-            ));
-        };
-
         let pricing = load_pricing_with_timeout(options.budget.timeout_ms);
-        let events = parsed
-            .messages
-            .into_iter()
-            .filter(|message| {
-                within_window(
-                    tokscale_timestamp_to_unix_seconds(message.timestamp),
-                    options.since_unix,
-                    options.until_unix,
-                )
-            })
-            .map(|message| usage_event_from_tokscale_message(message, pricing.as_deref()))
-            .collect();
+        let mut events = Vec::new();
+        let mut parse_clients = clients.clone();
+
+        if options.since_unix.is_some() && parse_clients.iter().any(|client| client == "codex") {
+            let codex_messages = parse_codex_windowed(home_dir.as_deref(), options.since_unix)?;
+            events.extend(
+                codex_messages
+                    .into_iter()
+                    .filter(|message| {
+                        within_window(
+                            tokscale_timestamp_to_unix_seconds(message.timestamp),
+                            options.since_unix,
+                            options.until_unix,
+                        )
+                    })
+                    .map(unified_to_parsed_message)
+                    .map(|message| usage_event_from_tokscale_message(message, pricing.as_deref())),
+            );
+            parse_clients.retain(|client| client != "codex");
+        }
+
+        if !parse_clients.is_empty() {
+            let Some(parsed) = parse_local_clients_with_timeout(
+                home_dir,
+                parse_clients.clone(),
+                options.since_unix,
+                options.until_unix,
+                options.budget.timeout_ms,
+            )?
+            else {
+                return Ok(usage_scan_report(
+                    events,
+                    diagnostics_with_budget_exceeded(diagnostics, &parse_clients),
+                ));
+            };
+
+            events.extend(
+                parsed
+                    .messages
+                    .into_iter()
+                    .filter(|message| {
+                        within_window(
+                            tokscale_timestamp_to_unix_seconds(message.timestamp),
+                            options.since_unix,
+                            options.until_unix,
+                        )
+                    })
+                    .map(|message| usage_event_from_tokscale_message(message, pricing.as_deref())),
+            );
+        }
 
         Ok(usage_scan_report(events, diagnostics))
     }
@@ -95,9 +128,10 @@ fn source_budget_diagnostic(
     home_dir: Option<&str>,
     clients: &[String],
     budget: &UsageScanBudget,
+    since_unix: Option<i64>,
 ) -> omx_core::Result<Option<UsageScanDiagnostic>> {
     let home_dir = resolved_home_dir(home_dir)?;
-    let inventory = source_inventory(&home_dir, clients);
+    let inventory = source_inventory(&home_dir, clients, since_unix);
     if inventory.file_count > budget.max_source_files {
         return Ok(Some(UsageScanDiagnostic {
             client: usage_diagnostic_client(clients),
@@ -109,7 +143,7 @@ fn source_budget_diagnostic(
             ),
         }));
     }
-    if inventory.total_bytes > budget.max_source_bytes {
+    if since_unix.is_none() && inventory.total_bytes > budget.max_source_bytes {
         return Ok(Some(UsageScanDiagnostic {
             client: usage_diagnostic_client(clients),
             source_kind: Some("tokscale-local".to_string()),
@@ -132,7 +166,11 @@ fn resolved_home_dir(home_dir: Option<&str>) -> omx_core::Result<String> {
     })
 }
 
-fn source_inventory(home_dir: &str, clients: &[String]) -> SourceInventory {
+fn source_inventory(
+    home_dir: &str,
+    clients: &[String],
+    since_unix: Option<i64>,
+) -> SourceInventory {
     let scan_result = tokscale_core::scanner::scan_all_clients_with_scanner_settings(
         home_dir,
         clients,
@@ -142,6 +180,9 @@ fn source_inventory(home_dir: &str, clients: &[String]) -> SourceInventory {
     scan_result.all_files().into_iter().fold(
         SourceInventory::default(),
         |mut inventory, (_, path)| {
+            if !source_may_overlap_window(&path, since_unix) {
+                return inventory;
+            }
             inventory.file_count += 1;
             inventory.total_bytes = inventory
                 .total_bytes
@@ -151,13 +192,62 @@ fn source_inventory(home_dir: &str, clients: &[String]) -> SourceInventory {
     )
 }
 
+fn source_may_overlap_window(path: &PathBuf, since_unix: Option<i64>) -> bool {
+    let Some(since_unix) = since_unix else {
+        return true;
+    };
+    let Ok(metadata) = fs::metadata(path) else {
+        return true;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return true;
+    };
+    let Ok(duration) = modified.duration_since(UNIX_EPOCH) else {
+        return true;
+    };
+    duration.as_secs() as i64 >= since_unix
+}
+
 fn file_size(path: &PathBuf) -> Option<u64> {
     fs::metadata(path).ok().map(|metadata| metadata.len())
+}
+
+fn parse_codex_windowed(
+    home_dir: Option<&str>,
+    since_unix: Option<i64>,
+) -> omx_core::Result<Vec<tokscale_core::sessions::UnifiedMessage>> {
+    let home_dir = resolved_home_dir(home_dir)?;
+    let scan_result = tokscale_core::scanner::scan_all_clients_with_scanner_settings(
+        &home_dir,
+        &["codex".to_string()],
+        true,
+        &tokscale_core::scanner::ScannerSettings::default(),
+    );
+    let mut seen = HashSet::new();
+    let mut messages = Vec::new();
+    for path in scan_result
+        .get(tokscale_core::ClientId::Codex)
+        .iter()
+        .filter(|path| source_may_overlap_window(path, since_unix))
+    {
+        for message in tokscale_core::sessions::codex::parse_codex_file(path) {
+            if message
+                .dedup_key
+                .as_ref()
+                .is_none_or(|key| seen.insert(key.clone()))
+            {
+                messages.push(message);
+            }
+        }
+    }
+    Ok(messages)
 }
 
 fn parse_local_clients_with_timeout(
     home_dir: Option<String>,
     clients: Vec<String>,
+    since_unix: Option<i64>,
+    until_unix: Option<i64>,
     timeout_ms: u64,
 ) -> omx_core::Result<Option<tokscale_core::ParsedMessages>> {
     let (sender, receiver) = mpsc::channel();
@@ -166,14 +256,57 @@ fn parse_local_clients_with_timeout(
             home_dir,
             use_env_roots: true,
             clients: Some(clients),
-            since: None,
-            until: None,
+            since: since_unix.map(unix_day_utc),
+            until: until_unix.map(unix_day_utc),
             year: None,
             scanner_settings: tokscale_core::scanner::ScannerSettings::default(),
         });
         let _ = sender.send(result);
     });
     wait_for_parse_result(receiver, timeout_ms)
+}
+
+fn unified_to_parsed_message(
+    message: tokscale_core::sessions::UnifiedMessage,
+) -> tokscale_core::ParsedMessage {
+    tokscale_core::ParsedMessage {
+        client: message.client,
+        model_id: message.model_id,
+        provider_id: message.provider_id,
+        session_id: message.session_id,
+        workspace_key: message.workspace_key,
+        workspace_label: message.workspace_label,
+        timestamp: message.timestamp,
+        date: message.date,
+        input: message.tokens.input,
+        output: message.tokens.output,
+        cache_read: message.tokens.cache_read,
+        cache_write: message.tokens.cache_write,
+        reasoning: message.tokens.reasoning,
+        duration_ms: message.duration_ms,
+        message_count: message.message_count,
+        agent: message.agent,
+    }
+}
+
+fn unix_day_utc(unix: i64) -> String {
+    let days = unix.div_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+fn civil_from_days(days: i64) -> (i32, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 }.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096).div_euclid(365);
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2).div_euclid(153);
+    let d = doy - (153 * mp + 2).div_euclid(5) + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if m <= 2 { 1 } else { 0 };
+    (year as i32, m as u32, d as u32)
 }
 
 fn wait_for_parse_result(
@@ -498,6 +631,50 @@ mod tests {
         assert_eq!(report.diagnostics[0].code, "budget_exceeded");
         assert!(report.diagnostics[0].message.contains("source bytes"));
         assert!(!report.diagnostics[0].message.contains("session-1"));
+    }
+
+    #[test]
+    fn scan_source_bytes_budget_ignores_sources_before_window() {
+        let home = tempfile::tempdir().unwrap();
+        write_codex_session_fixture(home.path());
+        let backend = TokscaleUsageBackend::with_home_dir(home.path());
+
+        let report = backend
+            .scan(UsageScanOptions {
+                clients: vec!["codex".to_string()],
+                since_unix: Some(4_102_444_800),
+                until_unix: Some(4_102_531_200),
+                budget: UsageScanBudget {
+                    max_source_bytes: 1,
+                    ..UsageScanBudget::default()
+                },
+            })
+            .unwrap();
+
+        assert!(report.events.is_empty());
+        assert!(report.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn scan_source_bytes_budget_allows_windowed_codex_sources() {
+        let home = tempfile::tempdir().unwrap();
+        write_codex_session_fixture(home.path());
+        let backend = TokscaleUsageBackend::with_home_dir(home.path());
+
+        let report = backend
+            .scan(UsageScanOptions {
+                clients: vec!["codex".to_string()],
+                since_unix: Some(1_777_546_800),
+                until_unix: Some(1_777_546_803),
+                budget: UsageScanBudget {
+                    max_source_bytes: 1,
+                    ..UsageScanBudget::default()
+                },
+            })
+            .unwrap();
+
+        assert_eq!(report.events.len(), 1);
+        assert!(report.diagnostics.is_empty());
     }
 
     #[test]
@@ -933,6 +1110,14 @@ mod tests {
             tokscale_timestamp_to_unix_seconds(1_777_546_802_000),
             1_777_546_802
         );
+    }
+
+    #[test]
+    fn unix_day_utc_formats_epoch_boundaries() {
+        assert_eq!(unix_day_utc(0), "1970-01-01");
+        assert_eq!(unix_day_utc(86_399), "1970-01-01");
+        assert_eq!(unix_day_utc(86_400), "1970-01-02");
+        assert_eq!(unix_day_utc(1_777_546_802), "2026-04-30");
     }
 
     fn write_codex_session_fixture(home: &std::path::Path) {

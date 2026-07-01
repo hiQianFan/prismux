@@ -2,7 +2,7 @@
 
 [简体中文](RELEASE.zh-CN.md)
 
-OpenMux v0.1 uses release-on-version-bump automation. Maintainers do not create
+Prismux v0.1 uses release-on-version-bump automation. Maintainers do not create
 release tags manually in the normal path.
 
 ## Normal Release Flow
@@ -29,7 +29,7 @@ Run locally before merging a release PR:
 cargo fmt --all
 cargo test --locked
 cargo clippy --all-targets --all-features -- -D warnings
-cargo build --release -p omx-cli --locked
+cargo build --release -p prismux-cli --locked
 scripts/build-menubar.sh
 scripts/bundle-menubar.sh
 ```
@@ -40,11 +40,11 @@ do not provide the SwiftUI macro toolchain used by the app.
 Run safe smoke tests with isolated state:
 
 ```sh
-OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p omx-cli -- status
-OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p omx-cli -- list
-OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p omx-cli -- list codex
-OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p omx-cli -- list claude
-OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p omx-cli -- doctor
+PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p prismux-cli -- status
+PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p prismux-cli -- list
+PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p prismux-cli -- list codex
+PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p prismux-cli -- list claude
+PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p prismux-cli -- doctor
 ```
 
 Do not run real `login`, `use`, or credential-switching smoke tests against a
@@ -52,9 +52,9 @@ real tool home unless that is the explicit intent.
 
 ## macOS Artifacts
 
-- `OpenMux-vX.Y.Z-macos-arm64.zip` and `OpenMux-vX.Y.Z-macos-x86_64.zip`
-  archives, each containing `OpenMux.app`
-- bundled CLI helper at `OpenMux.app/Contents/MacOS/omx`
+- `Prismux-vX.Y.Z-macos-arm64.zip` and `Prismux-vX.Y.Z-macos-x86_64.zip`
+  archives, each containing `Prismux.app`
+- bundled CLI helper at `Prismux.app/Contents/MacOS/prismux`
 - `SHA256SUMS`
 
 The macOS app bundle is the preferred distribution path. It includes Menubar and
@@ -69,32 +69,32 @@ notarization automation, independent signatures, or provenance attestations.
 ## Bundle Layout
 
 ```text
-OpenMux.app/
+Prismux.app/
   Contents/
     MacOS/
-      OpenMux
-      omx
+      Prismux
+      prismux
     Resources/
       ...
 ```
 
-`Contents/MacOS/omx` is executable code, not a resource. Release validation must
+`Contents/MacOS/prismux` is executable code, not a resource. Release validation must
 check:
 
-- `OpenMux.app` has `LSUIElement=true` and `LSMinimumSystemVersion=14.0`.
+- `Prismux.app` has `LSUIElement=true` and `LSMinimumSystemVersion=14.0`.
 - `CFBundleShortVersionString` matches the Cargo workspace version.
-- `OpenMux.app/Contents/MacOS/omx --version` reports the same version.
-- bundled `omx status` passes with isolated `OMUX_STATE_ROOT`, `CODEX_HOME`, and
+- `Prismux.app/Contents/MacOS/prismux --version` reports the same version.
+- bundled `prismux status` passes with isolated `PRISMUX_STATE_ROOT`, `CODEX_HOME`, and
   `CLAUDE_CONFIG_DIR`.
-- unpacking the release zip preserves `Contents/MacOS/OpenMux` and
-  `Contents/MacOS/omx` as executable files.
+- unpacking the release zip preserves `Contents/MacOS/Prismux` and
+  `Contents/MacOS/prismux` as executable files.
 - bundle privacy/audit scripts do not find raw auth, tokens, API keys, raw logs,
   or excluded third-party engines.
 
 ## Source Builds
 
 GitHub's generated source archive is usable for development. `cargo install
---git https://github.com/hiQianFan/openmux -p omx-cli --locked` installs only the
+--git https://github.com/hiQianFan/prismux -p prismux-cli --locked` installs only the
 CLI. Building the full Menubar app from source requires macOS with full Xcode:
 
 ```sh
@@ -108,7 +108,7 @@ See [Build from source](BUILD.md) for the longer path.
 
 | Artifact | Capabilities | Platform | Notes |
 | --- | --- | --- | --- |
-| `OpenMux.app` full bundle | Menubar dashboard, refresh, explicit account/profile activation, onboarding actions, bundled `omx` helper, shared state root | macOS 14+ | Preferred public macOS artifact. |
+| `Prismux.app` full bundle | Menubar dashboard, refresh, explicit account/profile activation, onboarding actions, bundled `prismux` helper, shared state root | macOS 14+ | Preferred public macOS artifact. |
 | Standalone CLI tarball | CLI-only account/profile management and scripts | Later | Add only when there is real standalone demand. |
 | Windows/Linux packages | Platform-specific CLI/app packaging | Later | Separate proposals; do not reuse macOS `.app` layout. |
 

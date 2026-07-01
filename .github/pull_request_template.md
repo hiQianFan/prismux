@@ -12,4 +12,4 @@
 
 - [ ] This PR does not include tokens, auth payloads, snapshots, backups, or private account files.
 - [ ] Changes touching credential replacement describe backup/rollback behavior.
-- [ ] Manual tests used isolated `OMUX_STATE_ROOT`, `CODEX_HOME`, or `CLAUDE_CONFIG_DIR` where appropriate.
+- [ ] Manual tests used isolated `PRISMUX_STATE_ROOT`, `CODEX_HOME`, or `CLAUDE_CONFIG_DIR` where appropriate.

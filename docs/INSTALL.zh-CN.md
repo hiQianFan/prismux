@@ -1,33 +1,33 @@
-# 安装 OpenMux
+# 安装 Prismux
 
 [English](INSTALL.md)
 
 ## GitHub Releases
 
-macOS 首选分发形态是 full app bundle。它同时包含 Menubar App 和同版本 `omx` CLI helper。
+macOS 首选分发形态是 full app bundle。它同时包含 Menubar App 和同版本 `prismux` CLI helper。
 
 1. 从 Releases 下载 macOS app archive：
 
    ```text
-   https://github.com/hiQianFan/openmux/releases
+   https://github.com/hiQianFan/prismux/releases
    ```
 
-2. 解压后把 `OpenMux.app` 拖到 `/Applications`。
+2. 解压后把 `Prismux.app` 拖到 `/Applications`。
 
-3. 从 Finder 打开 `OpenMux.app`。
+3. 从 Finder 打开 `Prismux.app`。
 
-4. 如果希望在 Terminal 中使用 `omx` 命令，在 Menubar Settings 中点击 `Enable omx command`。
+4. 如果希望在 Terminal 中使用 `prismux` 命令，在 Menubar Settings 中点击 `Enable prismux command`。
 
-OpenMux 不会静默修改 shell 启动文件。App 内置 CLI helper 路径是：
+Prismux 不会静默修改 shell 启动文件。App 内置 CLI helper 路径是：
 
 ```text
-/Applications/OpenMux.app/Contents/MacOS/omx
+/Applications/Prismux.app/Contents/MacOS/prismux
 ```
 
-`Enable omx command` 会创建 symlink，默认形态是：
+`Enable prismux command` 会创建 symlink，默认形态是：
 
 ```text
-$HOME/.local/bin/omx -> /Applications/OpenMux.app/Contents/MacOS/omx
+$HOME/.local/bin/prismux -> /Applications/Prismux.app/Contents/MacOS/prismux
 ```
 
 如果 `$HOME/.local/bin` 不在 `PATH` 中，请自行加入：
@@ -39,8 +39,8 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 验证：
 
 ```sh
-omx --version
-omx status
+prismux --version
+prismux status
 ```
 
 ### 手动安装 CLI 链接
@@ -49,22 +49,22 @@ omx status
 
 ```sh
 mkdir -p "$HOME/.local/bin"
-if [ -L "$HOME/.local/bin/omx" ] || [ ! -e "$HOME/.local/bin/omx" ]; then
-  ln -sfn "/Applications/OpenMux.app/Contents/MacOS/omx" "$HOME/.local/bin/omx"
+if [ -L "$HOME/.local/bin/prismux" ] || [ ! -e "$HOME/.local/bin/prismux" ]; then
+  ln -sfn "/Applications/Prismux.app/Contents/MacOS/prismux" "$HOME/.local/bin/prismux"
 else
-  echo "$HOME/.local/bin/omx already exists; remove it manually first" >&2
+  echo "$HOME/.local/bin/prismux already exists; remove it manually first" >&2
 fi
 ```
 
-symlink 会让 Terminal 中的 `omx` 跟随已安装 App 的版本。
+symlink 会让 Terminal 中的 `prismux` 跟随已安装 App 的版本。
 
 ## 从 Git 使用 Cargo 安装
 
 如果本机已有 Rust：
 
 ```sh
-cargo install --git https://github.com/hiQianFan/openmux -p omx-cli --locked
-omx --version
+cargo install --git https://github.com/hiQianFan/prismux -p prismux-cli --locked
+prismux --version
 ```
 
 ## 暂未提供
@@ -79,15 +79,15 @@ omx --version
 删除 CLI symlink：
 
 ```sh
-rm -f "$HOME/.local/bin/omx"
+rm -f "$HOME/.local/bin/prismux"
 ```
 
-然后从 `/Applications` 删除 `OpenMux.app`。
+然后从 `/Applications` 删除 `Prismux.app`。
 
 如果通过 Cargo 安装：
 
 ```sh
-cargo uninstall omx-cli
+cargo uninstall prismux-cli
 ```
 
-OpenMux state 默认位于平台本地数据目录，除非设置了 `OMUX_STATE_ROOT`。只有在确认不再需要账号 snapshot 或 backup 时才删除 state。
+Prismux state 默认位于平台本地数据目录，除非设置了 `PRISMUX_STATE_ROOT`。只有在确认不再需要账号 snapshot 或 backup 时才删除 state。

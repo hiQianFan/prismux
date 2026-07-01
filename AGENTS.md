@@ -2,7 +2,7 @@
 
 ## Project
 
-OpenMux is a Rust CLI for local account switching across AI coding tools. The
+Prismux is a Rust CLI for local account switching across AI coding tools. The
 current implementation target is Codex, with Claude Code and Gemini CLI planned
 after the core account-switching flow is reliable.
 
@@ -26,14 +26,14 @@ cargo clippy --all-targets --all-features
 For manual Codex CLI checks, isolate state with temporary directories:
 
 ```sh
-OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home cargo run -p omx-cli -- status
+PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home cargo run -p prismux-cli -- status
 ```
 
 ## Architecture
 
-- `crates/omx-core`: shared types, reports, errors, and plugin trait.
-- `crates/omx-plugin-codex`: Codex path detection and account switching.
-- `crates/omx-cli`: thin command-line presentation layer.
+- `crates/prismux-core`: shared types, reports, errors, and plugin trait.
+- `crates/prismux-plugin-codex`: Codex path detection and account switching.
+- `crates/prismux-cli`: thin command-line presentation layer.
 - `docs/PRD.md`: product scope.
 - `docs/ARCHITECTURE.md`: technical design.
 

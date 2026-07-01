@@ -1,11 +1,11 @@
 # Contributing
 
-OpenMux is an early-stage Rust CLI and macOS Menubar app. Keep changes small,
+Prismux is an early-stage Rust CLI and macOS Menubar app. Keep changes small,
 reviewable, and explicit about credential safety.
 
 ## Branch Model
 
-OpenMux uses GitHub Flow:
+Prismux uses GitHub Flow:
 
 - `main` is the only long-lived branch.
 - Create short-lived branches from `main`.
@@ -54,7 +54,7 @@ refactor(core): centralize target resolution
 
 ## Versioning
 
-OpenMux uses Semantic Versioning.
+Prismux uses Semantic Versioning.
 
 During `0.x`, the CLI and internal plugin API may still change:
 
@@ -75,7 +75,7 @@ Current roadmap shape:
 
 ## Rust Toolchain
 
-Use the stable Rust toolchain selected by `rust-toolchain.toml`. OpenMux does not
+Use the stable Rust toolchain selected by `rust-toolchain.toml`. Prismux does not
 currently guarantee a minimum supported Rust version.
 
 ```sh
@@ -96,15 +96,15 @@ cargo clippy --all-targets --all-features -- -D warnings
 Run from source:
 
 ```sh
-cargo run -p omx-cli -- status
-cargo run -p omx-cli -- list
-cargo run -p omx-cli -- list codex
+cargo run -p prismux-cli -- status
+cargo run -p prismux-cli -- list
+cargo run -p prismux-cli -- list codex
 ```
 
 Use isolated state for manual checks:
 
 ```sh
-OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p omx-cli -- status
+PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p prismux-cli -- status
 ```
 
 ## Menubar and Bundle Checks
@@ -117,11 +117,11 @@ scripts/build-menubar.sh
 scripts/bundle-menubar.sh
 ```
 
-The bundle script creates `target/menubar/OpenMux.app` with the bundled helper at
-`OpenMux.app/Contents/MacOS/omx`. Use isolated state for helper smoke tests:
+The bundle script creates `target/menubar/Prismux.app` with the bundled helper at
+`Prismux.app/Contents/MacOS/prismux`. Use isolated state for helper smoke tests:
 
 ```sh
-OMUX_STATE_ROOT=/tmp/openmux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home target/menubar/OpenMux.app/Contents/MacOS/omx status
+PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home target/menubar/Prismux.app/Contents/MacOS/prismux status
 ```
 
 See [docs/BUILD.md](docs/BUILD.md) for source-build details.
@@ -145,7 +145,7 @@ file paths, crate names, and protocol terms in English when that is clearer.
 
 ## Safety Rules
 
-OpenMux operates on auth files and local account state. Be conservative:
+Prismux operates on auth files and local account state. Be conservative:
 
 - Never print raw tokens.
 - Never store raw auth material in registry metadata.

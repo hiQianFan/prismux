@@ -1,6 +1,6 @@
 # Security Policy
 
-OpenMux handles local credentials, auth snapshots, backups, and account
+Prismux handles local credentials, auth snapshots, backups, and account
 metadata. Please do not report suspected credential leaks in public issues.
 
 ## Reporting a Vulnerability
@@ -26,7 +26,7 @@ Please report issues such as:
 
 ## Supported Versions
 
-OpenMux is in the `0.x` phase. Security fixes target the latest release unless a
+Prismux is in the `0.x` phase. Security fixes target the latest release unless a
 later policy says otherwise.
 
 ## Security Boundary
@@ -37,6 +37,6 @@ later policy says otherwise.
 - Registry metadata must not contain raw access tokens, refresh tokens, API
   keys, or full auth payloads.
 - Backups may contain credentials and must be treated as sensitive.
-- OpenMux does not implement Anthropic OAuth token exchange and does not call
+- Prismux does not implement Anthropic OAuth token exchange and does not call
   private Anthropic endpoints.
 

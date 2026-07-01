@@ -6,7 +6,7 @@
 
 - Codex account login、save、list、alias、switch 和 profile import。
 - Claude Code profile 导入/切换，以及 OAuth account snapshot 导入/切换。
-- macOS Apple Silicon 和 Intel `OpenMux.app` full bundle release，内置同版本 `omx` helper。
+- macOS Apple Silicon 和 Intel `Prismux.app` full bundle release，内置同版本 `prismux` helper。
 - `cargo install --git` 开发者安装路径。
 - README 和用户文档双语。
 - 仓库清理、CI、issue/PR templates 和安全政策。
@@ -41,6 +41,6 @@
 
 ## 非目标
 
-- OpenMux 不是 API gateway、model router 或 provider marketplace。
+- Prismux 不是 API gateway、model router 或 provider marketplace。
 - v0.1 不包含 daemon、watcher、动态 plugin loading、Sparkle 自动更新或 Developer ID notarization。
-- OpenMux 不调用 provider 私有 API 来补全账号 metadata。
+- Prismux 不调用 provider 私有 API 来补全账号 metadata。

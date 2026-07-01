@@ -1,46 +1,46 @@
-# OpenMux PRD
+# Prismux PRD
 
 ## 产品定位
 
-OpenMux 是 AI coding tools 的本地账号池管理器。
+Prismux 是 AI coding tools 的本地账号池管理器。
 
-用户不是因为想管理 auth 文件才使用 OpenMux。用户真正想解决的是：自己在 Codex、Claude Code、Gemini CLI 等工具里有多个账号，希望知道每个平台的账号池大概还能不能用，并能快速切换账号，不必重复走浏览器登录流程。
+用户不是因为想管理 auth 文件才使用 Prismux。用户真正想解决的是：自己在 Codex、Claude Code、Gemini CLI 等工具里有多个账号，希望知道每个平台的账号池大概还能不能用，并能快速切换账号，不必重复走浏览器登录流程。
 
 核心产品原则：
 
-> OpenMux 管理的是平台账号池。默认视图是全平台总览；聚焦某个平台时再展示账号明细；切换账号应该先支持编号选择，而不是要求用户一开始就给账号取名。
+> Prismux 管理的是平台账号池。默认视图是全平台总览；聚焦某个平台时再展示账号明细；切换账号应该先支持编号选择，而不是要求用户一开始就给账号取名。
 
 ## 用户心智
 
 用户通常按这个顺序思考：
 
-1. 这台机器上有哪些 AI coding 平台被 OpenMux 识别或绑定了？
+1. 这台机器上有哪些 AI coding 平台被 Prismux 识别或绑定了？
 2. 每个平台下面有几个账号？
 3. 每个平台当前 active 的账号是谁？
 4. 每个平台账号池大概还有多少可用额度？
 5. 如果某个平台快不够用了，我应该切到该平台里的哪个账号？
 6. 用久之后，我要不要给这些账号取更好记的 alias？
 
-因此，OpenMux 不应该把 alias 命名放进首次使用流程。alias 是整理账号用的，不是导入账号的门槛。
+因此，Prismux 不应该把 alias 命名放进首次使用流程。alias 是整理账号用的，不是导入账号的门槛。
 
 ## 主要用户路线
 
 ### 首次使用
 
-用户想添加一个 Codex 账号。OpenMux 应该帮助用户进入 Codex 官方登录流程，并在登录成功后自动把账号加入 Codex 账号池。
+用户想添加一个 Codex 账号。Prismux 应该帮助用户进入 Codex 官方登录流程，并在登录成功后自动把账号加入 Codex 账号池。
 
 ```sh
-omx status
-omx login codex
+prismux status
+prismux login codex
 ```
 
 期望行为：
 
-- `status` 确认 OpenMux 是否能找到工具 home、config file、auth file 和 OpenMux 自己的 state。
+- `status` 确认 Prismux 是否能找到工具 home、config file、auth file 和 Prismux 自己的 state。
 - `login codex` 调用 Codex 官方登录流程，并在登录成功后自动保存 auth snapshot。
 - 用户不需要提供 alias。
-- OpenMux 给该账号分配平台内编号。
-- 如果 OpenMux 检测到该 auth state 已经导入过，则更新已有账号，而不是创建重复账号。
+- Prismux 给该账号分配平台内编号。
+- 如果 Prismux 检测到该 auth state 已经导入过，则更新已有账号，而不是创建重复账号。
 
 示例输出：
 
@@ -50,16 +50,16 @@ Imported Codex account #1
 
 ### 添加更多账号
 
-用户想添加第二个账号时，仍然使用 OpenMux 入口，而不是先手动运行 `codex login` 再回来 `omx save`：
+用户想添加第二个账号时，仍然使用 Prismux 入口，而不是先手动运行 `codex login` 再回来 `prismux save`：
 
 ```sh
-omx login codex
+prismux login codex
 ```
 
 期望行为：
 
-- OpenMux 创建临时 login 环境，让 Codex 官方登录流程在该环境中完成。
-- 登录成功后，OpenMux 自动读取登录结果并保存到账号池。
+- Prismux 创建临时 login 环境，让 Codex 官方登录流程在该环境中完成。
+- 登录成功后，Prismux 自动读取登录结果并保存到账号池。
 - 默认情况下，添加账号不应破坏当前 active 账号。
 - 如果可以识别这是已存在账号，则更新已有记录。
 - 如果暂时无法识别真实 account metadata，则至少通过 content hash 做重复检测。
@@ -69,17 +69,17 @@ omx login codex
 远程服务器、SSH、容器或无桌面环境中，用户可以使用：
 
 ```sh
-omx login codex --device-auth
+prismux login codex --device-auth
 ```
 
-`--device-auth` 表示使用 Codex 的设备授权登录模式：终端显示登录链接和/或一次性 code，用户在任意有浏览器的设备上完成授权，终端中的登录流程继续完成。OpenMux 只负责透传这个登录模式，并在登录完成后自动记录账号。
+`--device-auth` 表示使用 Codex 的设备授权登录模式：终端显示登录链接和/或一次性 code，用户在任意有浏览器的设备上完成授权，终端中的登录流程继续完成。Prismux 只负责透传这个登录模式，并在登录完成后自动记录账号。
 
-这不是 OpenMux 的另一套账号体系，也不是用户日常添加账号时必须理解的概念。它只是把 Codex 官方的 `codex login --device-auth` 包进 OpenMux 的主入口里，让没有本机浏览器的环境也能完成同样的账号添加流程。登录成功后，账号仍然获得平台内编号，仍然进入 Codex 账号池，仍然可以通过 `omx list codex` 和 `omx use codex <number>` 管理。
+这不是 Prismux 的另一套账号体系，也不是用户日常添加账号时必须理解的概念。它只是把 Codex 官方的 `codex login --device-auth` 包进 Prismux 的主入口里，让没有本机浏览器的环境也能完成同样的账号添加流程。登录成功后，账号仍然获得平台内编号，仍然进入 Codex 账号池，仍然可以通过 `prismux list codex` 和 `prismux use codex <number>` 管理。
 
 如果用户希望登录完成后立刻切换到新账号，可以显式使用：
 
 ```sh
-omx login codex --use
+prismux login codex --use
 ```
 
 ### 全局总览
@@ -87,7 +87,7 @@ omx login codex --use
 用户运行：
 
 ```sh
-omx list
+prismux list
 ```
 
 这不是 raw account dump，而是全平台账号池总览。
@@ -101,7 +101,7 @@ omx list
 - 每个平台账号池关键窗口的聚合剩余额度是什么？例如 Codex 在全局视图展示账号池内 `5h` 平均剩余额度。
 - 每个平台是否有账号进入 limited/exhausted 等需要关注的状态？全局视图只展示收敛后的状态文案。
 
-全局总览应该保持克制。不要在这里展示每个账号的 reset time、详细 usage source、诊断 warning、plan、weekly window 或单账号明细。那些内容属于 `omx list <platform>` 或 `omx doctor <platform>`。`omx list` 的 `Overall` 和 `5h` 都是平台账号池级别的聚合视角，不是 active 单个账号的额度；当前 active 账号只作为“正在选择谁”的上下文展示。
+全局总览应该保持克制。不要在这里展示每个账号的 reset time、详细 usage source、诊断 warning、plan、weekly window 或单账号明细。那些内容属于 `prismux list <platform>` 或 `prismux doctor <platform>`。`prismux list` 的 `Overall` 和 `5h` 都是平台账号池级别的聚合视角，不是 active 单个账号的额度；当前 active 账号只作为“正在选择谁”的上下文展示。
 
 示例：
 
@@ -121,7 +121,7 @@ Overview
 用户运行：
 
 ```sh
-omx list codex
+prismux list codex
 ```
 
 这个视图聚焦某一个平台账号池。
@@ -148,7 +148,7 @@ Codex accounts: 3 total, active #2 work
 默认切换路径使用平台内编号：
 
 ```sh
-omx use codex 2
+prismux use codex 2
 ```
 
 期望行为：
@@ -168,14 +168,14 @@ Restart Codex if it is already running.
 当账号数据更丰富时，可以支持更多 selector：
 
 ```sh
-omx use codex work
-omx use codex next
-omx use codex -
+prismux use codex work
+prismux use codex next
+prismux use codex -
 ```
 
 selector 含义：
 
-- `2`：在只有 account 的平台中按账号编号切换；在同时有 accounts 和 profiles 的平台中按 `omx list <platform>` 当前展示编号切换。
+- `2`：在只有 account 的平台中按账号编号切换；在同时有 accounts 和 profiles 的平台中按 `prismux list <platform>` 当前展示编号切换。
 - `work`：按用户设置的 alias 切换。
 - `next`：切到该平台下一个可用账号。
 - `-`：切回上一个 active 账号。
@@ -187,43 +187,24 @@ selector 含义：
 用户可以在两个层级查看当前状态：
 
 ```sh
-omx current
-omx current codex
+prismux current
+prismux current codex
 ```
 
-- `omx current` 展示所有已连接平台当前 active 的账号。
-- `omx current codex` 展示 Codex 当前 active 账号，包括编号、alias、account、plan 和 capacity when known。
+- `prismux current` 展示所有已连接平台当前 active 的账号。
+- `prismux current codex` 展示 Codex 当前 active 账号，包括编号、alias、account、plan 和 capacity when known。
 
-### 查看本地 token usage
+### 本地 token usage stats
 
-`omx usage` 是辅助判断本地 token consumption 的轻量入口，不是账单或订阅额度视图。默认输出应保持单屏可读：
-
-```sh
-omx usage
-omx usage --period 7d
-omx usage --group-by day
-omx usage --group-by model --details
-omx usage --json --no-scan
-```
-
-期望行为：
-
-- 默认按本地时区最近 7 个自然日汇总，并按 `day` 展示紧凑 rows，让用户先看到时间趋势；显式 `--period today` 时默认按 `client` 汇总。
-- 默认 rows 至少展示 `Day/Client/Model`、`Top Model`、`In`、`Out`、`Total Tokens`、`Cost`、`Events` 和 `Of Total`。`In`/`Out` 是输入/输出 token，`Top Model` 表示该 row 中 token 消耗最高的 model；`Of Total` 表示该 row 的 token total 占当前查询总 token 的比例。
-- `Cost` 优先展示可验证 cost；当前本地解析路径只在已有 tokscale pricing cache 可用时按 `model + provider + token buckets` 估算并标记 `estimated`，未知价格保持 `missing`，不得显示为 `$0.00`。
-- `--period today|7d|30d|all` 覆盖常用窗口；`--since`/`--until` 保留精确范围，两者不能和 `--period` 混用。
-- `--group-by client|day|model` 是第一阶段开放 lens；`project` 和 `session` 等到 metadata 稳定后再开放。
-- `--details` 才展示 input/output/cache read/cache write/reasoning/provider total/event count 等 accounting 字段。
-- `--json` 输出 versioned report，包含 `totals`、`groups`、`freshness`、`coverage`、`accounting` 和脱敏 diagnostics。
-- token consumption、cost 和 quota 必须保持独立口径；不得用本地 token total 推断订阅剩余额度。
+`prismux usage`、本地 session parser、token/cost 聚合和 Menubar Token Usage 面板已从主分支剥离，冻结点为 `usage-stats-v0`。当前产品主线只保留 provider quota/limit 展示与刷新失败回退；不得用本地 token total 推断订阅剩余额度。
 
 ### 命名和整理
 
 alias 是可选的。只有当用户想让列表更好读时才需要设置。
 
 ```sh
-omx alias codex 1 personal
-omx alias codex 2 work
+prismux alias codex 1 personal
+prismux alias codex 2 work
 ```
 
 规则：
@@ -236,36 +217,36 @@ omx alias codex 2 work
 
 ### 保存当前状态
 
-`save` 不是普通用户添加账号的主路径。普通用户添加账号应该使用 `login`。`save` 的职责是把已经存在的本机 active auth 状态保存到 OpenMux。
+`save` 不是普通用户添加账号的主路径。普通用户添加账号应该使用 `login`。`save` 的职责是把已经存在的本机 active auth 状态保存到 Prismux。
 
 典型场景：
 
 - 用户已经通过 Codex App、VS Code extension 或手动 `codex login` 改变了当前 active auth。
-- OpenMux registry 丢失，但当前工具 auth 文件仍然存在。
+- Prismux registry 丢失，但当前工具 auth 文件仍然存在。
 - 用户未来希望从指定 auth file 或备份目录恢复账号。
 
 命令形态：
 
 ```sh
-omx save codex
-omx save codex --alias work
+prismux save codex
+prismux save codex --alias work
 ```
 
-`save` 语义是“我已经在 Codex App、VS Code extension 或手动 `codex login` 中登录好了，请 OpenMux 保存当前状态”。未来如果需要从指定 auth file 或备份目录恢复，应优先扩展为：
+`save` 语义是“我已经在 Codex App、VS Code extension 或手动 `codex login` 中登录好了，请 Prismux 保存当前状态”。未来如果需要从指定 auth file 或备份目录恢复，应优先扩展为：
 
 ```sh
-omx save codex --file ~/backup/auth.json
-omx save codex --dir ~/backup/codex-auth
+prismux save codex --file ~/backup/auth.json
+prismux save codex --dir ~/backup/codex-auth
 ```
 
 ### 外部配置导入
 
-`import` 用于从外部导入中转站、API key 或 provider/profile 配置。用户常见输入是中转站网页复制的一段 Codex TOML 或 KV，OpenMux 应该接受整段内容放在命令最后，自动识别并转换为目标工具支持的配置。
+`import` 用于从外部导入中转站、API key 或 provider/profile 配置。用户常见输入是中转站网页复制的一段 Codex TOML 或 KV，Prismux 应该接受整段内容放在命令最后，自动识别并转换为目标工具支持的配置。
 
 Codex TOML 输入示例：
 
 ```sh
-omx import codex --name apikey-fun "
+prismux import codex --name apikey-fun "
 model_provider = \"codex\"
 model = \"gpt-5.5\"
 
@@ -280,7 +261,7 @@ requires_openai_auth = true
 Codex/OpenAI-compatible 输入示例：
 
 ```sh
-omx import codex "
+prismux import codex "
 OPENAI_API_KEY=<your-openai-api-key>
 OPENAI_BASE_URL=https://api.example.com/v1
 OPENAI_MODEL=gpt-5
@@ -290,24 +271,24 @@ OPENAI_MODEL=gpt-5
 Claude Code 输入示例：
 
 ```sh
-omx import claude "
+prismux import claude "
 ANTHROPIC_API_KEY=<your-anthropic-api-key>
 ANTHROPIC_BASE_URL=https://api.example.com
 ANTHROPIC_MODEL=claude-sonnet-4-5
 "
 ```
 
-无参数时，`omx import <platform>` 可以读取 stdin；剪贴板或交互粘贴是后续增强。OpenMux 应该优先使用官方变量名和官方配置入口，不要求用户手写 Codex `config.toml` 或 Claude `settings.json`。
+无参数时，`prismux import <platform>` 可以读取 stdin；剪贴板或交互粘贴是后续增强。Prismux 应该优先使用官方变量名和官方配置入口，不要求用户手写 Codex `config.toml` 或 Claude `settings.json`。
 
 Profile 命名规则应尽量贴近中转站身份：显式 `--name` 优先；未提供时优先从 `base_url` host 推断，例如 `https://api.apikey.fun/v1` 生成 `api-apikey-fun`；再回退到 `model_provider` 或 provider id。
 
 Claude Code 需要额外区分 profile 和 OAuth account：
 
-- `omx import claude` 导入中转/API profile，只写 Claude Code user `settings.json` 的 `env`。
-- `omx login claude --alias work` 调用官方 Claude Code 登录流程，并在登录成功后自动导入 OAuth account snapshot。
-- `omx import claude` 在没有配置内容时从本机已有官方 Claude Code 登录产物导入 OAuth account snapshot。
-- `omx use claude <selector>` 在 account/profile 中自动推断，唯一命中 profile 时只切换 profile，唯一命中 account 时只恢复 OAuth credential snapshot 和 `oauthAccount` metadata。
-- 如果 selector 同时命中 account 和 profile，OpenMux 必须报歧义错误，不静默选择。
+- `prismux import claude` 导入中转/API profile，只写 Claude Code user `settings.json` 的 `env`。
+- `prismux login claude --alias work` 调用官方 Claude Code 登录流程，并在登录成功后自动导入 OAuth account snapshot。
+- `prismux import claude` 在没有配置内容时从本机已有官方 Claude Code 登录产物导入 OAuth account snapshot。
+- `prismux use claude <selector>` 在 account/profile 中自动推断，唯一命中 profile 时只切换 profile，唯一命中 account 时只恢复 OAuth credential snapshot 和 `oauthAccount` metadata。
+- 如果 selector 同时命中 account 和 profile，Prismux 必须报歧义错误，不静默选择。
 - 当前实现支持 macOS Keychain backend 和 plaintext `.credentials.json` backend；Keychain 读写必须通过独立 backend，禁止在日志、错误或命令行参数中暴露 payload。
 
 ### 诊断和恢复
@@ -315,15 +296,15 @@ Claude Code 需要额外区分 profile 和 OAuth account：
 用户运行：
 
 ```sh
-omx doctor
-omx doctor codex
+prismux doctor
+prismux doctor codex
 ```
 
 doctor 应该回答：
 
-- OpenMux 能否找到各工具 home？
+- Prismux 能否找到各工具 home？
 - 能否找到 active auth file？
-- OpenMux 自己的 state 是否可读写？
+- Prismux 自己的 state 是否可读写？
 - registry 是否可读？
 - stored auth snapshots 是否存在？
 - auth-bearing 文件权限是否足够安全？
@@ -333,11 +314,11 @@ doctor 应该回答：
 
 ### 平台 Target Catalog
 
-- OpenMux 将 account 和 profile 都视为平台下可切换的 target。
+- Prismux 将 account 和 profile 都视为平台下可切换的 target。
 - account/profile 的底层 registry、snapshot 和 apply 逻辑必须按平台能力分离；CLI 层只做 target catalog 聚合、编号展示和 selector 分发。
-- `omx list <platform>` 是数字 selector 的唯一来源。只要平台同时有 accounts 和 profiles，列表必须按 accounts 在前、profiles 在后的顺序生成连续展示编号。
+- `prismux list <platform>` 是数字 selector 的唯一来源。只要平台同时有 accounts 和 profiles，列表必须按 accounts 在前、profiles 在后的顺序生成连续展示编号。
 - 展示编号是当前列表编号，不是持久 ID；新增/删除 target 后可以动态变化。底层 account/profile 持久编号不得因为展示编号变化而重排。
-- profile 没有持久编号时，仍必须获得当前列表展示编号，并可通过该编号执行 `omx use <platform> <number>`。
+- profile 没有持久编号时，仍必须获得当前列表展示编号，并可通过该编号执行 `prismux use <platform> <number>`。
 - 非数字 selector 按 account alias 和 profile name 精确匹配；同时命中时必须报歧义错误，不静默偏向 account 或 profile。
 - active 语义由平台真实状态决定。Codex 的 account 与 profile 分别对应 `auth.json` 和 `config.toml` provider selector，可以同时 active；账号切换不得清除或改写用户的 provider、plugin、skill、MCP 等习惯配置。
 - 每个账号拥有平台内持久编号，这是 account-only 平台或底层 account plugin 的默认 selector。
@@ -350,25 +331,25 @@ doctor 应该回答：
 例如：
 
 ```sh
-omx use codex 2
-omx use codex 4
+prismux use codex 2
+prismux use codex 4
 ```
 
-如果 `omx list codex` 中 `#2` 是账号，则切换到该账号；如果 `#4` 是 profile，则切换到该 profile。
+如果 `prismux list codex` 中 `#2` 是账号，则切换到该账号；如果 `#4` 是 profile，则切换到该 profile。
 
 ### Login / Save / Import
 
-- `omx login <platform>` 是普通用户添加账号的主路径。
-- `omx login claude` 不是 OpenMux 自研 OAuth flow；它包装官方 Claude Code CLI 登录。官方登录成功会改写真实 Claude credential，因此 OpenMux 导入 snapshot 后必须登记该 account 为 active，并清除同平台 profile active marker。
-- `omx login <platform> --device-auth` 支持远程/无浏览器环境的设备授权登录模式；它只是选择 provider 官方登录方式，不改变账号池记录、编号、重复检测和切换语义。
-- `omx login <platform> --alias <alias>` 可以在登录成功后顺手设置 alias。
-- `omx login <platform> --use` 可以在登录成功后立刻切换到新账号。
+- `prismux login <platform>` 是普通用户添加账号的主路径。
+- `prismux login claude` 不是 Prismux 自研 OAuth flow；它包装官方 Claude Code CLI 登录。官方登录成功会改写真实 Claude credential，因此 Prismux 导入 snapshot 后必须登记该 account 为 active，并清除同平台 profile active marker。
+- `prismux login <platform> --device-auth` 支持远程/无浏览器环境的设备授权登录模式；它只是选择 provider 官方登录方式，不改变账号池记录、编号、重复检测和切换语义。
+- `prismux login <platform> --alias <alias>` 可以在登录成功后顺手设置 alias。
+- `prismux login <platform> --use` 可以在登录成功后立刻切换到新账号。
 - 对 Claude Code，官方登录流程本身会激活新 credential，`--use` 只是显式表达用户意图，不改变最终 active 结果。
-- `omx save <platform>` 是恢复/高级路径，用于保存当前已经存在的 active account。
-- `omx save <platform> --file <path>` 和 `omx save <platform> --dir <path>` 是未来恢复/迁移能力。
-- `omx import <platform> "<TOML-or-KV>"` 用于导入外部中转站或 provider/profile 配置，配置内容放在命令最后。
-- Codex 始终维护一份 live `config.toml`。导入 profile 只新增 OpenMux 命名的 provider section，`omx use codex <profile>` 只持久切换相关 selector，不能用账号级完整配置副本覆盖 live 文件。
-- `omx import claude [--name <name>]` 在没有外部 KV/TOML 内容时用于导入本机已有 Claude Code OAuth account snapshot。
+- `prismux save <platform>` 是恢复/高级路径，用于保存当前已经存在的 active account。
+- `prismux save <platform> --file <path>` 和 `prismux save <platform> --dir <path>` 是未来恢复/迁移能力。
+- `prismux import <platform> "<TOML-or-KV>"` 用于导入外部中转站或 provider/profile 配置，配置内容放在命令最后。
+- Codex 始终维护一份 live `config.toml`。导入 profile 只新增 Prismux 命名的 provider section，`prismux use codex <profile>` 只持久切换相关 selector，不能用账号级完整配置副本覆盖 live 文件。
+- `prismux import claude [--name <name>]` 在没有外部 KV/TOML 内容时用于导入本机已有 Claude Code OAuth account snapshot。
 - `save` 和 `import` 都不得打印 raw auth content 或 raw API key。
 - login/save 都应尽可能避免重复账号。
 - login/save 创建新账号时分配下一个平台内编号。
@@ -376,8 +357,8 @@ omx use codex 4
 
 ### List
 
-- `omx list` 展示全平台 overview。
-- `omx list <platform>` 展示平台 detail。
+- `prismux list` 展示全平台 overview。
+- `prismux list <platform>` 展示平台 detail。
 - 同时有 accounts 和 profiles 的平台必须分组展示，但使用同一组连续编号。
 - 空 account/profile section 仍展示空表格，避免在同一平台下出现结构跳变。
 - 默认输出优先使用 human-readable table。
@@ -386,8 +367,8 @@ omx use codex 4
 
 ### Use
 
-- `omx use <platform> <selector>` 切换某个平台的 active account 或 profile。
-- 对于同时具备 accounts 和 profiles 的平台，数字 selector 按 `omx list <platform>` 当前展示编号解析；展示编号由 accounts 在前、profiles 在后连续生成，不等同于底层 registry 持久编号。
+- `prismux use <platform> <selector>` 切换某个平台的 active account 或 profile。
+- 对于同时具备 accounts 和 profiles 的平台，数字 selector 按 `prismux list <platform>` 当前展示编号解析；展示编号由 accounts 在前、profiles 在后连续生成，不等同于底层 registry 持久编号。
 - 非数字 selector 支持 account alias 和 profile name；唯一命中时自动执行对应切换。
 - 非数字 selector 同时命中 account 和 profile 时必须报歧义错误，要求用户改成唯一 alias/profile name。
 - 聚合平台在用户心智上同一时间只能有一个 active target；切换 account 时 profile 不再显示为 active，切换 profile 时 account 不再显示为 active。
@@ -417,7 +398,7 @@ capacity 是产品模型的一部分，但当前全局总览要保持克制。
 - 如果部分账号已知、部分未知，overview 只聚合已知 usage；缺失原因放在平台 detail 的 `Status`。
 - 如果没有任何账号 capacity data，usage 字段应展示 `-`。
 - UI 不应将缺失数据当成 zero。
-- Codex 当前没有稳定公开的本地额度文件或普通 CLI 子命令可直接读取百分比。OpenMux 可以参考 Codex 官方源码中使用的 `backend-api/wham/usage` 做 best-effort usage 查询；该能力不是稳定公开 API，必须短超时、失败回退 `unknown`，且不得打印 bearer token。
+- Codex 当前没有稳定公开的本地额度文件或普通 CLI 子命令可直接读取百分比。Prismux 可以参考 Codex 官方源码中使用的 `backend-api/wham/usage` 做 best-effort usage 查询；该能力不是稳定公开 API，必须短超时、失败回退 `unknown`，且不得打印 bearer token。
 - Claude/Gemini 后续不应强行套用 Codex 的 `5h`/`weekly` 列；它们应该填充统一 `UsageLimit` 模型，并由各自 plugin 决定 detail table 的 provider-specific 列。
 
 ### Safety
@@ -431,30 +412,29 @@ capacity 是产品模型的一部分，但当前全局总览要保持克制。
 
 ## 非目标
 
-- OpenMux 不是 model router、API gateway 或 provider marketplace。
-- OpenMux 不替代 provider login flow。
-- OpenMux 不需要在 CLI 心智稳定前做 GUI。
-- OpenMux 不要求用户导入账号前先给账号取名。
-- OpenMux 不把 alias、account 和 plan 混为一谈。
+- Prismux 不是 model router、API gateway 或 provider marketplace。
+- Prismux 不替代 provider login flow。
+- Prismux 不需要在 CLI 心智稳定前做 GUI。
+- Prismux 不要求用户导入账号前先给账号取名。
+- Prismux 不把 alias、account 和 plan 混为一谈。
 
 ## Menubar v1
 
-OpenMux Menubar v1 是 macOS 14+ Apple Silicon 的原生菜单栏账号控制面板。它的主任务是低摩擦查看 active account、账号池、quota/status，并执行手动 refresh 和用户显式 switch。usage 只作为附属摘要展示 today total tokens、top client、top model 和 coverage。
+Prismux Menubar v1 是 macOS 14+ Apple Silicon 的原生菜单栏账号控制面板。它的主任务是低摩擦查看 active account、账号池、quota/status，并执行手动 refresh 和用户显式 switch。
 
 Menubar v1 不做登录、导入、删除、alias 编辑、自动最佳账号选择、account 级 usage attribution、完整 analytics dashboard、Sparkle 自动更新或 notarization 自动化。低频/高风险管理动作继续通过 CLI 完成，例如：
 
 ```sh
-omx login codex
-omx import codex --file provider.toml
-omx use codex 2
-omx usage --period today
+prismux login codex
+prismux import codex --file provider.toml
+prismux use codex 2
 ```
 
-Swift App 只通过 OpenMux Rust staticlib contract 读取账号报告和提交 switch/refresh intent，不直接读取 auth 文件、SQLite、usage logs 或 provider endpoint。TokenBar 只作为交互密度和 popover chrome 的参考；v1 不复制其源码、资源、scanner、pricing、quota fetcher、cache、bundle ID 或 report DTO。
+Swift App 只通过 Prismux Rust staticlib contract 读取账号报告和提交 switch/refresh intent，不直接读取 auth 文件、SQLite 或 provider endpoint。TokenBar 只作为交互密度和 popover chrome 的参考；v1 不复制其源码、资源、scanner、pricing、quota fetcher、cache、bundle ID 或 report DTO。
 
 ## 开放问题
 
 - 删除账号后，平台内编号应该保留空洞，还是为了列表清爽而重新压紧？
-- `omx login codex` 默认是否应该保持当前 active 不变，还是登录完成后自动切换到新账号？
+- `prismux login codex` 默认是否应该保持当前 active 不变，还是登录完成后自动切换到新账号？
 - 重复检测第一步使用 content hash 是否足够，何时引入更强 account matching？
 - `next` 应该按导入顺序、最近使用顺序，还是 capacity 状态选择？

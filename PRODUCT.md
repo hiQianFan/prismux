@@ -10,7 +10,7 @@ AI coding tool power users who run Codex, Claude Code, Gemini CLI, or similar to
 
 ## Product Purpose
 
-OpenMux is a local account and provider-profile control plane for AI coding tools. It keeps platform account pools visible, lets users switch the active target safely, and separates account quota, local token usage, and provider/profile configuration into clear mental models.
+Prismux is a local account and provider-profile control plane for AI coding tools. It keeps platform account pools visible, lets users switch the active target safely, and separates account quota, local token usage, and provider/profile configuration into clear mental models.
 
 ## Brand Personality
 

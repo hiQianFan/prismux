@@ -7,6 +7,7 @@
 - [x] 1.4 使用能保留 macOS bundle layout 和 executable permissions 的 zip 流程打包，上传 `OpenMux-vX.Y.Z-macos-<arch>.zip` 和 `SHA256SUMS`。
 - [x] 1.5 在 release notes 中声明 artifact 包含 Menubar + bundled CLI helper。
 - [x] 1.6 解压 release zip 后验证 `Contents/MacOS/OpenMux` 和 `Contents/MacOS/omx` 都存在、可执行，且 helper smoke test 使用隔离 `OMUX_STATE_ROOT`、`CODEX_HOME`、`CLAUDE_CONFIG_DIR`。
+- [x] 1.7 将 Prismux app icon 生成 `.icns` 并打包到 `Prismux.app/Contents/Resources`，同时在 bundle audit 中验证 `CFBundleIconFile` 指向的资源存在。
 
 ## 2. CLI install UX
 
@@ -51,10 +52,10 @@
 
 ## 6. GitHub repository setup
 
-- [ ] 6.1 确认 GitHub repo description、website/about、topics、license detection 和 default branch 正确。
-- [ ] 6.2 启用 branch protection：required CI checks、PR-only、禁止 force push、禁止删除。
-- [ ] 6.3 启用 GitHub private vulnerability reporting（如果当前 repo 支持）。
+- [x] 6.1 确认 GitHub repo description、website/about、topics、license detection 和 default branch 正确。
+- [x] 6.2 启用 branch protection：required CI checks、PR-only、禁止 force push、禁止删除。
+- [x] 6.3 启用 GitHub private vulnerability reporting（如果当前 repo 支持）。
 - [x] 6.4 确认 issue templates 不要求用户粘贴 auth/token/snapshot/backups，并提供环境/version/path override 字段。
 - [x] 6.5 确认 release workflow 权限最小化；PR CI 不需要 `contents: write`。
 
-> 远端状态：本地当前没有配置 git remote；文档中的 `hiQianFan/openmux` 仓库对 `gh repo view` 不可解析，branch protection 和 private vulnerability reporting API 返回 404。因此 6.1-6.3 需要在 GitHub 仓库创建/授权/remote 配置完成后再核验并勾选。
+> 远端状态：GitHub 当前实际仓库为 `hiQianFan/prismux`；repo metadata、topics、MIT license detection、default branch、branch protection 和 private vulnerability reporting 已通过 GitHub API 核验。

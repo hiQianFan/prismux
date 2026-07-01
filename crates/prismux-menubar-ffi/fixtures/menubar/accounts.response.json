@@ -1,0 +1,27 @@
+{
+  "control_plane_schema_version": 4,
+  "data": {
+    "accounts": [],
+    "active_local_id": null,
+    "active_target_key": null,
+    "active_target_kind": null,
+    "control_plane_schema_version": 4,
+    "diagnostics": [],
+    "generated_at_unix": 0,
+    "observed_target": null,
+    "profiles": [],
+    "providers": [
+      "codex"
+    ],
+    "refresh_scope_target": null,
+    "selected_ui_target": null,
+    "state_schema_version": 2,
+    "system_active_target": null
+  },
+  "minimum_backend_version": "0.1.0",
+  "minimum_frontend_version": "0.1.0",
+  "ok": true,
+  "request_id": "accounts-fixture",
+  "schema_version": 2,
+  "state_schema_version": 2
+}

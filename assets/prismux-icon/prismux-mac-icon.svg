@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="background" cx="50%" cy="43%" r="72%">
+      <stop offset="0" stop-color="#2d3031"/>
+      <stop offset=".58" stop-color="#151718"/>
+      <stop offset="1" stop-color="#030404"/>
+    </radialGradient>
+    <radialGradient id="prismFill" cx="50%" cy="48%" r="42%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".08"/>
+      <stop offset=".62" stop-color="#ffffff" stop-opacity=".025"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="prismStroke" x1="312" y1="704" x2="610" y2="230" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#eee8de"/>
+      <stop offset=".48" stop-color="#fffdf7"/>
+      <stop offset="1" stop-color="#e5ded4"/>
+    </linearGradient>
+    <linearGradient id="singleRay" x1="638" y1="506" x2="1064" y2="438" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fffdf7"/>
+      <stop offset=".68" stop-color="#f4efe6"/>
+      <stop offset="1" stop-color="#dfd8cd"/>
+    </linearGradient>
+    <filter id="rayGlow" x="-12%" y="-60%" width="124%" height="220%">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
+    <filter id="prismShadow" x="-18%" y="-18%" width="136%" height="136%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#000000" flood-opacity=".48"/>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" fill="url(#background)"/>
+
+  <g opacity=".5" filter="url(#rayGlow)">
+    <polygon points="-48,358 352,506 352,516 -48,384" fill="#ff2633"/>
+    <polygon points="-48,384 352,516 352,526 -48,410" fill="#ff8d16"/>
+    <polygon points="-48,410 352,526 352,536 -48,436" fill="#ffe946"/>
+    <polygon points="-48,436 352,536 352,546 -48,462" fill="#18c95f"/>
+    <polygon points="-48,462 352,546 352,556 -48,488" fill="#19c8f6"/>
+    <polygon points="-48,488 352,556 352,566 -48,514" fill="#7041bf"/>
+  </g>
+
+  <polygon points="-48,352 352,508 352,517 -48,380" fill="#ff1f2d"/>
+  <polygon points="-48,380 352,517 352,526 -48,408" fill="#ff8b13"/>
+  <polygon points="-48,408 352,526 352,535 -48,436" fill="#ffe43a"/>
+  <polygon points="-48,436 352,535 352,544 -48,464" fill="#13bf58"/>
+  <polygon points="-48,464 352,544 352,553 -48,492" fill="#17bff0"/>
+  <polygon points="-48,492 352,553 352,562 -48,520" fill="#6e3eb8"/>
+
+  <g opacity=".55" filter="url(#rayGlow)">
+    <polygon points="660,500 1068,434 1068,464 660,526" fill="url(#singleRay)"/>
+  </g>
+  <polygon points="660,506 1068,443 1068,457 660,522" fill="url(#singleRay)"/>
+
+  <g filter="url(#prismShadow)">
+    <path d="M512 230 L786 705 L238 705 Z" fill="url(#prismFill)"/>
+    <path d="M512 230 L786 705 L238 705 Z" fill="none" stroke="#101112" stroke-width="42" stroke-linejoin="miter" opacity=".62"/>
+    <path d="M512 230 L786 705 L238 705 Z" fill="none" stroke="url(#prismStroke)" stroke-width="28" stroke-linejoin="miter"/>
+    <path d="M512 230 L786 705 L238 705 Z" fill="none" stroke="#ffffff" stroke-width="7" stroke-linejoin="miter" opacity=".72"/>
+  </g>
+</svg>

@@ -10,6 +10,7 @@
 /_bmad/
 /_bmad-output/
 /design-artifacts/
+**/.impeccable/
 
 # Editor and OS files
 /.idea/

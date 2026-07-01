@@ -138,35 +138,35 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          app="target/menubar/OpenMux.app"
-          test -x "${app}/Contents/MacOS/OpenMux"
-          test -x "${app}/Contents/MacOS/omx"
-          "${app}/Contents/MacOS/omx" --version
-          OMUX_STATE_ROOT="${RUNNER_TEMP}/openmux-state" \
+          app="target/menubar/Prismux.app"
+          test -x "${app}/Contents/MacOS/Prismux"
+          test -x "${app}/Contents/MacOS/prismux"
+          "${app}/Contents/MacOS/prismux" --version
+          PRISMUX_STATE_ROOT="${RUNNER_TEMP}/prismux-state" \
           CODEX_HOME="${RUNNER_TEMP}/codex-home" \
           CLAUDE_CONFIG_DIR="${RUNNER_TEMP}/claude-home" \
-          "${app}/Contents/MacOS/omx" status
+          "${app}/Contents/MacOS/prismux" status
 
       - name: Package artifact
         shell: bash
         run: |
           set -euo pipefail
-          artifact="OpenMux-${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}"
+          artifact="Prismux-${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}"
           mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent "target/menubar/OpenMux.app" "dist/${artifact}.zip"
-          unzip -q "dist/${artifact}.zip" -d "${RUNNER_TEMP}/openmux-unpack"
-          test -x "${RUNNER_TEMP}/openmux-unpack/OpenMux.app/Contents/MacOS/OpenMux"
-          test -x "${RUNNER_TEMP}/openmux-unpack/OpenMux.app/Contents/MacOS/omx"
-          OMUX_STATE_ROOT="${RUNNER_TEMP}/openmux-unpack-state" \
-          CODEX_HOME="${RUNNER_TEMP}/openmux-unpack-codex-home" \
-          CLAUDE_CONFIG_DIR="${RUNNER_TEMP}/openmux-unpack-claude-home" \
-          "${RUNNER_TEMP}/openmux-unpack/OpenMux.app/Contents/MacOS/omx" status
+          ditto -c -k --sequesterRsrc --keepParent "target/menubar/Prismux.app" "dist/${artifact}.zip"
+          unzip -q "dist/${artifact}.zip" -d "${RUNNER_TEMP}/prismux-unpack"
+          test -x "${RUNNER_TEMP}/prismux-unpack/Prismux.app/Contents/MacOS/Prismux"
+          test -x "${RUNNER_TEMP}/prismux-unpack/Prismux.app/Contents/MacOS/prismux"
+          PRISMUX_STATE_ROOT="${RUNNER_TEMP}/prismux-unpack-state" \
+          CODEX_HOME="${RUNNER_TEMP}/prismux-unpack-codex-home" \
+          CLAUDE_CONFIG_DIR="${RUNNER_TEMP}/prismux-unpack-claude-home" \
+          "${RUNNER_TEMP}/prismux-unpack/Prismux.app/Contents/MacOS/prismux" status
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OpenMux-${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}
-          path: dist/OpenMux-${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}.zip
+          name: Prismux-${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}
+          path: dist/Prismux-${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}.zip
 
   publish:
     name: Publish GitHub Release

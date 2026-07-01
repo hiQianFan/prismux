@@ -1,0 +1,139 @@
+{
+  "control_plane_schema_version": 4,
+  "data": {
+    "accounts": {
+      "accounts": [],
+      "active_local_id": null,
+      "active_target_key": null,
+      "active_target_kind": null,
+      "control_plane_schema_version": 4,
+      "diagnostics": [],
+      "generated_at_unix": 0,
+      "observed_target": null,
+      "profiles": [],
+      "providers": [
+        "codex"
+      ],
+      "refresh_scope_target": null,
+      "selected_ui_target": null,
+      "state_schema_version": 2,
+      "system_active_target": null
+    },
+    "active": null,
+    "aggregate": {
+      "diagnostics": [],
+      "provider_aggregates": [
+        {
+          "account_count": 0,
+          "active_target": null,
+          "diagnostics": [],
+          "profile_count": 0,
+          "provider_display_label": "Codex",
+          "provider_id": "codex",
+          "quota_health": {
+            "best_alternative": null,
+            "exhausted_count": 0,
+            "facts": {
+              "account_count": 0,
+              "avg_remaining_percent_x100": null,
+              "max_remaining_percent_x100": null,
+              "min_remaining_percent_x100": null,
+              "reporting_count": 0,
+              "reset_credit_total": 0,
+              "soonest_reset_at_unix": null
+            },
+            "healthy_count": 0,
+            "low_count": 0,
+            "status": "unavailable",
+            "status_tone": "danger",
+            "window_averages": {
+              "short_remaining_percent_x100": null,
+              "weekly_remaining_percent_x100": null
+            },
+            "worst_target": null
+          },
+          "status": "unavailable",
+          "status_text": "Planned",
+          "status_tone": "neutral",
+          "target_count": 0
+        }
+      ],
+      "quota_health": {
+        "best_alternative": null,
+        "exhausted_count": 0,
+        "facts": {
+          "account_count": 0,
+          "avg_remaining_percent_x100": null,
+          "max_remaining_percent_x100": null,
+          "min_remaining_percent_x100": null,
+          "reporting_count": 0,
+          "reset_credit_total": 0,
+          "soonest_reset_at_unix": null
+        },
+        "healthy_count": 0,
+        "low_count": 0,
+        "status": "unavailable",
+        "status_tone": "danger",
+        "window_averages": {
+          "short_remaining_percent_x100": null,
+          "weekly_remaining_percent_x100": null
+        },
+        "worst_target": null
+      }
+    },
+    "control_plane_schema_version": 4,
+    "generated_at_unix": 0,
+    "provider_views": [
+      {
+        "aggregate": {
+          "account_count": 0,
+          "active_target": null,
+          "diagnostics": [],
+          "profile_count": 0,
+          "provider_display_label": "Codex",
+          "provider_id": "codex",
+          "quota_health": {
+            "best_alternative": null,
+            "exhausted_count": 0,
+            "facts": {
+              "account_count": 0,
+              "avg_remaining_percent_x100": null,
+              "max_remaining_percent_x100": null,
+              "min_remaining_percent_x100": null,
+              "reporting_count": 0,
+              "reset_credit_total": 0,
+              "soonest_reset_at_unix": null
+            },
+            "healthy_count": 0,
+            "low_count": 0,
+            "status": "unavailable",
+            "status_tone": "danger",
+            "window_averages": {
+              "short_remaining_percent_x100": null,
+              "weekly_remaining_percent_x100": null
+            },
+            "worst_target": null
+          },
+          "status": "unavailable",
+          "status_text": "Planned",
+          "status_tone": "neutral",
+          "target_count": 0
+        },
+        "diagnostics": [],
+        "display_label": "Codex",
+        "provider": "codex",
+        "status": "unavailable",
+        "status_text": "Planned",
+        "status_tone": "neutral",
+        "target_count": 0
+      }
+    ],
+    "state_schema_version": 2
+  },
+  "minimum_backend_version": "0.1.0",
+  "minimum_frontend_version": "0.1.0",
+  "ok": true,
+  "request_id": "dashboard-fixture",
+  "schema_version": 2,
+  "state_schema_version": 2
+}

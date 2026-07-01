@@ -60,7 +60,7 @@ jobs:
           tag = sys.argv[1]
           text = Path("CHANGELOG.md").read_text(encoding="utf-8")
           pattern = re.compile(
-              rf"^##\s+{re.escape(tag)}(?:\s+-\s+.+)?\s*$"
+              rf"^##\s+{re.escape(tag)}(?:\s+-\s+[^\n]+)?\s*$"
               rf"(?P<body>.*?)(?=^##\s+|\Z)",
               re.MULTILINE | re.DOTALL,
           )

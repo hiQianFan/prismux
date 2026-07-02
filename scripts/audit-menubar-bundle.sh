@@ -10,6 +10,10 @@ if [[ ! -d "$APP_DIR" ]]; then
 fi
 EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_DIR/Contents/Info.plist")"
 ICON_FILE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP_DIR/Contents/Info.plist")"
+if [[ "$EXECUTABLE" != "Prismux" ]]; then
+  echo "menubar bundle audit failed: CFBundleExecutable must be Prismux, got $EXECUTABLE" >&2
+  exit 1
+fi
 for file in "$APP_DIR/Contents/MacOS/$EXECUTABLE" "$APP_DIR/Contents/MacOS/prismux" "$APP_DIR/Contents/MacOS/pmx"; do
   if [[ ! -x "$file" ]]; then
     echo "menubar bundle audit failed: missing executable $file" >&2

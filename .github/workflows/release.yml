@@ -137,14 +137,15 @@ jobs:
         run: |
           set -euo pipefail
           app="target/menubar/Prismux.app"
+          helper="${app}/Contents/SharedSupport/bin/prismux"
           test -x "${app}/Contents/MacOS/Prismux"
-          test -x "${app}/Contents/MacOS/prismux"
+          test -x "${helper}"
           scripts/audit-menubar-bundle.sh "${app}"
-          "${app}/Contents/MacOS/prismux" --version
+          "${helper}" --version
           PRISMUX_STATE_ROOT="${RUNNER_TEMP}/prismux-state" \
           CODEX_HOME="${RUNNER_TEMP}/codex-home" \
           CLAUDE_CONFIG_DIR="${RUNNER_TEMP}/claude-home" \
-          "${app}/Contents/MacOS/prismux" status
+          "${helper}" status
 
       - name: Package artifact
         shell: bash
@@ -154,13 +155,15 @@ jobs:
           mkdir -p dist
           ditto -c -k --sequesterRsrc --keepParent "target/menubar/Prismux.app" "dist/${artifact}.zip"
           unzip -q "dist/${artifact}.zip" -d "${RUNNER_TEMP}/prismux-unpack"
+          unpacked_app="${RUNNER_TEMP}/prismux-unpack/Prismux.app"
+          unpacked_helper="${unpacked_app}/Contents/SharedSupport/bin/prismux"
           test -x "${RUNNER_TEMP}/prismux-unpack/Prismux.app/Contents/MacOS/Prismux"
-          test -x "${RUNNER_TEMP}/prismux-unpack/Prismux.app/Contents/MacOS/prismux"
-          scripts/audit-menubar-bundle.sh "${RUNNER_TEMP}/prismux-unpack/Prismux.app"
+          test -x "${unpacked_helper}"
+          scripts/audit-menubar-bundle.sh "${unpacked_app}"
           PRISMUX_STATE_ROOT="${RUNNER_TEMP}/prismux-unpack-state" \
           CODEX_HOME="${RUNNER_TEMP}/prismux-unpack-codex-home" \
           CLAUDE_CONFIG_DIR="${RUNNER_TEMP}/prismux-unpack-claude-home" \
-          "${RUNNER_TEMP}/prismux-unpack/Prismux.app/Contents/MacOS/prismux" status
+          "${unpacked_helper}" status
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

@@ -3,7 +3,6 @@ import SwiftUI
 
 struct MenubarSettingsView: View {
     @ObservedObject var store: MenubarSettingsStore
-    @AppStorage("dev.prismux.menubar.trayDisplayMode") private var trayDisplayMode = "text"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -55,7 +54,7 @@ struct MenubarSettingsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             switch store.selectedTab {
-            case .general: GeneralPane(store: store, trayDisplayMode: $trayDisplayMode)
+            case .general: GeneralPane(store: store)
             case .providers: ProvidersPane(store: store)
             case .about: AboutPane(store: store)
             }
@@ -67,7 +66,6 @@ struct MenubarSettingsView: View {
 
 private struct GeneralPane: View {
     @ObservedObject var store: MenubarSettingsStore
-    @Binding var trayDisplayMode: String
 
     var body: some View {
         Form {
@@ -76,10 +74,6 @@ private struct GeneralPane: View {
             }
 
             Section("Appearance") {
-                Picker("Tray display", selection: $trayDisplayMode) {
-                    Text("Icon and summary").tag("text")
-                    Text("Icon only").tag("icon_only")
-                }
                 if let settings = store.settings {
                     Toggle("Hide personal account identifiers", isOn: privacyBinding(settings))
                     Text("Account and profile rows use coarse labels such as #1 Account instead of emails or profile names.")

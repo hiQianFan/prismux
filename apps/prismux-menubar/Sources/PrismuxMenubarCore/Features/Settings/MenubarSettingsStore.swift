@@ -227,7 +227,7 @@ struct CliToolStatus: Sendable {
 
     /// `~/.local/bin` symlink command, copyable when not yet configured.
     var manualCommand: String {
-        let target = bundledPath ?? "Prismux.app/Contents/MacOS/prismux"
+        let target = bundledPath ?? "Prismux.app/Contents/SharedSupport/bin/prismux"
         let quotedTarget = Self.shellQuote(target)
         return """
         mkdir -p "$HOME/.local/bin"
@@ -265,12 +265,14 @@ struct CliToolStatus: Sendable {
 
     static func detect() -> CliToolStatus {
         var status = CliToolStatus()
-        // Bundled helper sits next to the app executable in Contents/MacOS.
-        if let exe = Bundle.main.executableURL?.deletingLastPathComponent()
-            .appendingPathComponent("prismux") {
-            status.bundledPath = exe.path
-            status.helperAvailable = FileManager.default.isExecutableFile(atPath: exe.path)
-            status.helperVersion = Self.version(of: exe.path)
+        // Bundled helper lives in Contents/SharedSupport/bin (macOS convention for
+        // user-facing CLIs), kept out of Contents/MacOS to avoid a case-insensitive
+        // filename collision with the "Prismux" app executable.
+        if let helper = Bundle.main.sharedSupportURL?
+            .appendingPathComponent("bin/prismux") {
+            status.bundledPath = helper.path
+            status.helperAvailable = FileManager.default.isExecutableFile(atPath: helper.path)
+            status.helperVersion = Self.version(of: helper.path)
         }
         status.proxySource = Self.detectProxySource()
 

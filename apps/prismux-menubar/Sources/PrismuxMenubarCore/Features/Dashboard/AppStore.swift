@@ -16,21 +16,6 @@ public final class AppStore: ObservableObject {
     @Published private(set) var operationNotice: OperationNotice?
     @Published var selectedProvider: String?
 
-    var trayTitle: String {
-        switch state {
-        case .loading:
-            return "Prismux"
-        case .failed(let lastGood, _), .backendUnavailable(let lastGood, _):
-            guard let report = lastGood else { return "Prismux !" }
-            return "\(aggregateTraySignal(report)) stale"
-        case .upgradeRequired:
-            return "Prismux upgrade"
-        case .ready(let report, let stale):
-            let signal = aggregateTraySignal(report)
-            return stale ? "\(signal) stale" : signal
-        }
-    }
-
     private let backend: BackendClient
     private var generation: UInt64 = 0
     private var lastGood: DashboardReport?
@@ -306,32 +291,6 @@ public final class AppStore: ObservableObject {
         case .loading, .upgradeRequired:
             return []
         }
-    }
-
-    private func aggregateTraySignal(_ report: DashboardReport) -> String {
-        if report.accounts.accounts.isEmpty {
-            return "Prismux -"
-        }
-
-        // Read the control-plane aggregate projection; the menubar only renders
-        // it. Worst target + global min remaining and the per-provider alert
-        // count are control-plane facts, not menubar-side recomputation.
-        let quotaHealth = report.aggregate.quotaHealth
-        if let worst = quotaHealth.worstTarget,
-            let remaining = quotaHealth.facts.minRemainingPercentX100
-        {
-            return "\(worst.provider.capitalized) \(Int(remaining) / 100)%"
-        }
-
-        let troubled = report.aggregate.providerAggregates.filter { aggregate in
-            aggregate.statusTone == "warning" || aggregate.statusTone == "danger"
-        }.count
-        if troubled > 0 {
-            return "\(troubled) alerts"
-        }
-
-        let providerCount = providerNames(from: report).count
-        return providerCount == 1 ? "1 provider" : "\(providerCount) providers"
     }
 
     private func providerNames(from report: DashboardReport) -> [String] {

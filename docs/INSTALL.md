@@ -24,13 +24,13 @@ Prismux does not silently modify your shell startup files. The app includes the
 CLI helper at:
 
 ```text
-/Applications/Prismux.app/Contents/MacOS/prismux
+/Applications/Prismux.app/Contents/SharedSupport/bin/prismux
 ```
 
 `Enable prismux command` creates a symlink, normally:
 
 ```text
-$HOME/.local/bin/prismux -> /Applications/Prismux.app/Contents/MacOS/prismux
+$HOME/.local/bin/prismux -> /Applications/Prismux.app/Contents/SharedSupport/bin/prismux
 ```
 
 If `$HOME/.local/bin` is not on your `PATH`, add it yourself:
@@ -53,7 +53,7 @@ If you prefer not to use the Menubar installer:
 ```sh
 mkdir -p "$HOME/.local/bin"
 if [ -L "$HOME/.local/bin/prismux" ] || [ ! -e "$HOME/.local/bin/prismux" ]; then
-  ln -sfn "/Applications/Prismux.app/Contents/MacOS/prismux" "$HOME/.local/bin/prismux"
+  ln -sfn "/Applications/Prismux.app/Contents/SharedSupport/bin/prismux" "$HOME/.local/bin/prismux"
 else
   echo "$HOME/.local/bin/prismux already exists; remove it manually first" >&2
 fi

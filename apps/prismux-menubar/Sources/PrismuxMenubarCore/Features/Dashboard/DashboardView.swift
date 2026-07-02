@@ -151,7 +151,7 @@ struct DashboardView: View {
             RoundedRectangle(cornerRadius: 10)
                 .fill(headerIconBackground)
                 .frame(width: 36, height: 36)
-            Image(systemName: stale ? "exclamationmark.arrow.triangle.2.circlepath" : "switch.2")
+            Image(systemName: stale ? "exclamationmark.triangle" : "triangle")
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(stale ? .orange : providerColor(provider))
         }

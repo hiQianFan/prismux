@@ -10,6 +10,11 @@ APP_DIR="$ROOT/target/menubar/Prismux.app"
 CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
+# User-facing CLIs live in Contents/SharedSupport/bin (the macOS convention, cf.
+# Sublime's `subl`), NOT in Contents/MacOS. Keeping them out of MacOS also avoids
+# a fatal case-insensitive filename collision: MacOS/Prismux (the app) vs a CLI
+# named "prismux" would be the same file, and the CLI copy would clobber the app.
+SHARED_BIN="$CONTENTS/SharedSupport/bin"
 APP_EXECUTABLE="Prismux"
 APP_ICON="Prismux.icns"
 
@@ -19,9 +24,18 @@ cargo build --release -p prismux-cli
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS"
 mkdir -p "$RESOURCES"
+mkdir -p "$SHARED_BIN"
 cp "$ROOT/apps/prismux-menubar/.build/release/PrismuxMenubarApp" "$MACOS/$APP_EXECUTABLE"
-cp "$CARGO_TARGET_DIR/release/prismux" "$MACOS/prismux"
-cp "$CARGO_TARGET_DIR/release/pmx" "$MACOS/pmx"
+cp "$CARGO_TARGET_DIR/release/prismux" "$SHARED_BIN/prismux"
+cp "$CARGO_TARGET_DIR/release/pmx" "$SHARED_BIN/pmx"
+
+# Guard against a regression where the app executable is not actually the Swift
+# menubar app (e.g. a filename collision clobbered it with a CLI).
+# grep -c reads to EOF (no SIGPIPE under pipefail, unlike grep -q).
+if [ "$(strings "$MACOS/$APP_EXECUTABLE" | grep -c "applicationDidFinishLaunching")" -eq 0 ]; then
+  echo "error: $MACOS/$APP_EXECUTABLE is not the menubar app." >&2
+  exit 1
+fi
 cp "$ROOT/assets/prismux-icon/prismux-mac-icon.icns" "$RESOURCES/$APP_ICON"
 for products_dir in \
   "$ROOT/apps/prismux-menubar/.build/release" \
@@ -64,8 +78,8 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 PLIST
 
 codesign --force --sign - "$MACOS/$APP_EXECUTABLE"
-codesign --force --sign - "$MACOS/prismux"
-codesign --force --sign - "$MACOS/pmx"
+codesign --force --sign - "$SHARED_BIN/prismux"
+codesign --force --sign - "$SHARED_BIN/pmx"
 codesign --force --sign - "$APP_DIR"
 codesign --verify "$APP_DIR"
 "$ROOT/scripts/check-menubar-version.sh" "$APP_DIR"

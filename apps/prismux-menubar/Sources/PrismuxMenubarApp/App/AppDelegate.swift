@@ -5,7 +5,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var shell: StatusItemController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSLog("Prismux applicationDidFinishLaunching")
         installEditMenu()
         let store = AppStore(backend: RustBackendClient())
         shell = StatusItemController(store: store)

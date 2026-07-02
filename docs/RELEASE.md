@@ -53,7 +53,7 @@ real tool home unless that is the explicit intent.
 ## macOS Artifacts
 
 - `Prismux-vX.Y.Z-macos-arm64.zip`, containing `Prismux.app`
-- bundled CLI helper at `Prismux.app/Contents/MacOS/prismux`
+- bundled CLI helper at `Prismux.app/Contents/SharedSupport/bin/prismux`
 - `SHA256SUMS`
 
 The macOS app bundle is the preferred distribution path. It includes Menubar and
@@ -77,16 +77,16 @@ Prismux.app/
       ...
 ```
 
-`Contents/MacOS/prismux` is executable code, not a resource. Release validation must
+`Contents/SharedSupport/bin/prismux` is executable code, not a resource. Release validation must
 check:
 
 - `Prismux.app` has `LSUIElement=true` and `LSMinimumSystemVersion=14.0`.
 - `CFBundleShortVersionString` matches the Cargo workspace version.
-- `Prismux.app/Contents/MacOS/prismux --version` reports the same version.
+- `Prismux.app/Contents/SharedSupport/bin/prismux --version` reports the same version.
 - bundled `prismux status` passes with isolated `PRISMUX_STATE_ROOT`, `CODEX_HOME`, and
   `CLAUDE_CONFIG_DIR`.
 - unpacking the release zip preserves `Contents/MacOS/Prismux` and
-  `Contents/MacOS/prismux` as executable files.
+  `Contents/SharedSupport/bin/prismux` as executable files.
 - bundle privacy/audit scripts do not find raw auth, tokens, API keys, raw logs,
   or excluded third-party engines.
 

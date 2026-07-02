@@ -1,14 +1,25 @@
+<div align="center">
+
+<img src="assets/prismux-icon/prismux-mac-icon-1024.png" width="128" alt="Prismux" />
+
 # Prismux
+
+**🔀 面向 AI coding tools 的本地账号 & profile 切换工具**
 
 [English](README.md) | 简体中文
 
-Prismux 是面向 AI coding tools 的本地账号和 profile 切换工具。
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-stable-orange.svg?logo=rust)](rust-toolchain.toml)
+[![Platform](https://img.shields.io/badge/macOS-Apple%20Silicon-black.svg?logo=apple)](#-支持平台)
+[![Status](https://img.shields.io/badge/status-early%20v0.x-blue.svg)](ROADMAP.zh-CN.md)
 
-它帮助你在 Codex、Claude Code 等工具中管理多个本地账号，查看账号池状态，并通过平台内编号或 alias 快速切换账号，减少重复浏览器登录。
+</div>
 
-> 当前状态：早期 v0.x。v0.1 官方下载路径是 macOS full app bundle。Linux 和 Windows 会在平台凭据、权限和外部 CLI 行为验证后加入官方支持。
+Prismux 帮助你在 Codex、Claude Code 等工具中管理多个本地账号，查看账号池状态，并通过平台内编号或 alias 快速切换账号，减少重复浏览器登录。🚀
 
-## 支持平台
+> ⚠️ **当前状态：** 早期 v0.x。v0.1 官方下载路径是 macOS full app bundle。Linux 和 Windows 会在平台凭据、权限和外部 CLI 行为验证后加入官方支持。
+
+## 🖥️ 支持平台
 
 | 平台 | v0.1 状态 | 说明 |
 | --- | --- | --- |
@@ -17,7 +28,7 @@ Prismux 是面向 AI coding tools 的本地账号和 profile 切换工具。
 | Linux | 计划中 | 源码构建可能可用；v0.1 不提供官方 binary。 |
 | Windows | 计划中 | 需要验证 credential、权限和外部 CLI 行为。 |
 
-## 支持工具
+## 🧰 支持工具
 
 | 工具 | 状态 | 能力 |
 | --- | --- | --- |
@@ -25,7 +36,7 @@ Prismux 是面向 AI coding tools 的本地账号和 profile 切换工具。
 | Claude Code | 已实现 | Gateway/API profile 导入与切换、OAuth account snapshot 导入与切换、macOS Keychain、非 macOS plaintext fallback。 |
 | Gemini CLI | 计划中 | 尚未实现。 |
 
-## 安装
+## 📦 安装
 
 ### GitHub Releases
 
@@ -53,7 +64,7 @@ prismux --version
 
 Homebrew 和 crates.io 是后续计划，不是 v0.1 安装路径。
 
-## 快速开始
+## ⚡ 快速开始
 
 查看已识别的工具 home：
 
@@ -98,7 +109,7 @@ prismux use codex work
 prismux alias codex 2 work
 ```
 
-## Claude Code account 与 profile
+## 🤖 Claude Code account 与 profile
 
 Prismux 中 Claude Code 有两个不同层次：
 
@@ -126,7 +137,7 @@ prismux use claude work
 
 Prismux 不实现自己的 Anthropic OAuth token exchange，也不调用 Anthropic 私有 endpoint。它只包装官方 Claude Code CLI 登录流程，或导入本机已有官方 credential。
 
-## 安全模型
+## 🔒 安全模型
 
 - 不打印 token 或 raw auth payload。
 - registry 只保存 metadata 和 hash，不保存 raw auth。
@@ -137,7 +148,7 @@ Prismux 不实现自己的 Anthropic OAuth token exchange，也不调用 Anthrop
 
 疑似 credential 处理漏洞请私密报告，见 [SECURITY.md](SECURITY.md)。
 
-## 文档
+## 📚 文档
 
 - [安装指南](docs/INSTALL.zh-CN.md)
 - [发布指南](docs/RELEASE.zh-CN.md)
@@ -147,7 +158,7 @@ Prismux 不实现自己的 Anthropic OAuth token exchange，也不调用 Anthrop
 - [架构](docs/ARCHITECTURE.md)
 - [产品范围](docs/PRD.md)
 
-## 开发
+## 🛠️ 开发
 
 Prismux 使用 `rust-toolchain.toml` 选择的 stable Rust。当前不承诺具体 MSRV。
 
@@ -178,6 +189,16 @@ cargo run -p prismux-cli -- list codex
 PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p prismux-cli -- status
 ```
 
-## License
+## 📄 License
 
 MIT
+
+## ⭐ Star History
+
+<div align="center">
+
+<a href="https://star-history.com/#hiQianFan/prismux&Date">
+  <img src="https://api.star-history.com/svg?repos=hiQianFan/prismux&type=Date" alt="Star History Chart" width="600" />
+</a>
+
+</div>

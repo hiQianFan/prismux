@@ -1,18 +1,29 @@
+<div align="center">
+
+<img src="assets/prismux-icon/prismux-mac-icon-1024.png" width="128" alt="Prismux" />
+
 # Prismux
+
+**🔀 A local account & profile switcher for AI coding tools**
 
 English | [简体中文](README.zh-CN.md)
 
-Prismux is a local account and profile switcher for AI coding tools.
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-stable-orange.svg?logo=rust)](rust-toolchain.toml)
+[![Platform](https://img.shields.io/badge/macOS-Apple%20Silicon-black.svg?logo=apple)](#-supported-platforms)
+[![Status](https://img.shields.io/badge/status-early%20v0.x-blue.svg)](ROADMAP.md)
 
-It helps you keep multiple local accounts for tools such as Codex and Claude
+</div>
+
+Prismux helps you keep multiple local accounts for tools such as Codex and Claude
 Code, inspect the current account pool, and switch accounts by a platform-local
-number or alias without repeatedly walking through browser login flows.
+number or alias — without repeatedly walking through browser login flows. 🚀
 
-> Status: early v0.x. v0.1 targets macOS full app bundles for official
+> ⚠️ **Status:** early v0.x. v0.1 targets macOS full app bundles for official
 > downloads. Linux and Windows are planned after platform-specific credential
 > behavior is tested and documented.
 
-## Supported Platforms
+## 🖥️ Supported Platforms
 
 | Platform | v0.1 status | Notes |
 | --- | --- | --- |
@@ -21,7 +32,7 @@ number or alias without repeatedly walking through browser login flows.
 | Linux | Planned | Source builds may work; no official v0.1 binary. |
 | Windows | Planned | Requires credential, permission, and external CLI validation. |
 
-## Supported Tools
+## 🧰 Supported Tools
 
 | Tool | Status | Capabilities |
 | --- | --- | --- |
@@ -29,7 +40,7 @@ number or alias without repeatedly walking through browser login flows.
 | Claude Code | Implemented | Gateway/API profile import and switch, OAuth account snapshot import and switch, macOS Keychain support, plaintext fallback outside macOS. |
 | Gemini CLI | Planned | Not implemented yet. |
 
-## Install
+## 📦 Install
 
 ### GitHub Releases
 
@@ -59,7 +70,7 @@ prismux --version
 
 Homebrew and crates.io distribution are planned, but are not v0.1 install paths.
 
-## Quick Start
+## ⚡ Quick Start
 
 Inspect detected tool homes:
 
@@ -104,7 +115,7 @@ Set an alias:
 prismux alias codex 2 work
 ```
 
-## Claude Code Accounts and Profiles
+## 🤖 Claude Code Accounts and Profiles
 
 Claude Code has two distinct layers in Prismux:
 
@@ -135,7 +146,7 @@ Prismux does not implement its own Anthropic OAuth token exchange and does not
 call private Anthropic endpoints. It wraps the official Claude Code CLI login
 flow or imports local official credential artifacts.
 
-## Safety Model
+## 🔒 Safety Model
 
 - Prismux does not print raw tokens or raw auth payloads.
 - Registry files store metadata and hashes, not raw auth material.
@@ -147,7 +158,7 @@ flow or imports local official credential artifacts.
 Report suspected credential handling vulnerabilities privately. See
 [SECURITY.md](SECURITY.md).
 
-## Documentation
+## 📚 Documentation
 
 - [Install guide](docs/INSTALL.md)
 - [Release guide](docs/RELEASE.md)
@@ -157,7 +168,7 @@ Report suspected credential handling vulnerabilities privately. See
 - [Architecture](docs/ARCHITECTURE.md)
 - [Product scope](docs/PRD.md)
 
-## Development
+## 🛠️ Development
 
 Prismux uses the stable Rust toolchain selected by `rust-toolchain.toml`. The
 project does not currently guarantee a minimum supported Rust version.
@@ -189,6 +200,16 @@ Use isolated state for manual checks that touch tool homes:
 PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p prismux-cli -- status
 ```
 
-## License
+## 📄 License
 
 MIT
+
+## ⭐ Star History
+
+<div align="center">
+
+<a href="https://star-history.com/#hiQianFan/prismux&Date">
+  <img src="https://api.star-history.com/svg?repos=hiQianFan/prismux&type=Date" alt="Star History Chart" width="600" />
+</a>
+
+</div>

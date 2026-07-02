@@ -2,8 +2,8 @@
 
 ## Project
 
-Prismux is a Rust CLI for local account switching across AI coding tools. The
-current implementation target is Codex, with Claude Code and Gemini CLI planned
+Prismux is a Rust CLI and macOS Menubar app for local account switching across
+AI coding tools. Codex and Claude Code are implemented; Gemini CLI is planned
 after the core account-switching flow is reliable.
 
 ## Commands
@@ -19,21 +19,25 @@ Run before finishing code changes:
 
 ```sh
 cargo fmt --all
-cargo test
-cargo clippy --all-targets --all-features
+cargo test --locked
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-For manual Codex CLI checks, isolate state with temporary directories:
+For manual CLI checks, isolate state with temporary directories:
 
 ```sh
-PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home cargo run -p prismux-cli -- status
+PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home cargo run -p prismux-cli -- status
 ```
 
 ## Architecture
 
 - `crates/prismux-core`: shared types, reports, errors, and plugin trait.
 - `crates/prismux-plugin-codex`: Codex path detection and account switching.
+- `crates/prismux-plugin-claude`: Claude Code profile and OAuth account handling.
 - `crates/prismux-cli`: thin command-line presentation layer.
+- `crates/prismux-app` and `crates/prismux-menubar-ffi`: control-plane runtime
+  and Swift bridge for the macOS Menubar app.
+- `apps/prismux-menubar`: SwiftPM macOS Menubar app.
 - `docs/PRD.md`: product scope.
 - `docs/ARCHITECTURE.md`: technical design.
 

@@ -12,6 +12,22 @@ may include breaking changes to the CLI or internal plugin API.
 - GitHub launch readiness plan, including repository cleanup, bilingual user
   documentation, release automation, and macOS v0.1 distribution policy.
 
+## v0.2.0 - 2026-07-02
+
+### Changed
+
+- macOS app bundles now install bundled CLI helpers under
+  `Prismux.app/Contents/SharedSupport/bin/`, keeping user-facing commands out of
+  `Contents/MacOS`.
+- The macOS Menubar status item now uses an icon-only square item instead of a
+  variable-width quota summary title.
+
+### Fixed
+
+- Bundle creation now guards against case-insensitive filename collisions between
+  `Prismux` and `prismux`, which could otherwise clobber the Menubar executable.
+- Release and bundle audit scripts now validate the SharedSupport helper path.
+
 ## v0.1.1 - 2026-07-02
 
 ### Fixed

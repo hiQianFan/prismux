@@ -68,17 +68,49 @@ struct ProviderIcon: View {
     }
 
     private static func assetImage(_ name: String) -> NSImage {
-        guard let url = Bundle.module.url(
-            forResource: name,
-            withExtension: "svg",
-            subdirectory: "ProviderIcons"
-        ),
-            let image = NSImage(contentsOf: url)
-        else {
+        guard let url = iconURL(name), let image = NSImage(contentsOf: url) else {
+            // Degrade to a blank template rather than crashing: a missing icon
+            // asset must never take down the whole menu bar app.
             assertionFailure("Missing provider icon resource: \(name).svg")
             return NSImage(size: NSSize(width: 1, height: 1))
         }
         image.isTemplate = true
         return image
     }
+
+    /// Resolve `ProviderIcons/<name>.svg` by direct filesystem lookup instead of
+    /// the SwiftPM-generated `Bundle.module`, whose accessor calls `fatalError()`
+    /// (SIGTRAP) when it can't locate the bundle — a hard crash that has taken
+    /// down the app mid-render on downloaded/translocated copies. We probe the
+    /// resource roots for both the flat bundle layout produced by the SwiftPM CLI
+    /// build (`X.bundle/ProviderIcons`) and the nested macOS layout produced by
+    /// the Xcode build backend (`X.bundle/Contents/Resources/ProviderIcons`).
+    private static func iconURL(_ name: String) -> URL? {
+        let bundleName = "prismux-menubar_PrismuxMenubarCore"
+        let file = "\(name).svg"
+        let roots = [
+            Bundle.main.resourceURL,
+            Bundle(for: BundleToken.self).resourceURL,
+            Bundle.main.bundleURL.appendingPathComponent("Contents/Resources"),
+        ].compactMap { $0 }
+
+        let relativePaths = [
+            "\(bundleName).bundle/ProviderIcons/\(file)",
+            "\(bundleName).bundle/Contents/Resources/ProviderIcons/\(file)",
+            "ProviderIcons/\(file)",
+        ]
+
+        let fileManager = FileManager.default
+        for root in roots {
+            for relative in relativePaths {
+                let candidate = root.appendingPathComponent(relative)
+                if fileManager.fileExists(atPath: candidate.path) {
+                    return candidate
+                }
+            }
+        }
+        return nil
+    }
+
+    private final class BundleToken {}
 }

@@ -12,6 +12,20 @@ may include breaking changes to the CLI or internal plugin API.
 - GitHub launch readiness plan, including repository cleanup, bilingual user
   documentation, release automation, and macOS v0.1 distribution policy.
 
+## v0.2.1 - 2026-07-02
+
+### Fixed
+
+- Menubar no longer crashes on launch (SIGTRAP) when rendering provider icons in
+  downloaded builds. `ProviderIcon` previously loaded assets through the
+  SwiftPM-generated `Bundle.module`, whose accessor calls `fatalError()` when it
+  cannot locate the resource bundle — which happens for the flat, `Info.plist`-less
+  resource bundle produced by the CI `swift build`, especially under App
+  Translocation. Assets are now resolved by direct filesystem lookup that handles
+  both flat and nested bundle layouts and degrades to a blank glyph instead of
+  crashing.
+
+
 ## v0.2.0 - 2026-07-02
 
 ### Changed

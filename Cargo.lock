@@ -613,7 +613,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "prismux-app"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "prismux-core",
@@ -625,7 +625,7 @@ dependencies = [
 
 [[package]]
 name = "prismux-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anstream",
  "anstyle",
@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "prismux-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rusqlite",
  "serde",
@@ -653,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "prismux-menubar-ffi"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "prismux-app",
  "prismux-core",
@@ -666,7 +666,7 @@ dependencies = [
 
 [[package]]
 name = "prismux-plugin-claude"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "prismux-core",
  "serde",
@@ -676,7 +676,7 @@ dependencies = [
 
 [[package]]
 name = "prismux-plugin-codex"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "prismux-core",

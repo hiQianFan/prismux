@@ -4,7 +4,7 @@
     "code": "application_error",
     "message": "`missing-local-id` did not match any account or profile for `codex`"
   },
-  "minimum_backend_version": "0.2.0",
+  "minimum_backend_version": "0.2.1",
   "minimum_frontend_version": "0.1.0",
   "ok": false,
   "request_id": "switch-fixture",

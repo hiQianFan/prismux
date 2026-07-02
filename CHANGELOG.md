@@ -12,6 +12,16 @@ may include breaking changes to the CLI or internal plugin API.
 - GitHub launch readiness plan, including repository cleanup, bilingual user
   documentation, release automation, and macOS v0.1 distribution policy.
 
+## v0.1.1 - 2026-07-02
+
+### Fixed
+
+- macOS app bundle now installs the Menubar executable as
+  `Prismux.app/Contents/MacOS/Prismux`, matching the public bundle identity used
+  by release workflow checks and documentation.
+- Release workflow now audits the app bundle before and after zipping so
+  executable, helper, icon, and resource drift fail before publishing.
+
 ## v0.1.0 - 2026-06-30
 
 ### Added

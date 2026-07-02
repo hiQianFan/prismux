@@ -13,12 +13,11 @@ public final class StatusItemController: NSObject, NSPopoverDelegate {
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
 
-    private let trayModeKey = "dev.prismux.menubar.trayDisplayMode"
     private let refreshCadenceKey = "dev.prismux.menubar.backgroundRefreshCadence"
 
     public init(store: AppStore) {
         self.store = store
-        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         self.popover = NSPopover()
         super.init()
 
@@ -36,21 +35,18 @@ public final class StatusItemController: NSObject, NSPopoverDelegate {
             }
         )
 
-        statusItem.button?.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "Prismux")
+        let image = NSImage(systemSymbolName: "triangle", accessibilityDescription: nil)
+        image?.isTemplate = true
+        statusItem.button?.image = image
+        statusItem.button?.title = ""
+        statusItem.button?.toolTip = nil
+        statusItem.button?.setAccessibilityLabel("Prismux")
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
-        statusItem.button?.toolTip = "Prismux account switcher"
-        NSLog("Prismux status item button exists: \(statusItem.button != nil)")
-        updateTrayTitle()
 
-        store.$state
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.updateTrayTitle() }
-            .store(in: &cancellables)
         NotificationCenter.default
             .publisher(for: UserDefaults.didChangeNotification)
             .sink { [weak self] _ in
-                self?.updateTrayTitle()
                 self?.scheduleBackgroundRefresh()
             }
             .store(in: &cancellables)
@@ -113,11 +109,6 @@ public final class StatusItemController: NSObject, NSPopoverDelegate {
             return true
         }
         return false
-    }
-
-    private func updateTrayTitle() {
-        let iconOnly = UserDefaults.standard.string(forKey: trayModeKey) == "icon_only"
-        statusItem.button?.title = iconOnly ? "" : store.trayTitle
     }
 
     private func scheduleBackgroundRefresh() {

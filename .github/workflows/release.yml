@@ -139,6 +139,7 @@ jobs:
           app="target/menubar/Prismux.app"
           test -x "${app}/Contents/MacOS/Prismux"
           test -x "${app}/Contents/MacOS/prismux"
+          scripts/audit-menubar-bundle.sh "${app}"
           "${app}/Contents/MacOS/prismux" --version
           PRISMUX_STATE_ROOT="${RUNNER_TEMP}/prismux-state" \
           CODEX_HOME="${RUNNER_TEMP}/codex-home" \
@@ -155,6 +156,7 @@ jobs:
           unzip -q "dist/${artifact}.zip" -d "${RUNNER_TEMP}/prismux-unpack"
           test -x "${RUNNER_TEMP}/prismux-unpack/Prismux.app/Contents/MacOS/Prismux"
           test -x "${RUNNER_TEMP}/prismux-unpack/Prismux.app/Contents/MacOS/prismux"
+          scripts/audit-menubar-bundle.sh "${RUNNER_TEMP}/prismux-unpack/Prismux.app"
           PRISMUX_STATE_ROOT="${RUNNER_TEMP}/prismux-unpack-state" \
           CODEX_HOME="${RUNNER_TEMP}/prismux-unpack-codex-home" \
           CLAUDE_CONFIG_DIR="${RUNNER_TEMP}/prismux-unpack-claude-home" \

@@ -10,7 +10,7 @@ APP_DIR="$ROOT/target/menubar/Prismux.app"
 CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
-APP_EXECUTABLE="PrismuxMenubar"
+APP_EXECUTABLE="Prismux"
 APP_ICON="Prismux.icns"
 
 cargo build --release -p prismux-cli

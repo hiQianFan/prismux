@@ -21,13 +21,13 @@ macOS 首选分发形态是 full app bundle。它同时包含 Menubar App 和同
 Prismux 不会静默修改 shell 启动文件。App 内置 CLI helper 路径是：
 
 ```text
-/Applications/Prismux.app/Contents/MacOS/prismux
+/Applications/Prismux.app/Contents/SharedSupport/bin/prismux
 ```
 
 `Enable prismux command` 会创建 symlink，默认形态是：
 
 ```text
-$HOME/.local/bin/prismux -> /Applications/Prismux.app/Contents/MacOS/prismux
+$HOME/.local/bin/prismux -> /Applications/Prismux.app/Contents/SharedSupport/bin/prismux
 ```
 
 如果 `$HOME/.local/bin` 不在 `PATH` 中，请自行加入：
@@ -50,7 +50,7 @@ prismux status
 ```sh
 mkdir -p "$HOME/.local/bin"
 if [ -L "$HOME/.local/bin/prismux" ] || [ ! -e "$HOME/.local/bin/prismux" ]; then
-  ln -sfn "/Applications/Prismux.app/Contents/MacOS/prismux" "$HOME/.local/bin/prismux"
+  ln -sfn "/Applications/Prismux.app/Contents/SharedSupport/bin/prismux" "$HOME/.local/bin/prismux"
 else
   echo "$HOME/.local/bin/prismux already exists; remove it manually first" >&2
 fi

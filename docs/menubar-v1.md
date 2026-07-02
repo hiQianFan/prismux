@@ -12,7 +12,7 @@ v1 不提供自动最佳账号选择、account usage attribution、完整 analyt
 - SwiftUI 只承载 popover content。
 - Swift 只通过 `prismux_menubar_call` / `prismux_menubar_free` 调用 Rust staticlib，不读取 auth、SQLite 或 provider endpoint。
 - Rust backend 遵守 `PRISMUX_STATE_ROOT`、`CODEX_HOME` 等 override，方便隔离测试。
-- App bundle 内置 helper 路径为 `Prismux.app/Contents/MacOS/prismux`；PATH 中的 `prismux` 只应是指向 helper 的 symlink 或用户明确选择的 standalone CLI。
+- App bundle 内置 helper 路径为 `Prismux.app/Contents/SharedSupport/bin/prismux`；PATH 中的 `prismux` 只应是指向 helper 的 symlink 或用户明确选择的 standalone CLI。
 - TokenBar 仅作为 `NSStatusItem` lifecycle、popover chrome 和紧凑状态层级参考；不复制源码、资源、bundle ID、cache、scanner、pricing、quota fetcher 或 report DTO。
 
 ## 交互链路
@@ -29,7 +29,7 @@ v1 不提供自动最佳账号选择、account usage attribution、完整 analyt
 7. 用户点击 `Enable prismux command` 时，Menubar 创建：
 
    ```text
-   ~/.local/bin/prismux -> /Applications/Prismux.app/Contents/MacOS/prismux
+   ~/.local/bin/prismux -> /Applications/Prismux.app/Contents/SharedSupport/bin/prismux
    ```
 
 8. 如果 `~/.local/bin` 不在 PATH，Menubar 显示可复制命令，不自动写 `.zshrc`：
@@ -48,7 +48,7 @@ v1 不提供自动最佳账号选择、account usage attribution、完整 analyt
 ## 发布验收
 
 - release workflow 上传 `Prismux-vX.Y.Z-macos-<arch>.zip`，archive 内包含 `Prismux.app`。
-- bundle script 将 `target/release/prismux` 放入 `Contents/MacOS/prismux` 并校验版本一致。
+- bundle script 将 `target/release/prismux` 放入 `Contents/SharedSupport/bin/prismux` 并校验版本一致。
 - Settings/General 展示 bundled helper path、helper version、PATH 中 `prismux` 的路径/版本、`Enable prismux command`、`Copy PATH command`。
 - Dashboard 空状态提供 onboarding actions，footer 用状态串和 `...` 菜单提供 CLI handoff。
 - bundle audit 必须确认不含 raw auth、token、API key、raw provider log 或未批准第三方数据引擎。

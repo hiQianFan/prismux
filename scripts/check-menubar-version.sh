@@ -7,7 +7,7 @@ VERSION="$(awk '/^version = / { gsub(/"/, "", $3); print $3; exit }' "$ROOT/Carg
 
 if [[ -d "$APP_DIR" ]]; then
   APP_EXEC="$APP_DIR/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_DIR/Contents/Info.plist")"
-  HELPER="$APP_DIR/Contents/MacOS/prismux"
+  HELPER="$APP_DIR/Contents/SharedSupport/bin/prismux"
 
   if [[ ! -x "$APP_EXEC" ]]; then
     echo "bundle executable missing or not executable: $APP_EXEC" >&2

@@ -70,8 +70,10 @@ Current roadmap shape:
 - `v0.1.0`: macOS public release, Codex + Claude account/profile support
 - `v0.2.0`: Linux validation and official Linux binaries
 - `v0.3.0`: Windows validation and official Windows binaries
-- `v0.4.0`: Gemini or broader provider/profile support
 - `v1.0.0`: stable CLI and plugin API
+
+Gemini CLI support and broader provider/profile formats are later, unscheduled
+items. See [ROADMAP.md](ROADMAP.md).
 
 ## Rust Toolchain
 
@@ -118,10 +120,10 @@ scripts/bundle-menubar.sh
 ```
 
 The bundle script creates `target/menubar/Prismux.app` with the bundled helper at
-`Prismux.app/Contents/MacOS/prismux`. Use isolated state for helper smoke tests:
+`Prismux.app/Contents/SharedSupport/bin/prismux`. Use isolated state for helper smoke tests:
 
 ```sh
-PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home target/menubar/Prismux.app/Contents/MacOS/prismux status
+PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_DIR=/tmp/claude-home target/menubar/Prismux.app/Contents/SharedSupport/bin/prismux status
 ```
 
 See [docs/BUILD.md](docs/BUILD.md) for source-build details.

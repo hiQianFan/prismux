@@ -44,7 +44,7 @@ The app contains:
 
 ```text
 Prismux.app/Contents/MacOS/Prismux
-Prismux.app/Contents/MacOS/prismux
+Prismux.app/Contents/SharedSupport/bin/prismux
 ```
 
 ## Local Checks

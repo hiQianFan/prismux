@@ -48,7 +48,7 @@ PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_D
 ## macOS Artifacts
 
 - `Prismux-vX.Y.Z-macos-arm64.zip`，archive 内包含 `Prismux.app`
-- 内置 CLI helper：`Prismux.app/Contents/MacOS/prismux`
+- 内置 CLI helper：`Prismux.app/Contents/SharedSupport/bin/prismux`
 - `SHA256SUMS`
 
 macOS app bundle 是首选分发路径。它同时包含 Menubar 和同版本 CLI helper。需要 Terminal 使用时，用户通过 Menubar 显式创建 PATH symlink；release 不复制 auth/state 文件，也不修改 shell 启动文件。
@@ -67,13 +67,13 @@ Prismux.app/
       ...
 ```
 
-`Contents/MacOS/prismux` 是可执行代码，不是 resource。发布验证必须检查：
+`Contents/SharedSupport/bin/prismux` 是可执行代码，不是 resource。发布验证必须检查：
 
 - `Prismux.app` 设置了 `LSUIElement=true` 和 `LSMinimumSystemVersion=14.0`。
 - `CFBundleShortVersionString` 与 Cargo workspace version 一致。
-- `Prismux.app/Contents/MacOS/prismux --version` 输出同一版本。
+- `Prismux.app/Contents/SharedSupport/bin/prismux --version` 输出同一版本。
 - bundled `prismux status` 在隔离 `PRISMUX_STATE_ROOT`、`CODEX_HOME`、`CLAUDE_CONFIG_DIR` 下通过。
-- 解压 release zip 后，`Contents/MacOS/Prismux` 和 `Contents/MacOS/prismux` 仍保留可执行权限。
+- 解压 release zip 后，`Contents/MacOS/Prismux` 和 `Contents/SharedSupport/bin/prismux` 仍保留可执行权限。
 - bundle privacy/audit scripts 没有发现 raw auth、token、API key、raw log 或被排除的第三方数据引擎。
 
 ## Source Build

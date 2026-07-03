@@ -77,6 +77,10 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 </plist>
 PLIST
 
+if command -v xattr >/dev/null 2>&1; then
+  xattr -cr "$APP_DIR"
+fi
+
 codesign --force --sign - "$MACOS/$APP_EXECUTABLE"
 codesign --force --sign - "$SHARED_BIN/prismux"
 codesign --force --sign - "$SHARED_BIN/pmx"

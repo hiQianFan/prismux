@@ -37,6 +37,8 @@ may include breaking changes to the CLI or internal plugin API.
   deleted, avoiding stale rows after account removal.
 - Codex usage refresh now reads proxy configuration from Prismux Settings instead
   of process environment variables.
+- macOS bundle packaging now strips extended attributes before codesigning,
+  avoiding local resource-fork signing failures.
 
 ## v0.2.1 - 2026-07-02
 

@@ -12,6 +12,32 @@ may include breaking changes to the CLI or internal plugin API.
 - GitHub launch readiness plan, including repository cleanup, bilingual user
   documentation, release automation, and macOS v0.1 distribution policy.
 
+## v0.2.2 - 2026-07-03
+
+### Added
+
+- GitHub Releases now include a standalone macOS arm64 CLI tarball with
+  `prismux`, `pmx`, `install.sh`, and package documentation.
+- Prismux Settings now includes a Network proxy control that stores refresh proxy
+  settings in the local control-plane settings file.
+- README and CLI documentation now include clearer install, command, and
+  screenshot-driven onboarding paths.
+
+### Changed
+
+- Menubar Settings now uses a sidebar-style layout with grouped panes and
+  streamlined provider, command-line tool, and About sections.
+- Menubar refreshes can run concurrently with long-running operations; stale
+  read responses are filtered client-side while writes always apply their own
+  responses.
+
+### Fixed
+
+- Removed quota and refresh-attempt writes for accounts that were already
+  deleted, avoiding stale rows after account removal.
+- Codex usage refresh now reads proxy configuration from Prismux Settings instead
+  of process environment variables.
+
 ## v0.2.1 - 2026-07-02
 
 ### Fixed

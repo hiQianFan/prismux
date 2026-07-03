@@ -53,13 +53,16 @@ real tool home unless that is the explicit intent.
 ## macOS Artifacts
 
 - `Prismux-vX.Y.Z-macos-arm64.zip`, containing `Prismux.app`
+- `prismux-cli-vX.Y.Z-macos-arm64.tar.gz`, containing standalone `prismux` and
+  `pmx` commands plus `install.sh`
 - bundled CLI helper at `Prismux.app/Contents/SharedSupport/bin/prismux`
 - `SHA256SUMS`
 
-The macOS app bundle is the preferred distribution path. It includes Menubar and
-the same-version CLI helper. Users who want Terminal access install a symlink
-from a PATH directory to the bundled helper; the release does not copy auth/state
-files and does not modify shell startup files.
+The macOS app bundle is the preferred UI distribution path. It includes Menubar
+and the same-version CLI helper. Users who want Terminal access can either
+install a symlink from a PATH directory to the bundled helper or download the
+standalone CLI package. The release does not copy auth/state files and does not
+modify shell startup files.
 
 First public app bundles do not publish Linux binaries, Windows binaries,
 Homebrew formulae, crates.io packages, Sparkle updates, Developer ID
@@ -108,7 +111,7 @@ See [Build from source](BUILD.md) for the longer path.
 | Artifact | Capabilities | Platform | Notes |
 | --- | --- | --- | --- |
 | `Prismux.app` full bundle | Menubar dashboard, refresh, explicit account/profile activation, onboarding actions, bundled `prismux` helper, shared state root | macOS 14+ | Preferred public macOS artifact. |
-| Standalone CLI tarball | CLI-only account/profile management and scripts | Later | Add only when there is real standalone demand. |
+| `prismux-cli-vX.Y.Z-macos-arm64.tar.gz` | CLI-only account/profile management and scripts | macOS arm64 | Includes `prismux`, `pmx`, `install.sh`, and package README. |
 | Windows/Linux packages | Platform-specific CLI/app packaging | Later | Separate proposals; do not reuse macOS `.app` layout. |
 
 ## Rollback

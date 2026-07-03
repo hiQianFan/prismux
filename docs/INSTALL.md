@@ -4,8 +4,13 @@
 
 ## GitHub Releases
 
-The preferred macOS distribution is the full app bundle. It contains both the
-Menubar app and the matching `prismux` CLI helper.
+GitHub Releases provide two install paths:
+
+- A desktop app archive for users who want the Prismux UI.
+- A standalone CLI package for users who only want `prismux` and `pmx` in
+  Terminal.
+
+## Desktop App
 
 1. Download the macOS app archive from:
 
@@ -60,6 +65,47 @@ fi
 ```
 
 The symlink keeps the Terminal command on the same version as the installed app.
+
+## Standalone CLI Package
+
+Download the CLI package from the same GitHub Release:
+
+```text
+prismux-cli-vX.Y.Z-macos-arm64.tar.gz
+```
+
+Unpack and install:
+
+```sh
+tar -xzf prismux-cli-vX.Y.Z-macos-arm64.tar.gz
+cd prismux-cli-vX.Y.Z-macos-arm64
+./install.sh
+```
+
+By default, `install.sh` copies `prismux` and `pmx` to:
+
+```text
+$HOME/.local/bin
+```
+
+To install somewhere else:
+
+```sh
+PRISMUX_INSTALL_DIR=/usr/local/bin ./install.sh
+```
+
+Verify:
+
+```sh
+prismux --version
+prismux status
+```
+
+If `$HOME/.local/bin` is not on your `PATH`, add it yourself:
+
+```sh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+```
 
 ## Cargo from Git
 

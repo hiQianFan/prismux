@@ -4,7 +4,12 @@
 
 ## GitHub Releases
 
-macOS 首选分发形态是 full app bundle。它同时包含 Menubar App 和同版本 `prismux` CLI helper。
+GitHub Releases 提供两条安装路径：
+
+- 桌面 App archive：适合希望使用 Prismux UI 的用户。
+- 独立 CLI 包：适合只想在 Terminal 使用 `prismux` 和 `pmx` 的用户。
+
+## 桌面 App
 
 1. 从 Releases 下载 macOS app archive：
 
@@ -57,6 +62,47 @@ fi
 ```
 
 symlink 会让 Terminal 中的 `prismux` 跟随已安装 App 的版本。
+
+## 独立 CLI 包
+
+从同一个 GitHub Release 下载 CLI 包：
+
+```text
+prismux-cli-vX.Y.Z-macos-arm64.tar.gz
+```
+
+解压并安装：
+
+```sh
+tar -xzf prismux-cli-vX.Y.Z-macos-arm64.tar.gz
+cd prismux-cli-vX.Y.Z-macos-arm64
+./install.sh
+```
+
+默认情况下，`install.sh` 会把 `prismux` 和 `pmx` 复制到：
+
+```text
+$HOME/.local/bin
+```
+
+如果要安装到其他目录：
+
+```sh
+PRISMUX_INSTALL_DIR=/usr/local/bin ./install.sh
+```
+
+验证：
+
+```sh
+prismux --version
+prismux status
+```
+
+如果 `$HOME/.local/bin` 不在 `PATH` 中，请自行加入：
+
+```sh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+```
 
 ## 从 Git 使用 Cargo 安装
 

@@ -161,7 +161,6 @@ struct ProfileTargetRow: View {
     let active: Bool
     let switching: Bool
     let deleting: Bool
-    let refreshing: Bool
     let confirmingDelete: Bool
     let switchAction: () -> Void
     let requestDeleteConfirmation: () -> Void
@@ -185,7 +184,7 @@ struct ProfileTargetRow: View {
                     switching: switching,
                     deleting: deleting,
                     resetting: false,
-                    refreshing: refreshing,
+                    refreshing: false,
                     confirmingDelete: confirmingDelete,
                     confirmingReset: false,
                     disabledReason: profile.actions?.disabledReason,
@@ -430,7 +429,7 @@ private struct TargetActionCluster<ResetPopover: View, DeletePopover: View>: Vie
             .buttonStyle(.borderless)
             .background(accent.opacity(0.14), in: Capsule())
             .foregroundStyle(accent)
-            .disabled(!canActivate || switching || refreshing || deleting || resetting)
+            .disabled(!canActivate || switching || deleting || resetting)
             .help(disabledReason ?? useLabel)
             .accessibilityLabel(useLabel)
         }
@@ -455,7 +454,7 @@ private struct TargetActionCluster<ResetPopover: View, DeletePopover: View>: Vie
                 } label: {
                     AlignedMenuText("Reset usage limit")
                 }
-                .disabled(!resetEnabled || resetting || deleting || refreshing)
+                .disabled(!resetEnabled || resetting || deleting)
                 .help(resetEnabled ? "Consume 1 reset credit to reset eligible usage limits" : resetDisabledReason)
 
                 Divider()

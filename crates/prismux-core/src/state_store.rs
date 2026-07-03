@@ -927,7 +927,10 @@ impl StateStore {
                 r#"
                 INSERT INTO quota_snapshots
                     (local_id, provider, captured_at_unix, source, snapshot_json, diagnostic_json)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                SELECT ?1, ?2, ?3, ?4, ?5, ?6
+                WHERE EXISTS (
+                    SELECT 1 FROM accounts WHERE local_id = ?1 AND provider = ?2
+                )
                 "#,
                 params![
                     local_id,
@@ -997,7 +1000,10 @@ impl StateStore {
                 INSERT INTO refresh_attempts (
                     local_id, provider, attempted_at_unix, status, error_code, error_message
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                SELECT ?1, ?2, ?3, ?4, ?5, ?6
+                WHERE EXISTS (
+                    SELECT 1 FROM accounts WHERE local_id = ?1 AND provider = ?2
+                )
                 "#,
                 params![
                     local_id,
@@ -2133,6 +2139,12 @@ mod tests {
             .unwrap();
 
         store.remove_account(&account.local_id).unwrap();
+        store
+            .save_quota_snapshot(&account.local_id, "codex", &snapshot)
+            .unwrap();
+        store
+            .record_refresh_attempt(&account.local_id, "codex", "success", None, 12)
+            .unwrap();
 
         assert!(
             store

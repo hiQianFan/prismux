@@ -41,9 +41,9 @@ public final class AppStore: ObservableObject {
     /// so the newest response always reflects the newest write.
     ///
     /// Reads (`load`/`refresh`) deliberately stay OFF this chain: they are
-    /// concurrent and idempotent, and `generation` already keeps only the newest
-    /// read. A read issued after a write reflects that write because the backend
-    /// serializes it behind the same lock.
+    /// concurrent and idempotent, and `generation` keeps only the newest read.
+    /// Writes always apply their own response; a later refresh must not hide a
+    /// completed user action.
     private func runSerial(_ work: @escaping @MainActor () async -> Void) async {
         let prior = writeTail
         let task = Task { @MainActor in
@@ -62,8 +62,7 @@ public final class AppStore: ObservableObject {
         guard !refreshInProgress else { return }
         // Skip background refreshes while a sign-in/import is in flight: let the
         // onboarding command's own fresh response land instead of racing it with
-        // a redundant read. (Not a correctness crutch — the backend serializes
-        // both behind one lock — just avoids needless work and UI churn.)
+        // a redundant read. This avoids needless work and UI churn.
         guard !onboardingInProgress else { return }
         guard let target = provider else {
             await refreshAll(providers: currentProviders, kind: kind)
@@ -238,17 +237,15 @@ public final class AppStore: ObservableObject {
     private func request(_ payload: Payload) async {
         generation += 1
         let currentGeneration = generation
+        let discardIfStale = isRead(payload)
         do {
-            // The backend serializes writes behind a blocking operation lock, so
-            // a write never fails just because a refresh briefly held it — no
-            // client-side retry needed.
             let envelope = try await backend.call(BackendRequest(
                 schemaVersion: 2,
                 op: opName(payload),
                 payload: payload,
                 requestId: UUID().uuidString
             ))
-            guard currentGeneration == generation else { return }
+            guard !discardIfStale || currentGeneration == generation else { return }
             if let operation = envelope.data?.operation {
                 operationNotice = OperationNotice(operation: operation)
             }
@@ -259,9 +256,18 @@ public final class AppStore: ObservableObject {
                 state = .failed(lastGood: lastGood, message: "Backend returned no dashboard.")
             }
         } catch {
-            guard currentGeneration == generation else { return }
+            guard !discardIfStale || currentGeneration == generation else { return }
             let message = userFacingMessage(error)
             state = .backendUnavailable(lastGood: lastGood, message: message)
+        }
+    }
+
+    private func isRead(_ payload: Payload) -> Bool {
+        switch payload {
+        case .dashboard, .accounts, .refresh, .compatibility, .settingsView, .aboutView, .supportReport:
+            return true
+        case .switchTarget, .removeTarget, .consumeResetCredit, .login, .saveExistingLogin, .importProfile, .updateSettings, .cancelLogin:
+            return false
         }
     }
 

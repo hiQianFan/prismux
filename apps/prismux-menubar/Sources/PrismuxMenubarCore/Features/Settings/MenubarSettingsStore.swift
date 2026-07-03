@@ -19,9 +19,9 @@ enum MenubarSettingsTab: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
-        case .general: "gearshape"
-        case .providers: "square.stack.3d.up"
-        case .about: "info.circle"
+        case .general: "gearshape.fill"
+        case .providers: "square.stack.3d.up.fill"
+        case .about: "info.circle.fill"
         }
     }
 }
@@ -78,6 +78,19 @@ final class MenubarSettingsStore: ObservableObject {
     func updatePrivacy(_ hidePersonalIdentifiers: Bool) {
         guard var settings else { return }
         settings.privacy.hidePersonalIdentifiers = hidePersonalIdentifiers
+        save(settings)
+    }
+
+    func updateProxyURL(_ proxyURL: String) {
+        guard var settings else { return }
+        let trimmed = proxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        settings.network.proxyURL = trimmed.isEmpty ? nil : trimmed
+        save(settings)
+    }
+
+    func setProxyEnabled(_ enabled: Bool) {
+        guard var settings else { return }
+        settings.network.proxyEnabled = enabled
         save(settings)
     }
 
@@ -274,7 +287,7 @@ struct CliToolStatus: Sendable {
             status.helperAvailable = FileManager.default.isExecutableFile(atPath: helper.path)
             status.helperVersion = Self.version(of: helper.path)
         }
-        status.proxySource = Self.detectProxySource()
+        status.proxySource = "Configured in Settings"
 
         // Resolve `prismux` on PATH without spawning a shell.
         let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
@@ -318,16 +331,6 @@ struct CliToolStatus: Sendable {
         }
 
         try fileManager.createSymbolicLink(atPath: installPath, withDestinationPath: bundled)
-    }
-
-    private static func detectProxySource() -> String {
-        let env = ProcessInfo.processInfo.environment
-        for key in ["PRISMUX_HTTPS_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
-            if let value = env[key], !value.isEmpty {
-                return "Environment \(key)"
-            }
-        }
-        return "None"
     }
 
     private static func version(of executable: String) -> String? {

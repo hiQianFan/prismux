@@ -393,12 +393,14 @@ public struct ActiveTarget: Decodable, Sendable {
 public struct SettingsView: Codable, Sendable {
     public var schemaVersion: UInt32
     public var general: GeneralSettings
+    public var network: NetworkSettings
     public var providers: [ProviderSettings]
     public var privacy: PrivacySettings
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case general
+        case network
         case providers
         case privacy
     }
@@ -409,6 +411,16 @@ public struct GeneralSettings: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case refreshCadenceSeconds = "refresh_cadence_seconds"
+    }
+}
+
+public struct NetworkSettings: Codable, Sendable {
+    public var proxyEnabled: Bool
+    public var proxyURL: String?
+
+    enum CodingKeys: String, CodingKey {
+        case proxyEnabled = "proxy_enabled"
+        case proxyURL = "proxy_url"
     }
 }
 

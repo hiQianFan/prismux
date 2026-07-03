@@ -66,6 +66,22 @@ fn duplicate_save_updates_existing_account_instead_of_appending() {
 }
 
 #[test]
+fn codex_usage_proxy_reads_prismux_settings() {
+    let temp = test_temp_dir("usage-proxy-settings");
+    let state_root = temp.join("prismux-state");
+    write_file_atomic_private(
+        &state_root.join("control-plane").join("settings.json"),
+        br#"{"schema_version":2,"general":{"refresh_cadence_seconds":300},"network":{"proxy_enabled":true,"proxy_url":"socks5h://127.0.0.1:1080"},"providers":[{"provider":"codex","display_label":"Codex","enabled":true,"status":{"status":"ready","status_text":"Ready","status_tone":"success"},"diagnostics":[]}],"privacy":{"hide_personal_identifiers":false}}"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        codex_usage_proxy(&state_root).as_deref(),
+        Some("socks5h://127.0.0.1:1080")
+    );
+}
+
+#[test]
 fn duplicate_codex_subject_updates_existing_account_even_when_auth_hash_changes() {
     let temp = test_temp_dir("duplicate-subject");
     let codex_home = temp.join("codex-home");

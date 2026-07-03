@@ -250,9 +250,7 @@ pub fn run() -> Result<()> {
                     print_account_section_from_statuses(plugin.name(), &accounts, None);
                 }
             }
-            print_hint(
-                "Proxy: set PRISMUX_HTTPS_PROXY, HTTPS_PROXY, or ALL_PROXY before running refresh.",
-            );
+            print_hint("Proxy: configure Network proxy in Prismux Settings.");
         }
         Command::Login {
             platform,

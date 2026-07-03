@@ -323,7 +323,6 @@ struct DashboardView: View {
                     active: profile.active,
                     switching: store.switchingLocalId == profile.id,
                     deleting: store.deletingLocalId == profile.id,
-                    refreshing: store.refreshingProvider != nil,
                     confirmingDelete: store.confirmingDeleteTargetId == profile.id,
                     switchAction: { Task { await store.switchProfile(profile) } },
                     requestDeleteConfirmation: { store.confirmDelete(profile.id) },

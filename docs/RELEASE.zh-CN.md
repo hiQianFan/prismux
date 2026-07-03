@@ -48,10 +48,11 @@ PRISMUX_STATE_ROOT=/tmp/prismux-state CODEX_HOME=/tmp/codex-home CLAUDE_CONFIG_D
 ## macOS Artifacts
 
 - `Prismux-vX.Y.Z-macos-arm64.zip`，archive 内包含 `Prismux.app`
+- `prismux-cli-vX.Y.Z-macos-arm64.tar.gz`，包含独立 `prismux`、`pmx` 命令和 `install.sh`
 - 内置 CLI helper：`Prismux.app/Contents/SharedSupport/bin/prismux`
 - `SHA256SUMS`
 
-macOS app bundle 是首选分发路径。它同时包含 Menubar 和同版本 CLI helper。需要 Terminal 使用时，用户通过 Menubar 显式创建 PATH symlink；release 不复制 auth/state 文件，也不修改 shell 启动文件。
+macOS app bundle 是首选 UI 分发路径。它同时包含 Menubar 和同版本 CLI helper。需要 Terminal 使用时，用户可以通过 Menubar 显式创建 PATH symlink，也可以下载独立 CLI 包。release 不复制 auth/state 文件，也不修改 shell 启动文件。
 
 第一版公开 App bundle 不发布 Linux binary、Windows binary、Homebrew formula、crates.io package、Sparkle 更新、Developer ID notarization 自动化、独立签名或 provenance attestation。
 
@@ -94,7 +95,7 @@ scripts/bundle-menubar.sh
 | Artifact | 包含能力 | 平台 | 说明 |
 | --- | --- | --- | --- |
 | `Prismux.app` full bundle | Menubar dashboard、refresh、显式 account/profile activation、onboarding actions、bundled `prismux` helper、共享 state root | macOS 14+ | 首选公开 macOS artifact。 |
-| standalone CLI tarball | CLI-only 账号/profile 管理和脚本能力 | 后续 | 有真实 standalone 需求后再加。 |
+| `prismux-cli-vX.Y.Z-macos-arm64.tar.gz` | CLI-only 账号/profile 管理和脚本能力 | macOS arm64 | 包含 `prismux`、`pmx`、`install.sh` 和 package README。 |
 | Windows/Linux packages | 平台专用 CLI/App packaging | 后续 | 独立提案；不复用 macOS `.app` layout。 |
 
 发布包不得暗示未包含的 optional module 可用。缺少 CLI、helper、Menubar 或 future `serve` 模块时，对应前端必须展示 unavailable view 和安装/切换指引；state-changing operation 只能在 `compatibility_view` 通过 schema gate 后启用。

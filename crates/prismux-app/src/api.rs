@@ -195,19 +195,23 @@ mod tests {
     }
 
     #[test]
-    fn refresh_skips_while_an_operation_is_in_progress() {
+    fn refresh_runs_while_an_operation_is_in_progress() {
         let _test_guard = TEST_OPERATION_LOCK
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let _operation_guard = OPERATION_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        let plugins = vec![
-            Box::new(FakePlugin::new(vec![account(1, true, None)])) as Box<dyn PlatformPlugin>
-        ];
+        reset_refresh_state();
+        let refresh_count = Arc::new(AtomicUsize::new(0));
+        let plugins = vec![Box::new(
+            FakePlugin::new(vec![account(1, true, None)])
+                .with_provider("codex-stale-generation-test")
+                .with_refresh_count(refresh_count.clone()),
+        ) as Box<dyn PlatformPlugin>];
 
         let report = menubar_refresh(
             &plugins,
             RefreshCommand {
-                provider: "codex".to_string(),
+                provider: "codex-stale-generation-test".to_string(),
                 kind: RefreshKind::Interactive,
                 local_id: None,
                 target_kind: None,
@@ -217,20 +221,9 @@ mod tests {
         )
         .unwrap();
 
-        // A background refresh that collides with an in-flight write must NOT
-        // block on the lock (that would hang it for the duration of, e.g., a
-        // login browser wait) nor error (which would mark the UI stale). It
-        // skips this round and returns the current dashboard; the next tick
-        // catches up once the write releases the lock.
-        assert_eq!(report.operation.status, OperationStatus::Skipped);
-        assert!(!report.refreshed);
-        assert!(
-            report
-                .skipped_reason
-                .as_deref()
-                .unwrap_or_default()
-                .contains("another operation is in progress")
-        );
+        assert_eq!(report.operation.status, OperationStatus::Success);
+        assert!(report.refreshed);
+        assert_eq!(refresh_count.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -241,13 +234,15 @@ mod tests {
         reset_refresh_state();
         let refresh_count = Arc::new(AtomicUsize::new(0));
         let plugins = vec![Box::new(
-            FakePlugin::new(vec![account(1, true, None)]).with_refresh_count(refresh_count.clone()),
+            FakePlugin::new(vec![account(1, true, None)])
+                .with_provider("codex-background-floor-test")
+                .with_refresh_count(refresh_count.clone()),
         ) as Box<dyn PlatformPlugin>];
 
         let first = menubar_refresh(
             &plugins,
             RefreshCommand {
-                provider: "codex".to_string(),
+                provider: "codex-background-floor-test".to_string(),
                 kind: RefreshKind::Background,
                 local_id: None,
                 target_kind: None,
@@ -259,7 +254,7 @@ mod tests {
         let second = menubar_refresh(
             &plugins,
             RefreshCommand {
-                provider: "codex".to_string(),
+                provider: "codex-background-floor-test".to_string(),
                 kind: RefreshKind::Background,
                 local_id: None,
                 target_kind: None,
@@ -284,13 +279,14 @@ mod tests {
         let refresh_count = Arc::new(AtomicUsize::new(0));
         let plugins = vec![Box::new(
             FakePlugin::new(vec![account(1, true, None), account(2, false, None)])
+                .with_provider("codex-provider-refresh-test")
                 .with_refresh_count(refresh_count.clone()),
         ) as Box<dyn PlatformPlugin>];
 
         let report = menubar_refresh(
             &plugins,
             RefreshCommand {
-                provider: "codex".to_string(),
+                provider: "codex-provider-refresh-test".to_string(),
                 kind: RefreshKind::Interactive,
                 local_id: None,
                 target_kind: None,
@@ -313,13 +309,14 @@ mod tests {
         let refresh_count = Arc::new(AtomicUsize::new(0));
         let plugins = vec![Box::new(
             FakePlugin::new(vec![account(1, true, None), account(2, false, None)])
+                .with_provider("codex-account-refresh-test")
                 .with_refresh_count(refresh_count.clone()),
         ) as Box<dyn PlatformPlugin>];
 
         let report = menubar_refresh(
             &plugins,
             RefreshCommand {
-                provider: "codex".to_string(),
+                provider: "codex-account-refresh-test".to_string(),
                 kind: RefreshKind::Interactive,
                 local_id: Some("codex-account-2".to_string()),
                 target_kind: Some(TargetKindView::Account),
@@ -346,13 +343,15 @@ mod tests {
         reset_refresh_state();
         let refresh_count = Arc::new(AtomicUsize::new(0));
         let plugins = vec![Box::new(
-            FakePlugin::new(vec![account(1, true, None)]).with_refresh_count(refresh_count.clone()),
+            FakePlugin::new(vec![account(1, true, None)])
+                .with_provider("codex-stale-generation-test")
+                .with_refresh_count(refresh_count.clone()),
         ) as Box<dyn PlatformPlugin>];
 
         let first = menubar_refresh(
             &plugins,
             RefreshCommand {
-                provider: "codex".to_string(),
+                provider: "codex-stale-generation-test".to_string(),
                 kind: RefreshKind::Interactive,
                 local_id: None,
                 target_kind: None,
@@ -364,7 +363,7 @@ mod tests {
         let stale = menubar_refresh(
             &plugins,
             RefreshCommand {
-                provider: "codex".to_string(),
+                provider: "codex-stale-generation-test".to_string(),
                 kind: RefreshKind::Interactive,
                 local_id: None,
                 target_kind: None,
@@ -389,17 +388,20 @@ mod tests {
         let refresh_count = Arc::new(AtomicUsize::new(0));
         let failing = vec![Box::new(
             FakePlugin::new(vec![account(1, true, None)])
+                .with_provider("codex-backoff-test")
                 .with_refresh_error("network timeout")
                 .with_refresh_count(refresh_count.clone()),
         ) as Box<dyn PlatformPlugin>];
         let working = vec![Box::new(
-            FakePlugin::new(vec![account(1, true, None)]).with_refresh_count(refresh_count.clone()),
+            FakePlugin::new(vec![account(1, true, None)])
+                .with_provider("codex-backoff-test")
+                .with_refresh_count(refresh_count.clone()),
         ) as Box<dyn PlatformPlugin>];
 
         let failed = menubar_refresh(
             &failing,
             RefreshCommand {
-                provider: "codex".to_string(),
+                provider: "codex-backoff-test".to_string(),
                 kind: RefreshKind::Background,
                 local_id: None,
                 target_kind: None,
@@ -411,7 +413,7 @@ mod tests {
         let skipped = menubar_refresh(
             &working,
             RefreshCommand {
-                provider: "codex".to_string(),
+                provider: "codex-backoff-test".to_string(),
                 kind: RefreshKind::Background,
                 local_id: None,
                 target_kind: None,

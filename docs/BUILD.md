@@ -21,6 +21,18 @@ cargo build --release -p prismux-cli --locked
 ./target/release/prismux --version
 ```
 
+Create the same standalone CLI package used by releases:
+
+```sh
+scripts/package-cli.sh macos-arm64
+```
+
+The package is written to:
+
+```text
+dist/prismux-cli-vX.Y.Z-macos-arm64.tar.gz
+```
+
 Developer install from Git builds only the CLI:
 
 ```sh

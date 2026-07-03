@@ -29,19 +29,6 @@ fn write_guard() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Try to acquire the lock for an opportunistic background refresh. A refresh
-/// must NEVER block on the lock: it competes with user writes and even with the
-/// long-running login wait, so blocking could hang the refresh for minutes.
-/// Colliding with an in-flight operation simply means "skip this round" — the
-/// operation returns fresh data anyway, and the next refresh tick will catch up.
-fn try_refresh_guard() -> Option<MutexGuard<'static, ()>> {
-    match OPERATION_LOCK.try_lock() {
-        Ok(guard) => Some(guard),
-        Err(std::sync::TryLockError::WouldBlock) => None,
-        Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
-    }
-}
-
 pub fn activate_target(
     plugins: &[Box<dyn PlatformPlugin>],
     command: SwitchCommand,
@@ -359,7 +346,6 @@ pub fn menubar_refresh(
     command: RefreshCommand,
     store: Option<&prismux_core::StateStore>,
 ) -> Result<RefreshReport> {
-    let lock = try_refresh_guard();
     let now = unix_now();
     let plugin = find_plugin(plugins, &command.provider)?;
     let refresh_target = match command.local_id.as_ref() {
@@ -384,18 +370,10 @@ pub fn menubar_refresh(
         }
         None => None,
     };
-    // A refresh that collides with an in-flight write skips this round rather
-    // than blocking or erroring — the write returns fresh data anyway, and the
-    // skip carries the current dashboard so the UI never goes stale over it.
-    // `lock` is held (when Some) through the rest of the function, guarding the
-    // plugin refresh below.
+    // Refresh is a background read/update. User writes own the global auth
+    // lock; stale quota writes are filtered by the state store.
     let current_generation = current_refresh_generation(&command.provider);
-    let admission = if lock.is_none() {
-        RefreshAdmission::Skipped {
-            generation: 0,
-            reason: "another operation is in progress".to_string(),
-        }
-    } else if command
+    let admission = if command
         .request_generation
         .is_some_and(|requested| requested < current_generation)
     {

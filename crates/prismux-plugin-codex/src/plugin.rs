@@ -605,7 +605,7 @@ impl CodexPlugin {
                 std::process::id(),
                 unix_now_nanos()
             ));
-        let proxy = codex_usage_proxy()
+        let proxy = codex_usage_proxy(&self.state_root().map_err(usage_diagnostic_from_error)?)
             .map(|proxy| format!("proxy = \"{}\"\n", escape_curl_config(&proxy)))
             .unwrap_or_default();
         let fedramp = if auth.fedramp {
@@ -2700,10 +2700,23 @@ fn escape_curl_config(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn codex_usage_proxy() -> Option<String> {
-    ["PRISMUX_HTTPS_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
-        .iter()
-        .find_map(|key| env::var(key).ok().filter(|value| !value.trim().is_empty()))
+fn codex_usage_proxy(state_root: &Path) -> Option<String> {
+    let settings_path = state_root.join("control-plane").join("settings.json");
+    let value: serde_json::Value = serde_json::from_slice(&read_file(&settings_path).ok()?).ok()?;
+    let network = value.get("network")?;
+    network
+        .get("proxy_enabled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+        .then(|| {
+            network
+                .get("proxy_url")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
+        .flatten()
 }
 
 fn metadata_from_jwt(token: &str) -> Option<CodexAccountMetadata> {

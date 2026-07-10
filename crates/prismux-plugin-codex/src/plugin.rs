@@ -1,11 +1,12 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     env, fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{Arc, LazyLock, Mutex},
 };
 
-use chrono::DateTime;
+use chrono::{DateTime, SecondsFormat, Utc};
 use prismux_core::{
     AccountRecord, AccountRef, AccountStatus, AccountSubjectUpdate, Availability,
     AvailabilityState, ConfigProfile, ConfigSwitchReport, DoctorCheck, DoctorReport,
@@ -26,6 +27,26 @@ use toml_edit::{DocumentMut, Item, Table, value};
 const AUTH_FILE_NAME: &str = "auth.json";
 const BACKUP_RETENTION_PER_KIND: usize = 3;
 
+// Codex ChatGPT OAuth: the CLI's public client id, reused by OpenCode and other
+// third-party tools. Access tokens are short-lived (a few days); we mint fresh
+// ones from the stored refresh_token via the standard refresh_token grant so
+// usage requests never ride an expired token. Values reverse-engineered from
+// the Codex CLI (see 7shi/codex-oauth); the refresh_token rotates on every use,
+// so refreshes are serialized per account and the new token is persisted
+// atomically before the next request runs.
+const CODEX_OAUTH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+const CODEX_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+/// Refresh once fewer than this many seconds remain before the access token's
+/// `exp`, to absorb clock skew and the round-trip to the usage endpoint.
+const TOKEN_REFRESH_SAFETY_MARGIN_SECONDS: i64 = 120;
+
+/// Per-account refresh locks. The refresh_token rotates on each use, so two
+/// concurrent refreshes for the same account would send the same token twice
+/// and trip OpenAI's "refresh token was already used" lockout. Serializing per
+/// `local_id` (not globally) lets different accounts refresh in parallel.
+static CODEX_REFRESH_LOCKS: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 #[derive(Debug, Clone)]
 pub struct CodexPlugin {
     codex_home: Option<PathBuf>,
@@ -41,6 +62,8 @@ pub struct CodexPlugin {
     usage_payload: Option<std::result::Result<serde_json::Value, UsageDiagnostic>>,
     #[cfg(test)]
     reset_credit_detail_payload: Option<std::result::Result<serde_json::Value, UsageDiagnostic>>,
+    #[cfg(test)]
+    oauth_refresh_payload: Option<std::result::Result<serde_json::Value, UsageDiagnostic>>,
 }
 
 struct TempDirCleanup {
@@ -103,6 +126,8 @@ impl Default for CodexPlugin {
             usage_payload: None,
             #[cfg(test)]
             reset_credit_detail_payload: None,
+            #[cfg(test)]
+            oauth_refresh_payload: None,
         }
     }
 }
@@ -139,6 +164,8 @@ impl CodexPlugin {
             usage_payload: None,
             #[cfg(test)]
             reset_credit_detail_payload: None,
+            #[cfg(test)]
+            oauth_refresh_payload: None,
         }
     }
 
@@ -171,6 +198,14 @@ impl CodexPlugin {
         payload: std::result::Result<serde_json::Value, UsageDiagnostic>,
     ) {
         self.reset_credit_detail_payload = Some(payload);
+    }
+
+    #[cfg(test)]
+    fn set_oauth_refresh_payload(
+        &mut self,
+        payload: std::result::Result<serde_json::Value, UsageDiagnostic>,
+    ) {
+        self.oauth_refresh_payload = Some(payload);
     }
 
     fn run_before_auth_replace_hook(&self, _auth_path: &Path) {
@@ -423,25 +458,27 @@ impl CodexPlugin {
     }
 
     fn usage_from_snapshot(&self, account: &AccountRecord) -> UsageSnapshot {
-        let runtime_auth_path = match self.ensure_managed_runtime_scope(account) {
-            Ok(path) => path,
+        // Mint a fresh access token before touching the usage API. Without this
+        // an expired token silently 401s and we serve a stale cached snapshot
+        // forever (the "stuck on an old date" bug).
+        let auth_bytes = match self.ensure_fresh_auth(account, false) {
+            Ok(bytes) => bytes,
             Err(err) => {
                 return self.usage_with_cached_fallback(
                     account,
                     UsageDiagnostic {
-                        code: "managed_runtime_unavailable".to_string(),
+                        // `auth` renders as the red "sign in again" severity on
+                        // the account card (see isAuthDiagnostic in the menubar).
+                        code: "auth".to_string(),
                         message: format!(
-                            "managed runtime scope is unavailable for account #{}: {err}",
+                            "Codex sign-in expired for account #{}; sign in again to refresh usage ({err})",
                             account.display_number
                         ),
                     },
                 );
             }
         };
-        let Some(auth) = read_file(&runtime_auth_path)
-            .ok()
-            .and_then(|bytes| parse_codex_usage_auth(&bytes))
-        else {
+        let Some(auth) = parse_codex_usage_auth(&auth_bytes) else {
             return self.usage_with_cached_fallback(
                 account,
                 UsageDiagnostic {
@@ -454,6 +491,24 @@ impl CodexPlugin {
 
         let payload = match self.fetch_codex_usage(&auth) {
             Ok(payload) => payload,
+            // A 401/403 despite our freshness check (clock skew, server-side
+            // revocation): force one refresh and retry once before falling back.
+            Err(diagnostic) if is_auth_status(&diagnostic) => {
+                match self
+                    .ensure_fresh_auth(account, true)
+                    .ok()
+                    .as_deref()
+                    .and_then(parse_codex_usage_auth)
+                {
+                    Some(auth) => match self.fetch_codex_usage(&auth) {
+                        Ok(payload) => payload,
+                        Err(diagnostic) => {
+                            return self.usage_with_cached_fallback(account, diagnostic);
+                        }
+                    },
+                    None => return self.usage_with_cached_fallback(account, diagnostic),
+                }
+            }
             Err(diagnostic) => {
                 return self.usage_with_cached_fallback(account, diagnostic);
             }
@@ -508,6 +563,174 @@ impl CodexPlugin {
         create_dir_private(&runtime_dir)?;
         write_file_atomic_private(&runtime_auth_path, &auth_bytes)?;
         Ok(runtime_auth_path)
+    }
+
+    /// Per-account refresh lock (see [`CODEX_REFRESH_LOCKS`]).
+    fn account_refresh_lock(local_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = CODEX_REFRESH_LOCKS
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        locks.entry(local_id.to_string()).or_default().clone()
+    }
+
+    /// Guarantee the account's *managed runtime* auth holds a currently-valid
+    /// access token and return the bytes in effect. The managed runtime copy is
+    /// an isolated, living credential store (kept separate from the immutable
+    /// import-time snapshot so refreshes never mutate the account's identity or
+    /// hash). Resolution order, serialized per account so a rotated
+    /// refresh_token is never reused concurrently:
+    ///
+    /// 1. Runtime token still valid → use it as-is.
+    /// 2. Runtime stale but the snapshot carries a fresher valid token → adopt
+    ///    the snapshot into the runtime (no network call, no rotation risk).
+    /// 3. Otherwise refresh via the freshest available refresh_token and write
+    ///    the new tokens back into the runtime scope only.
+    fn ensure_fresh_auth(&self, account: &AccountRecord, force: bool) -> Result<Vec<u8>> {
+        let lock = Self::account_refresh_lock(&account.local_id);
+        let _guard = lock.lock().unwrap_or_else(|err| err.into_inner());
+
+        let runtime_auth_path = self.ensure_managed_runtime_scope(account)?;
+        let runtime_bytes = read_file(&runtime_auth_path)?;
+        let runtime_exp = access_token_exp(&runtime_bytes);
+        let now = unix_now() as i64;
+        let is_valid = |exp: Option<i64>| exp.is_some_and(|exp| now + TOKEN_REFRESH_SAFETY_MARGIN_SECONDS < exp);
+
+        if !force && is_valid(runtime_exp) {
+            return Ok(runtime_bytes);
+        }
+
+        // Runtime token unusable: see if the snapshot has a fresher one we can
+        // adopt without spending a refresh_token.
+        let snapshot_bytes = read_file(Path::new(&account.secret_ref)).ok();
+        let snapshot_exp = snapshot_bytes.as_deref().and_then(access_token_exp);
+        if !force
+            && is_valid(snapshot_exp)
+            && snapshot_exp > runtime_exp
+            && let Some(snapshot_bytes) = snapshot_bytes.as_ref()
+        {
+            write_file_atomic_private(&runtime_auth_path, snapshot_bytes)?;
+            return Ok(snapshot_bytes.clone());
+        }
+
+        // Refresh from whichever source carries the most recently issued token
+        // (latest exp = latest refresh_token in the rotation chain).
+        let base_bytes = match snapshot_bytes {
+            Some(snapshot_bytes) if snapshot_exp > runtime_exp => snapshot_bytes,
+            _ => runtime_bytes,
+        };
+        let mut auth: serde_json::Value = serde_json::from_slice(&base_bytes)
+            .map_err(|err| PrismuxError::Message(format!("parse Codex auth: {err}")))?;
+        let refresh_token = auth
+            .pointer("/tokens/refresh_token")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|token| !token.is_empty());
+        let Some(refresh_token) = refresh_token else {
+            // Nothing to refresh with. Hand back the base bytes and let the
+            // usage path surface the appropriate diagnostic.
+            return Ok(base_bytes);
+        };
+
+        let refreshed = self
+            .refresh_codex_oauth(refresh_token)
+            .map_err(|diagnostic| PrismuxError::Message(diagnostic.message))?;
+        if let Some(tokens) = auth.get_mut("tokens").and_then(|value| value.as_object_mut()) {
+            for key in ["access_token", "id_token", "refresh_token"] {
+                if let Some(value) = refreshed.get(key).and_then(serde_json::Value::as_str) {
+                    tokens.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+                }
+            }
+        }
+        if let Some(obj) = auth.as_object_mut() {
+            obj.insert(
+                "last_refresh".to_string(),
+                serde_json::Value::String(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)),
+            );
+        }
+        let new_bytes = serde_json::to_vec_pretty(&auth)
+            .map_err(|err| PrismuxError::Message(format!("serialize refreshed auth: {err}")))?;
+        write_file_atomic_private(&runtime_auth_path, &new_bytes)?;
+        Ok(new_bytes)
+    }
+
+    /// POST the `refresh_token` grant to OpenAI's OAuth token endpoint, reusing
+    /// the same proxy-aware curl path as usage requests. Returns the parsed
+    /// token response (`access_token`, `id_token`, rotated `refresh_token`).
+    fn refresh_codex_oauth(
+        &self,
+        refresh_token: &str,
+    ) -> std::result::Result<serde_json::Value, UsageDiagnostic> {
+        #[cfg(test)]
+        if let Some(payload) = &self.oauth_refresh_payload {
+            return payload.clone();
+        }
+
+        let config_path = self
+            .platform_state_dir()
+            .map_err(usage_diagnostic_from_error)?
+            .join(format!(
+                ".oauth-curl-{}-{}.conf",
+                std::process::id(),
+                unix_now_nanos()
+            ));
+        let proxy = codex_usage_proxy(&self.state_root().map_err(usage_diagnostic_from_error)?)
+            .map(|proxy| format!("proxy = \"{}\"\n", escape_curl_config(&proxy)))
+            .unwrap_or_default();
+        let config = format!(
+            "header = \"Content-Type: application/json\"\nheader = \"User-Agent: codex-cli\"\nmax-time = 8\nsilent\nshow-error\n"
+        ) + &proxy;
+        write_file_atomic_private(&config_path, config.as_bytes())
+            .map_err(usage_diagnostic_from_error)?;
+
+        let body = serde_json::to_vec(&serde_json::json!({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": CODEX_OAUTH_CLIENT_ID,
+            "scope": "openid profile email offline_access",
+        }))
+        .map_err(|err| UsageDiagnostic {
+            code: "encode".to_string(),
+            message: format!("encode token refresh request: {err}"),
+        })?;
+
+        let output = Command::new("curl")
+            .arg("--config")
+            .arg(&config_path)
+            .arg("--request")
+            .arg("POST")
+            .arg("--data-binary")
+            .arg(String::from_utf8_lossy(&body).as_ref())
+            .arg("--write-out")
+            .arg("\n%{http_code}")
+            .arg(CODEX_OAUTH_TOKEN_URL)
+            .output()
+            .map_err(|err| {
+                let _ = fs::remove_file(&config_path);
+                UsageDiagnostic {
+                    code: "network".to_string(),
+                    message: format!("failed to run curl for token refresh: {err}"),
+                }
+            })?;
+        let _ = fs::remove_file(&config_path);
+
+        if !output.status.success() {
+            return Err(usage_diagnostic_from_curl_status(output.status.code()));
+        }
+        let (status, body) =
+            parse_curl_http_output(&output.stdout).ok_or_else(|| UsageDiagnostic {
+                code: "network".to_string(),
+                message: "token refresh did not include an HTTP status".to_string(),
+            })?;
+        if !(200..=299).contains(&status) {
+            return Err(UsageDiagnostic {
+                code: format!("auth_{status}"),
+                message: format!("token refresh returned HTTP {status}"),
+            });
+        }
+        serde_json::from_slice(body).map_err(|err| UsageDiagnostic {
+            code: "json".to_string(),
+            message: format!("invalid token refresh response: {err}"),
+        })
     }
 
     fn usage_with_cached_fallback(
@@ -2330,6 +2553,33 @@ fn parse_codex_usage_auth(auth_bytes: &[u8]) -> Option<CodexUsageAuth> {
         })
         .unwrap_or(false),
     })
+}
+
+fn jwt_claim_i64(token: &str, key: &str) -> Option<i64> {
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64_url_decode(payload)?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let value = claims.get(key)?;
+    value
+        .as_i64()
+        .or_else(|| value.as_f64().map(|seconds| seconds as i64))
+}
+
+/// Read the `exp` (seconds since epoch) from the `tokens.access_token` JWT of a
+/// Codex auth.json blob, if present and decodable.
+fn access_token_exp(auth_bytes: &[u8]) -> Option<i64> {
+    let auth: serde_json::Value = serde_json::from_slice(auth_bytes).ok()?;
+    let token = auth
+        .pointer("/tokens/access_token")
+        .and_then(serde_json::Value::as_str)
+        .filter(|token| !token.trim().is_empty())?;
+    jwt_claim_i64(token, "exp")
+}
+
+/// True for diagnostics that indicate the access token itself was rejected
+/// (HTTP 401/403), which warrants a forced token refresh + retry.
+fn is_auth_status(diagnostic: &UsageDiagnostic) -> bool {
+    matches!(diagnostic.code.as_str(), "401" | "403")
 }
 
 fn jwt_claim_bool(token: &str, key: &str) -> Option<bool> {

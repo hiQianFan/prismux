@@ -13,7 +13,6 @@ public final class AppStore: ObservableObject {
     @Published private(set) var signingInProvider: String?
     @Published private(set) var savingExistingLoginProvider: String?
     @Published private(set) var importingProfileProvider: String?
-    @Published private(set) var operationNotice: OperationNotice?
     @Published var selectedProvider: String?
 
     private let backend: BackendClient
@@ -58,6 +57,18 @@ public final class AppStore: ObservableObject {
         await request(.dashboard(provider: nil))
     }
 
+    func loadForPopoverIfNeeded() async {
+        switch state {
+        case .loading, .ready:
+            return
+        case .failed(let lastGood, _), .backendUnavailable(let lastGood, _):
+            guard lastGood == nil else { return }
+            await load()
+        case .upgradeRequired:
+            return
+        }
+    }
+
     func refresh(provider: String? = nil, kind: String) async {
         guard !refreshInProgress else { return }
         // Skip background refreshes while a sign-in/import is in flight: let the
@@ -80,9 +91,11 @@ public final class AppStore: ObservableObject {
     func refreshAll(providers: [String], kind: String) async {
         guard !refreshInProgress else { return }
         guard !onboardingInProgress else { return }
+        var providers = providers
         if providers.isEmpty {
             await load()
-            return
+            providers = currentProviders
+            guard !providers.isEmpty else { return }
         }
         for provider in providers {
             refreshingProvider = provider
@@ -246,9 +259,6 @@ public final class AppStore: ObservableObject {
                 requestId: UUID().uuidString
             ))
             guard !discardIfStale || currentGeneration == generation else { return }
-            if let operation = envelope.data?.operation {
-                operationNotice = OperationNotice(operation: operation)
-            }
             if let report = envelope.data?.dashboard {
                 lastGood = report
                 state = .ready(report, stale: envelope.dataStale == true || envelope.servedFromSnapshot == true)
@@ -324,27 +334,6 @@ public final class AppStore: ObservableObject {
         case .saveExistingLogin: return "save_existing_login"
         case .importProfile: return "import_profile"
         case .cancelLogin: return "cancel_login"
-        }
-    }
-}
-
-struct OperationNotice: Equatable {
-    let title: String
-    let message: String
-    let severity: StatusBannerProps.Severity
-
-    init(operation: OperationResult) {
-        self.message = operation.message
-        switch operation.status {
-        case "failed":
-            self.title = "Operation failed"
-            self.severity = .error
-        case "skipped":
-            self.title = "Operation skipped"
-            self.severity = .warning
-        default:
-            self.title = "Operation complete"
-            self.severity = .info
         }
     }
 }

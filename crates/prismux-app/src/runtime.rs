@@ -25,7 +25,6 @@ struct RefreshState {
 static REFRESH_STATE: LazyLock<Mutex<HashMap<String, RefreshState>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-const INTERACTIVE_REFRESH_FLOOR_SECONDS: u64 = 30;
 const BACKGROUND_REFRESH_FLOOR_SECONDS: u64 = 300;
 const REFRESH_ERROR_BACKOFF_SECONDS: u64 = 120;
 pub const DEFAULT_REFRESH_TIMEOUT_SECONDS: u64 = 45;
@@ -111,17 +110,21 @@ pub fn record_refresh_timeout(provider: &str, generation: u64, now: u64) {
 }
 
 pub(crate) fn refresh_skip_reason(provider: &str, kind: &RefreshKind, now: u64) -> Option<String> {
+    // An explicit (interactive) refresh always runs: the user asked for fresh
+    // data, so neither the freshness floor nor the post-failure backoff should
+    // veto it. The in-flight guard in `begin_refresh_request` still prevents a
+    // genuinely concurrent duplicate. Only automatic background refreshes are
+    // rate-limited, to avoid hammering the provider on a timer.
+    if matches!(kind, RefreshKind::Interactive) {
+        return None;
+    }
     if let Some(reason) = refresh_failure_gate(provider, now) {
         return Some(reason);
     }
     let states = REFRESH_STATE.lock().unwrap_or_else(|err| err.into_inner());
     let state = states.get(provider)?;
-    let floor = match kind {
-        RefreshKind::Interactive => INTERACTIVE_REFRESH_FLOOR_SECONDS,
-        RefreshKind::Background => BACKGROUND_REFRESH_FLOOR_SECONDS,
-    };
     if let Some(last_success) = state.last_success_unix
-        && now.saturating_sub(last_success) < floor
+        && now.saturating_sub(last_success) < BACKGROUND_REFRESH_FLOOR_SECONDS
     {
         return Some("fresh_enough".to_string());
     }
@@ -213,5 +216,40 @@ mod tests {
         assert!(!view.refresh_eligible);
         assert!(view.lifecycle.contains(&ProviderRuntimeLifecycle::Backoff));
         assert!(view.backoff_until_unix.is_some());
+    }
+
+    #[test]
+    fn interactive_refresh_bypasses_freshness_and_backoff_gates() {
+        reset_refresh_state_for_tests();
+        // A just-succeeded refresh (freshness floor) and a recent failure
+        // (error backoff) both gate background refreshes...
+        let generation = match begin_refresh_request("codex", None) {
+            RefreshAdmission::Accepted(generation) => generation,
+            RefreshAdmission::Skipped { .. } => panic!("refresh should start"),
+        };
+        record_refresh_result("codex", generation, 100, true);
+        assert_eq!(
+            refresh_skip_reason("codex", &RefreshKind::Background, 110).as_deref(),
+            Some("fresh_enough")
+        );
+        // ...but never an explicit interactive one — the user asked for it.
+        assert_eq!(
+            refresh_skip_reason("codex", &RefreshKind::Interactive, 110),
+            None
+        );
+
+        let generation = match begin_refresh_request("codex", None) {
+            RefreshAdmission::Accepted(generation) => generation,
+            RefreshAdmission::Skipped { .. } => panic!("refresh should start"),
+        };
+        record_refresh_result("codex", generation, 200, false);
+        assert_eq!(
+            refresh_skip_reason("codex", &RefreshKind::Background, 210).as_deref(),
+            Some("error_backoff")
+        );
+        assert_eq!(
+            refresh_skip_reason("codex", &RefreshKind::Interactive, 210),
+            None
+        );
     }
 }

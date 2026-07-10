@@ -1,6 +1,6 @@
 # Menubar v1
 
-Prismux Menubar v1 是 macOS 14+ Apple Silicon 的原生菜单栏账号控制面板。它显示 active account、账号池、quota/status、手动 refresh 和显式 switch。
+Prismux Menubar v1 是 macOS 14+ Apple Silicon 的原生菜单栏账号控制面板。它显示 active account、账号池、quota/status、手动 refresh 和显式 switch。打开 popover 只展示 last-good 状态；刷新由后台 timer 或用户显式点击 Refresh 触发。
 
 公开分发形态采用 macOS full bundle：`Prismux.app` 内置 Menubar 和同版本 `prismux` CLI helper。用户需要 Terminal 命令时，通过 Menubar 显式点击 `Enable prismux command` 创建 symlink；App 不静默修改 PATH 或 shell 启动文件。
 

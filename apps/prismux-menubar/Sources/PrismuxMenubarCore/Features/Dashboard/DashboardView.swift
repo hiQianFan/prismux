@@ -50,16 +50,6 @@ struct DashboardView: View {
 
             Divider()
 
-            if let notice = store.operationNotice {
-                StatusBanner(props: StatusBannerProps(
-                    severity: notice.severity,
-                    title: notice.title,
-                    message: notice.message
-                ))
-                .padding(.horizontal)
-                .padding(.top, 10)
-            }
-
             carousel(pages: pages, selectedIndex: selectedIndex, report: report)
 
             Divider()
@@ -172,7 +162,6 @@ struct DashboardView: View {
 
     private func overview(_ report: DashboardReport) -> some View {
         let providers = providerNames(report)
-        let alerts = aggregatedDiagnostics(report)
         return VStack(alignment: .leading, spacing: 12) {
             Card(title: "Providers") {
                 if providers.isEmpty {
@@ -191,14 +180,6 @@ struct DashboardView: View {
                     }
                 }
             }
-
-            if !alerts.isEmpty {
-                Card(title: "Needs attention") {
-                    ForEach(Array(alerts.enumerated()), id: \.offset) { _, diagnostic in
-                        DiagnosticView(diagnostic: diagnostic)
-                    }
-                }
-            }
         }
     }
 
@@ -214,14 +195,6 @@ struct DashboardView: View {
         return aggregate.activeTarget?.displayLabel
     }
 
-    /// Provider diagnostics + dashboard-level diagnostics, concatenated. Provider
-    /// diagnostics are already scoped by provider_id; dashboard diagnostics carry
-    /// none, so the two sets don't overlap.
-    private func aggregatedDiagnostics(_ report: DashboardReport) -> [Diagnostic] {
-        let providerDiagnostics = report.aggregate.providerAggregates.flatMap(\.diagnostics)
-        return providerDiagnostics + report.aggregate.diagnostics
-    }
-
     private func providerPage(provider: String, report: DashboardReport) -> some View {
         let accounts = accounts(for: provider, in: report)
         let profiles = profiles(for: provider, in: report)
@@ -229,7 +202,6 @@ struct DashboardView: View {
         return VStack(alignment: .leading, spacing: 12) {
             accountTargets(provider: provider, accounts: accounts, report: report)
             profileTargets(provider: provider, profiles: profiles, report: report)
-            diagnostics(provider: provider, report: report, accounts: accounts)
         }
     }
 
@@ -333,19 +305,6 @@ struct DashboardView: View {
         }
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil) { providers in
             handleProfileFileDrop(providers, provider: provider)
-        }
-    }
-
-    private func diagnostics(provider: String, report: DashboardReport, accounts: [TargetAccount]) -> some View {
-        let providerDiagnostics = providerAggregate(provider, in: report)?.diagnostics ?? []
-        return Card(title: "Diagnostics") {
-            if providerDiagnostics.isEmpty {
-                emptyState("No diagnostics for \(provider.capitalized).")
-            }
-
-            ForEach(Array(providerDiagnostics.enumerated()), id: \.offset) { _, diagnostic in
-                DiagnosticView(diagnostic: diagnostic)
-            }
         }
     }
 
@@ -596,14 +555,6 @@ struct DashboardView: View {
 
     private func providerAggregate(_ provider: String, in report: DashboardReport) -> ProviderAggregateView? {
         report.aggregate.providerAggregates.first { $0.providerId == provider }
-    }
-
-    private func providerAttentionCount(_ report: DashboardReport) -> Int {
-        (report.providerViews ?? []).filter(isProviderAttention).count
-    }
-
-    private func isProviderAttention(_ view: ProviderView) -> Bool {
-        view.statusTone == "warning" || view.statusTone == "danger"
     }
 
     private func timeAgo(_ timestamp: UInt64) -> String {

@@ -593,7 +593,9 @@ impl CodexPlugin {
         let runtime_bytes = read_file(&runtime_auth_path)?;
         let runtime_exp = access_token_exp(&runtime_bytes);
         let now = unix_now() as i64;
-        let is_valid = |exp: Option<i64>| exp.is_some_and(|exp| now + TOKEN_REFRESH_SAFETY_MARGIN_SECONDS < exp);
+        let is_valid = |exp: Option<i64>| {
+            exp.is_some_and(|exp| now + TOKEN_REFRESH_SAFETY_MARGIN_SECONDS < exp)
+        };
 
         if !force && is_valid(runtime_exp) {
             return Ok(runtime_bytes);
@@ -634,10 +636,16 @@ impl CodexPlugin {
         let refreshed = self
             .refresh_codex_oauth(refresh_token)
             .map_err(|diagnostic| PrismuxError::Message(diagnostic.message))?;
-        if let Some(tokens) = auth.get_mut("tokens").and_then(|value| value.as_object_mut()) {
+        if let Some(tokens) = auth
+            .get_mut("tokens")
+            .and_then(|value| value.as_object_mut())
+        {
             for key in ["access_token", "id_token", "refresh_token"] {
                 if let Some(value) = refreshed.get(key).and_then(serde_json::Value::as_str) {
-                    tokens.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+                    tokens.insert(
+                        key.to_string(),
+                        serde_json::Value::String(value.to_string()),
+                    );
                 }
             }
         }
@@ -676,9 +684,8 @@ impl CodexPlugin {
         let proxy = codex_usage_proxy(&self.state_root().map_err(usage_diagnostic_from_error)?)
             .map(|proxy| format!("proxy = \"{}\"\n", escape_curl_config(&proxy)))
             .unwrap_or_default();
-        let config = format!(
-            "header = \"Content-Type: application/json\"\nheader = \"User-Agent: codex-cli\"\nmax-time = 8\nsilent\nshow-error\n"
-        ) + &proxy;
+        let config = "header = \"Content-Type: application/json\"\nheader = \"User-Agent: codex-cli\"\nmax-time = 8\nsilent\nshow-error\n".to_string()
+            + &proxy;
         write_file_atomic_private(&config_path, config.as_bytes())
             .map_err(usage_diagnostic_from_error)?;
 

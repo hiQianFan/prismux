@@ -1817,7 +1817,11 @@ fn refresh_mints_new_token_when_access_token_expired() {
 
     let status = plugin.refresh_account("work").unwrap();
     let usage = status.usage.unwrap();
-    assert!(usage.diagnostics.is_empty(), "unexpected: {:?}", usage.diagnostics);
+    assert!(
+        usage.diagnostics.is_empty(),
+        "unexpected: {:?}",
+        usage.diagnostics
+    );
 
     let account = plugin
         .state_store()
@@ -1826,9 +1830,10 @@ fn refresh_mints_new_token_when_access_token_expired() {
         .unwrap()
         .unwrap();
     // Rotated tokens land in the runtime scope...
-    let runtime: serde_json::Value =
-        serde_json::from_slice(&fs::read(plugin.managed_runtime_auth_path(&account).unwrap()).unwrap())
-            .unwrap();
+    let runtime: serde_json::Value = serde_json::from_slice(
+        &fs::read(plugin.managed_runtime_auth_path(&account).unwrap()).unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         runtime.pointer("/tokens/refresh_token").unwrap(),
         "refresh-new"

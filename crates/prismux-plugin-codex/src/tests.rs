@@ -1769,6 +1769,145 @@ fn codex_auth_with_usage_token(
     )
 }
 
+/// Build a Codex auth.json whose access token is a (fake) JWT carrying `exp`,
+/// with a refresh token, so `ensure_fresh_auth` can decide expiry.
+fn codex_auth_with_expiring_token(exp: i64, refresh: &str, account_id: &str) -> String {
+    let access = fake_jwt(r#"{"alg":"none"}"#, &format!(r#"{{"exp":{exp}}}"#));
+    format!(
+        r#"{{"tokens":{{"access_token":"{access}","refresh_token":"{refresh}","account_id":"{account_id}"}}}}"#
+    )
+}
+
+#[test]
+fn refresh_mints_new_token_when_access_token_expired() {
+    let temp = test_temp_dir("codex-token-refresh");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("prismux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    let expired = unix_now() as i64 - 10;
+    fs::write(
+        codex_home.join(AUTH_FILE_NAME),
+        codex_auth_with_expiring_token(expired, "refresh-old", "account-1"),
+    )
+    .unwrap();
+
+    let mut plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("work".to_string()),
+        })
+        .unwrap();
+
+    let fresh = unix_now() as i64 + 3600;
+    let new_access = fake_jwt(r#"{"alg":"none"}"#, &format!(r#"{{"exp":{fresh}}}"#));
+    plugin.set_oauth_refresh_payload(Ok(serde_json::json!({
+        "access_token": new_access,
+        "refresh_token": "refresh-new",
+        "id_token": "id-new",
+    })));
+    plugin.set_usage_payload(Ok(serde_json::json!({
+        "rate_limit": {
+            "primary_window": {
+                "used_percent": 10,
+                "limit_window_seconds": 18000,
+                "reset_at": 1_785_018_000
+            }
+        }
+    })));
+
+    let status = plugin.refresh_account("work").unwrap();
+    let usage = status.usage.unwrap();
+    assert!(
+        usage.diagnostics.is_empty(),
+        "unexpected: {:?}",
+        usage.diagnostics
+    );
+
+    let account = plugin
+        .state_store()
+        .unwrap()
+        .account_by_selector(plugin.id(), "work")
+        .unwrap()
+        .unwrap();
+    // Rotated tokens land in the runtime scope...
+    let runtime: serde_json::Value = serde_json::from_slice(
+        &fs::read(plugin.managed_runtime_auth_path(&account).unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        runtime.pointer("/tokens/refresh_token").unwrap(),
+        "refresh-new"
+    );
+    // ...while the immutable import-time snapshot keeps its original identity.
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&fs::read(&account.secret_ref).unwrap()).unwrap();
+    assert_eq!(
+        snapshot.pointer("/tokens/refresh_token").unwrap(),
+        "refresh-old"
+    );
+}
+
+#[test]
+fn expired_runtime_adopts_fresher_snapshot_without_network_refresh() {
+    let temp = test_temp_dir("codex-adopt-snapshot");
+    let codex_home = temp.join("codex-home");
+    let state_root = temp.join("prismux-state");
+    fs::create_dir_all(&codex_home).unwrap();
+    // Snapshot carries a still-valid token; the stale runtime copy below is
+    // older. Adoption must avoid spending the refresh_token.
+    let valid = unix_now() as i64 + 3600;
+    fs::write(
+        codex_home.join(AUTH_FILE_NAME),
+        codex_auth_with_expiring_token(valid, "refresh-snapshot", "account-1"),
+    )
+    .unwrap();
+
+    let mut plugin = CodexPlugin::with_paths(&codex_home, &state_root);
+    plugin
+        .save_current(SaveOptions {
+            alias: Some("work".to_string()),
+        })
+        .unwrap();
+
+    // Freeze an expired runtime copy that predates the snapshot.
+    let account = plugin
+        .state_store()
+        .unwrap()
+        .account_by_selector(plugin.id(), "work")
+        .unwrap()
+        .unwrap();
+    let runtime_path = plugin.managed_runtime_auth_path(&account).unwrap();
+    fs::create_dir_all(runtime_path.parent().unwrap()).unwrap();
+    let stale = unix_now() as i64 - 10;
+    fs::write(
+        &runtime_path,
+        codex_auth_with_expiring_token(stale, "refresh-runtime", "account-1"),
+    )
+    .unwrap();
+
+    // A network refresh here would panic (no mock set); adoption must not call it.
+    plugin.set_usage_payload(Ok(serde_json::json!({
+        "rate_limit": {
+            "primary_window": {
+                "used_percent": 5,
+                "limit_window_seconds": 18000,
+                "reset_at": 1_785_018_000
+            }
+        }
+    })));
+
+    let status = plugin.refresh_account("work").unwrap();
+    assert!(status.usage.unwrap().diagnostics.is_empty());
+
+    let runtime: serde_json::Value =
+        serde_json::from_slice(&fs::read(&runtime_path).unwrap()).unwrap();
+    assert_eq!(
+        runtime.pointer("/tokens/refresh_token").unwrap(),
+        "refresh-snapshot",
+        "runtime should have adopted the fresher snapshot token"
+    );
+}
+
 fn base64_url_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut output = String::new();

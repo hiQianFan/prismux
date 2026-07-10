@@ -11,13 +11,16 @@ scripts/bundle-menubar.sh
 ## 场景
 
 - 首次打开：菜单栏显示稳定 fallback；popover 展示 loading 后进入 ready 或 empty，不阻塞退出。
+- 再次打开：已有 last-good 数据时直接展示 dashboard，右上角 Refresh 不因打开 popover 而进入 loading。
 - last-good stale：后台 refresh 失败时保留上一次账号列表；header/status 明确显示 stale/error 信息。
 - 无账号：accounts section 为空态可读；Refresh、Open CLI Help、Settings、Quit 仍可用。
 - 多个账号：active 标记唯一；非 active 账号显示 Switch；switch 中重复操作被禁用。
 - 长 alias：长 alias/account label 在窄宽度下截断或换行，不遮挡 Switch、quota/status 或 footer。
 - switch 成功：后端 success report 返回后才更新 active；菜单栏 title 同步到新 active alias/status。
-- switch 失败：保留原 active UI；错误状态可见；再次打开 popover 不丢失 last-good 数据。
+- operation 结果：success / skipped / fresh_enough 不显示顶部 banner；再次打开 popover 不丢失 last-good 数据。
 - quota missing：quota/status 显示 unavailable 或 stale，不影响账号列表和 switch。
+- diagnostics：Overview 不显示 Needs attention；Provider 页不显示 Diagnostics 或 No diagnostics。
+- target 诊断：账号/profile 额度条下方显示一条常驻诊断行（severity 图标 + 人话 message），不显示 snake_case code，不重复 usage，不带操作按钮；无诊断时该行不出现，折叠态卡片不变。
 - 窄高度滚动：popover 内容可滚动；header、账号列表、footer 不重叠；键盘 focus 可到达 Refresh、Switch、Settings 和 Quit。
 - icon-only mode：菜单栏只显示 icon；popover 内信息不丢失。
 - background refresh：高频 timer 不绕过 backend cooldown；失败后进入 backoff，不产生连续 provider refresh。

@@ -51,6 +51,7 @@ public final class StatusItemController: NSObject, NSPopoverDelegate {
             }
             .store(in: &cancellables)
         scheduleBackgroundRefresh()
+        Task { await store.refresh(kind: "background") }
     }
 
     @objc private func togglePopover() {
@@ -61,7 +62,7 @@ public final class StatusItemController: NSObject, NSPopoverDelegate {
             NSApplication.shared.activate()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             installMouseMonitors()
-            Task { await store.refresh(kind: "interactive") }
+            Task { await store.loadForPopoverIfNeeded() }
         }
     }
 

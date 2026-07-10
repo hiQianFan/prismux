@@ -187,13 +187,20 @@ let twoExpiryHover = resetCreditHoverText(
 )
 assert(twoExpiryHover.contains("2 resets available"))
 assert(twoExpiryHover.components(separatedBy: "2026-").count - 1 == 2)
-assert(twoExpiryHover.contains("Used automatically"))
+assert(!twoExpiryHover.contains("Used automatically"))
 
 let threeExpiryHover = resetCreditHoverText(
     count: 3,
     expiryTimes: [1785120081, 1784334467, 1785200000]
 )
-assert(threeExpiryHover.components(separatedBy: "2026-").count - 1 == 2)
+assert(threeExpiryHover.components(separatedBy: "2026-").count - 1 == 3)
+
+let duplicateExpiryHover = resetCreditHoverText(
+    count: 3,
+    expiryTimes: [1785120081, 1784334467, 1784334467]
+)
+assert(duplicateExpiryHover.components(separatedBy: "2026-").count - 1 == 3)
+assert(!duplicateExpiryHover.contains("x2"))
 
 let countOnlyHover = resetCreditHoverText(count: 2, expiryTimes: [])
 assert(countOnlyHover.contains("Expiry unavailable"))

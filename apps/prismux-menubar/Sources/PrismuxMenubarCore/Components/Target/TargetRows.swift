@@ -85,19 +85,15 @@ struct AccountTargetRow: View {
                 )
             }
 
-            if let diagnostic = account.diagnostic {
-                Label("\(diagnostic.code): \(diagnostic.message)", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-
             if account.quota != nil {
                 VStack(alignment: .leading, spacing: 4) {
                     QuotaLine(window: primary, fallbackLabel: "5h")
                     QuotaLine(window: secondary, fallbackLabel: "7d")
                 }
+            }
+
+            if let diagnostic = account.diagnostic {
+                TargetDiagnosticLine(diagnostic: diagnostic)
             }
         }
         .padding(.vertical, 8)
@@ -216,11 +212,7 @@ struct ProfileTargetRow: View {
             }
 
             if let diagnostic = profile.diagnostic {
-                Label("\(diagnostic.code): \(diagnostic.message)", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                TargetDiagnosticLine(diagnostic: diagnostic)
             }
         }
         .padding(.vertical, 8)
@@ -296,6 +288,40 @@ private struct TargetIdentity<Trailing: View, SubtitleAccessory: View>: View {
     }
 }
 
+/// A single, always-visible diagnostic line on an account/profile card: a
+/// severity glyph (shape + color) plus the human-readable message. The raw
+/// snake_case code is never shown; the recovery action, if any, rides in the
+/// tooltip. No expand/collapse and no action buttons — actions live in the
+/// row's overflow menu and the Accounts card, so this line only communicates
+/// the situation (stale data, expired token, refresh failure).
+private struct TargetDiagnosticLine: View {
+    let diagnostic: Diagnostic
+
+    var body: some View {
+        let style = diagnosticStyle(diagnostic)
+        Label {
+            Text(diagnostic.message)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: style.systemImage)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(style.color)
+        }
+        .help(helpText)
+        .accessibilityLabel("Issue: \(diagnostic.message)")
+    }
+
+    private var helpText: String {
+        guard let recovery = diagnostic.recoveryAction, !recovery.isEmpty else {
+            return diagnostic.message
+        }
+        return "\(diagnostic.message)\n\(recovery)"
+    }
+}
+
 // MARK: - Actions (single Use button + overflow Delete)
 
 /// Reset-credit count. The badge opens a small details popover because native
@@ -350,16 +376,12 @@ private struct ResetCreditDetailsPopover: View {
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
 
-                    ForEach(Array(expiryTimes.prefix(2).enumerated()), id: \.offset) { index, timestamp in
+                    ForEach(Array(expiryTimes.enumerated()), id: \.offset) { index, timestamp in
                         Text("\(index + 1). \(fullDateTimeLabel(timestamp))")
                             .font(.caption2.monospacedDigit())
                     }
                 }
             }
-
-            Text("Used automatically")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
         .padding(10)
         .frame(minWidth: 170, alignment: .leading)
@@ -601,10 +623,26 @@ private func fullDateTimeLabel(_ timestamp: Int64) -> String {
     return formatter.string(from: date)
 }
 
+private func diagnosticStyle(_ diagnostic: Diagnostic) -> (color: Color, systemImage: String) {
+    if isAuthDiagnostic(diagnostic) {
+        return (PrismuxTokens.StatusColor.failed, "exclamationmark.octagon.fill")
+    }
+    return (PrismuxTokens.StatusColor.warning, "exclamationmark.triangle.fill")
+}
+
+private func isAuthDiagnostic(_ diagnostic: Diagnostic) -> Bool {
+    switch diagnostic.code {
+    case "managed_runtime_auth", "auth", "http_401", "http_403":
+        return true
+    default:
+        return false
+    }
+}
+
 public func resetCreditHoverText(count: UInt32, expiryTimes: [Int64]) -> String {
     guard count > 0 else { return "" }
     var lines = ["\(count) \(count == 1 ? "reset" : "resets") available"]
-    let expiries = expiryTimes.sorted().prefix(2)
+    let expiries = expiryTimes.sorted()
     if expiries.isEmpty {
         lines.append("Expiry unavailable")
     } else {
@@ -613,6 +651,5 @@ public func resetCreditHoverText(count: UInt32, expiryTimes: [Int64]) -> String 
             lines.append("\(index + 1). \(fullDateTimeLabel(timestamp))")
         }
     }
-    lines.append("Used automatically")
     return lines.joined(separator: "\n")
 }

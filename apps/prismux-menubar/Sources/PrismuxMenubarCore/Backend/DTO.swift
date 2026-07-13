@@ -338,6 +338,53 @@ public struct QuotaWindow: Decodable, Sendable {
     }
 }
 
+public struct CodexQuotaWindowSelection: Sendable {
+    public let short: QuotaWindow?
+    public let weekly: QuotaWindow?
+}
+
+/// Selects only the quota windows supported by the account card. A structured
+/// duration is authoritative; semantic text is used only for legacy snapshots
+/// where `window_seconds` is absent.
+public func selectCodexQuotaWindows(_ windows: [QuotaWindow]) -> CodexQuotaWindowSelection {
+    let shortIndex = codexQuotaWindowIndex(
+        in: windows,
+        seconds: 18_000,
+        semanticMarkers: ["5h", "session", "short"]
+    )
+    let weeklyIndex = codexQuotaWindowIndex(
+        in: windows,
+        seconds: 604_800,
+        semanticMarkers: ["7d", "week", "weekly"],
+        excluding: shortIndex
+    )
+
+    return CodexQuotaWindowSelection(
+        short: shortIndex.map { windows[$0] },
+        weekly: weeklyIndex.map { windows[$0] }
+    )
+}
+
+private func codexQuotaWindowIndex(
+    in windows: [QuotaWindow],
+    seconds: UInt64,
+    semanticMarkers: Set<String>,
+    excluding excludedIndex: Int? = nil
+) -> Int? {
+    if let structuredIndex = windows.indices.first(where: { index in
+        index != excludedIndex && windows[index].windowSeconds == seconds
+    }) {
+        return structuredIndex
+    }
+
+    return windows.indices.first { index in
+        guard index != excludedIndex, windows[index].windowSeconds == nil else { return false }
+        let text = "\(windows[index].id) \(windows[index].label)".lowercased()
+        let tokens = Set(text.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty })
+        return !tokens.isDisjoint(with: semanticMarkers)
+    }
+}
+
 public struct Diagnostic: Decodable, Sendable {
     public let code: String
     public let message: String

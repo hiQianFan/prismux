@@ -97,20 +97,15 @@ struct QuotaBar: View {
 /// account cards; the Overview's provider cards call `QuotaBar` directly with
 /// the per-window-class average.
 struct QuotaLine: View {
-    let window: QuotaWindow?
-    let fallbackLabel: String
+    let window: QuotaWindow
+    let label: String
 
     var body: some View {
         QuotaBar(
             label: label,
-            remainingPercentX100: window?.remainingPercentX100,
-            trailing: window?.resetAtUnix.map(quotaResetLabel)
+            remainingPercentX100: window.remainingPercentX100,
+            trailing: window.resetAtUnix.map(quotaResetLabel)
         )
-    }
-
-    private var label: String {
-        let raw = window?.label ?? fallbackLabel
-        return raw.lowercased().contains("week") ? "7d" : raw
     }
 }
 

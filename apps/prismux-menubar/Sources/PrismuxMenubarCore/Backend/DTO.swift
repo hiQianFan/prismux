@@ -338,9 +338,13 @@ public struct QuotaWindow: Decodable, Sendable {
     }
 }
 
+public struct CodexQuotaWindowSlot: Sendable {
+    public let label: String
+    public let window: QuotaWindow
+}
+
 public struct CodexQuotaWindowSelection: Sendable {
-    public let short: QuotaWindow?
-    public let weekly: QuotaWindow?
+    public let slots: [CodexQuotaWindowSlot]
 }
 
 /// Selects only the quota windows supported by the account card. A structured
@@ -356,29 +360,43 @@ public func selectCodexQuotaWindows(_ windows: [QuotaWindow]) -> CodexQuotaWindo
         in: windows,
         seconds: 604_800,
         semanticMarkers: ["7d", "week", "weekly"],
-        excluding: shortIndex
+        excluding: Set([shortIndex].compactMap { $0 })
+    )
+    let monthlyIndex = codexQuotaWindowIndex(
+        in: windows,
+        seconds: 2_592_000,
+        semanticMarkers: ["30d", "month", "monthly"],
+        excluding: Set([shortIndex, weeklyIndex].compactMap { $0 })
     )
 
-    return CodexQuotaWindowSelection(
-        short: shortIndex.map { windows[$0] },
-        weekly: weeklyIndex.map { windows[$0] }
-    )
+    let selected: [(String, Int?)]
+    if shortIndex != nil {
+        selected = [("5h", shortIndex), ("7d", weeklyIndex)]
+    } else if weeklyIndex != nil {
+        selected = [("7d", weeklyIndex), ("30d", monthlyIndex)]
+    } else {
+        selected = [("30d", monthlyIndex)]
+    }
+
+    return CodexQuotaWindowSelection(slots: selected.compactMap { label, index in
+        index.map { CodexQuotaWindowSlot(label: label, window: windows[$0]) }
+    })
 }
 
 private func codexQuotaWindowIndex(
     in windows: [QuotaWindow],
     seconds: UInt64,
     semanticMarkers: Set<String>,
-    excluding excludedIndex: Int? = nil
+    excluding excludedIndices: Set<Int> = []
 ) -> Int? {
     if let structuredIndex = windows.indices.first(where: { index in
-        index != excludedIndex && windows[index].windowSeconds == seconds
+        !excludedIndices.contains(index) && windows[index].windowSeconds == seconds
     }) {
         return structuredIndex
     }
 
     return windows.indices.first { index in
-        guard index != excludedIndex, windows[index].windowSeconds == nil else { return false }
+        guard !excludedIndices.contains(index), windows[index].windowSeconds == nil else { return false }
         let text = "\(windows[index].id) \(windows[index].label)".lowercased()
         let tokens = Set(text.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty })
         return !tokens.isDisjoint(with: semanticMarkers)

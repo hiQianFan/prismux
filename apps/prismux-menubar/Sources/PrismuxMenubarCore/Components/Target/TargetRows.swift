@@ -11,8 +11,7 @@ struct AccountTargetRow: View {
     let refreshing: Bool
     let confirmingDelete: Bool
     let confirmingReset: Bool
-    let primary: QuotaWindow?
-    let secondary: QuotaWindow?
+    let quotaSlots: [CodexQuotaWindowSlot]
     let accent: Color
     let switchAction: () -> Void
     let requestResetConfirmation: () -> Void
@@ -85,13 +84,10 @@ struct AccountTargetRow: View {
                 )
             }
 
-            if primary != nil || secondary != nil {
+            if !quotaSlots.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    if let primary {
-                        QuotaLine(window: primary, label: "5h")
-                    }
-                    if let secondary {
-                        QuotaLine(window: secondary, label: "7d")
+                    ForEach(quotaSlots, id: \.label) { slot in
+                        QuotaLine(window: slot.window, label: slot.label)
                     }
                 }
             }

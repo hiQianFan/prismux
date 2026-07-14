@@ -216,30 +216,30 @@ let standardQuotaWindows = try quotaWindows("""
 ]
 """)
 let standardSelection = selectCodexQuotaWindows(standardQuotaWindows)
-assert(standardSelection.short?.id == "primary")
-assert(standardSelection.weekly?.id == "secondary")
+assert(standardSelection.slots.map(\.label) == ["5h", "7d"])
+assert(standardSelection.slots.map(\.window.id) == ["primary", "secondary"])
 
 let weeklyOnlySelection = selectCodexQuotaWindows(try quotaWindows("""
 [{"id":"primary","label":"weekly","window_seconds":604800}]
 """))
-assert(weeklyOnlySelection.short == nil)
-assert(weeklyOnlySelection.weekly?.id == "primary")
+assert(weeklyOnlySelection.slots.map(\.label) == ["7d"])
+assert(weeklyOnlySelection.slots.map(\.window.id) == ["primary"])
 
 let shortOnlySelection = selectCodexQuotaWindows(try quotaWindows("""
 [{"id":"primary","label":"session","window_seconds":18000}]
 """))
-assert(shortOnlySelection.short?.id == "primary")
-assert(shortOnlySelection.weekly == nil)
+assert(shortOnlySelection.slots.map(\.label) == ["5h"])
+assert(shortOnlySelection.slots.map(\.window.id) == ["primary"])
 
-let unsupportedSelection = selectCodexQuotaWindows(try quotaWindows("""
+let monthlyAndUnsupportedSelection = selectCodexQuotaWindows(try quotaWindows("""
 [
   {"id":"monthly","label":"30d","window_seconds":2592000},
   {"id":"daily","label":"1d","window_seconds":86400},
   {"id":"unknown","label":"rolling"}
 ]
 """))
-assert(unsupportedSelection.short == nil)
-assert(unsupportedSelection.weekly == nil)
+assert(monthlyAndUnsupportedSelection.slots.map(\.label) == ["30d"])
+assert(monthlyAndUnsupportedSelection.slots.map(\.window.id) == ["monthly"])
 
 let mixedSelection = selectCodexQuotaWindows(try quotaWindows("""
 [
@@ -248,8 +248,26 @@ let mixedSelection = selectCodexQuotaWindows(try quotaWindows("""
   {"id":"weekly","label":"7d","window_seconds":604800}
 ]
 """))
-assert(mixedSelection.short?.id == "short")
-assert(mixedSelection.weekly?.id == "weekly")
+assert(mixedSelection.slots.map(\.label) == ["5h", "7d"])
+assert(mixedSelection.slots.map(\.window.id) == ["short", "weekly"])
+
+let shiftedSelection = selectCodexQuotaWindows(try quotaWindows("""
+[
+  {"id":"weekly","label":"7d","window_seconds":604800},
+  {"id":"monthly","label":"30d","window_seconds":2592000}
+]
+"""))
+assert(shiftedSelection.slots.map(\.label) == ["7d", "30d"])
+assert(shiftedSelection.slots.map(\.window.id) == ["weekly", "monthly"])
+
+let gappedSelection = selectCodexQuotaWindows(try quotaWindows("""
+[
+  {"id":"short","label":"5h","window_seconds":18000},
+  {"id":"monthly","label":"30d","window_seconds":2592000}
+]
+"""))
+assert(gappedSelection.slots.map(\.label) == ["5h"])
+assert(gappedSelection.slots.map(\.window.id) == ["short"])
 
 let structuredDurationWins = selectCodexQuotaWindows(try quotaWindows("""
 [
@@ -257,8 +275,8 @@ let structuredDurationWins = selectCodexQuotaWindows(try quotaWindows("""
   {"id":"misleading-short","label":"5h session","window_seconds":604800}
 ]
 """))
-assert(structuredDurationWins.short?.id == "misleading-week")
-assert(structuredDurationWins.weekly?.id == "misleading-short")
+assert(structuredDurationWins.slots.map(\.label) == ["5h", "7d"])
+assert(structuredDurationWins.slots.map(\.window.id) == ["misleading-week", "misleading-short"])
 
 let legacyTextSelection = selectCodexQuotaWindows(try quotaWindows("""
 [
@@ -266,14 +284,32 @@ let legacyTextSelection = selectCodexQuotaWindows(try quotaWindows("""
   {"id":"legacy-week","label":"weekly"}
 ]
 """))
-assert(legacyTextSelection.short?.id == "legacy-session")
-assert(legacyTextSelection.weekly?.id == "legacy-week")
+assert(legacyTextSelection.slots.map(\.label) == ["5h", "7d"])
+assert(legacyTextSelection.slots.map(\.window.id) == ["legacy-session", "legacy-week"])
+
+let shiftedLegacyTextSelection = selectCodexQuotaWindows(try quotaWindows("""
+[
+  {"id":"legacy-week","label":"weekly"},
+  {"id":"legacy-month","label":"monthly"}
+]
+"""))
+assert(shiftedLegacyTextSelection.slots.map(\.label) == ["7d", "30d"])
+assert(shiftedLegacyTextSelection.slots.map(\.window.id) == ["legacy-week", "legacy-month"])
+
+let structuredMonthlyWins = selectCodexQuotaWindows(try quotaWindows("""
+[
+  {"id":"legacy-month","label":"30d"},
+  {"id":"structured-month","label":"unknown","window_seconds":2592000}
+]
+"""))
+assert(structuredMonthlyWins.slots.map(\.label) == ["30d"])
+assert(structuredMonthlyWins.slots.map(\.window.id) == ["structured-month"])
 
 let ambiguousLegacyWindow = selectCodexQuotaWindows(try quotaWindows("""
 [{"id":"short-week","label":"5h weekly"}]
 """))
-assert(ambiguousLegacyWindow.short?.id == "short-week")
-assert(ambiguousLegacyWindow.weekly == nil)
+assert(ambiguousLegacyWindow.slots.map(\.label) == ["5h"])
+assert(ambiguousLegacyWindow.slots.map(\.window.id) == ["short-week"])
 
 let substringSelection = selectCodexQuotaWindows(try quotaWindows("""
 [
@@ -282,8 +318,7 @@ let substringSelection = selectCodexQuotaWindows(try quotaWindows("""
   {"id":"shortage","label":"unknown"}
 ]
 """))
-assert(substringSelection.short == nil)
-assert(substringSelection.weekly == nil)
+assert(substringSelection.slots.isEmpty)
 
 let structuredSelectionWinsGlobally = selectCodexQuotaWindows(try quotaWindows("""
 [
@@ -293,8 +328,8 @@ let structuredSelectionWinsGlobally = selectCodexQuotaWindows(try quotaWindows("
   {"id":"structured-week","label":"secondary","window_seconds":604800}
 ]
 """))
-assert(structuredSelectionWinsGlobally.short?.id == "structured-short")
-assert(structuredSelectionWinsGlobally.weekly?.id == "structured-week")
+assert(structuredSelectionWinsGlobally.slots.map(\.label) == ["5h", "7d"])
+assert(structuredSelectionWinsGlobally.slots.map(\.window.id) == ["structured-short", "structured-week"])
 
 func decode(_ name: String) throws -> BackendEnvelope {
     let data = try Data(contentsOf: fixtureRoot.appendingPathComponent(name))

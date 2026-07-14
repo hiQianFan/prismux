@@ -85,10 +85,14 @@ struct AccountTargetRow: View {
                 )
             }
 
-            if account.quota != nil {
+            if primary != nil || secondary != nil {
                 VStack(alignment: .leading, spacing: 4) {
-                    QuotaLine(window: primary, fallbackLabel: "5h")
-                    QuotaLine(window: secondary, fallbackLabel: "7d")
+                    if let primary {
+                        QuotaLine(window: primary, label: "5h")
+                    }
+                    if let secondary {
+                        QuotaLine(window: secondary, label: "7d")
+                    }
                 }
             }
 

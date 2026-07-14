@@ -205,6 +205,97 @@ assert(!duplicateExpiryHover.contains("x2"))
 let countOnlyHover = resetCreditHoverText(count: 2, expiryTimes: [])
 assert(countOnlyHover.contains("Expiry unavailable"))
 
+func quotaWindows(_ json: String) throws -> [QuotaWindow] {
+    try decoder.decode([QuotaWindow].self, from: Data(json.utf8))
+}
+
+let standardQuotaWindows = try quotaWindows("""
+[
+  {"id":"primary","label":"5h","window_seconds":18000},
+  {"id":"secondary","label":"weekly","window_seconds":604800}
+]
+""")
+let standardSelection = selectCodexQuotaWindows(standardQuotaWindows)
+assert(standardSelection.short?.id == "primary")
+assert(standardSelection.weekly?.id == "secondary")
+
+let weeklyOnlySelection = selectCodexQuotaWindows(try quotaWindows("""
+[{"id":"primary","label":"weekly","window_seconds":604800}]
+"""))
+assert(weeklyOnlySelection.short == nil)
+assert(weeklyOnlySelection.weekly?.id == "primary")
+
+let shortOnlySelection = selectCodexQuotaWindows(try quotaWindows("""
+[{"id":"primary","label":"session","window_seconds":18000}]
+"""))
+assert(shortOnlySelection.short?.id == "primary")
+assert(shortOnlySelection.weekly == nil)
+
+let unsupportedSelection = selectCodexQuotaWindows(try quotaWindows("""
+[
+  {"id":"monthly","label":"30d","window_seconds":2592000},
+  {"id":"daily","label":"1d","window_seconds":86400},
+  {"id":"unknown","label":"rolling"}
+]
+"""))
+assert(unsupportedSelection.short == nil)
+assert(unsupportedSelection.weekly == nil)
+
+let mixedSelection = selectCodexQuotaWindows(try quotaWindows("""
+[
+  {"id":"monthly","label":"30d","window_seconds":2592000},
+  {"id":"short","label":"session","window_seconds":18000},
+  {"id":"weekly","label":"7d","window_seconds":604800}
+]
+"""))
+assert(mixedSelection.short?.id == "short")
+assert(mixedSelection.weekly?.id == "weekly")
+
+let structuredDurationWins = selectCodexQuotaWindows(try quotaWindows("""
+[
+  {"id":"misleading-week","label":"weekly","window_seconds":18000},
+  {"id":"misleading-short","label":"5h session","window_seconds":604800}
+]
+"""))
+assert(structuredDurationWins.short?.id == "misleading-week")
+assert(structuredDurationWins.weekly?.id == "misleading-short")
+
+let legacyTextSelection = selectCodexQuotaWindows(try quotaWindows("""
+[
+  {"id":"legacy-session","label":"short"},
+  {"id":"legacy-week","label":"weekly"}
+]
+"""))
+assert(legacyTextSelection.short?.id == "legacy-session")
+assert(legacyTextSelection.weekly?.id == "legacy-week")
+
+let ambiguousLegacyWindow = selectCodexQuotaWindows(try quotaWindows("""
+[{"id":"short-week","label":"5h weekly"}]
+"""))
+assert(ambiguousLegacyWindow.short?.id == "short-week")
+assert(ambiguousLegacyWindow.weekly == nil)
+
+let substringSelection = selectCodexQuotaWindows(try quotaWindows("""
+[
+  {"id":"fifteen-hours","label":"15h"},
+  {"id":"weekend-promo","label":"rolling"},
+  {"id":"shortage","label":"unknown"}
+]
+"""))
+assert(substringSelection.short == nil)
+assert(substringSelection.weekly == nil)
+
+let structuredSelectionWinsGlobally = selectCodexQuotaWindows(try quotaWindows("""
+[
+  {"id":"legacy-short","label":"5h"},
+  {"id":"structured-short","label":"primary","window_seconds":18000},
+  {"id":"legacy-week","label":"weekly"},
+  {"id":"structured-week","label":"secondary","window_seconds":604800}
+]
+"""))
+assert(structuredSelectionWinsGlobally.short?.id == "structured-short")
+assert(structuredSelectionWinsGlobally.weekly?.id == "structured-week")
+
 func decode(_ name: String) throws -> BackendEnvelope {
     let data = try Data(contentsOf: fixtureRoot.appendingPathComponent(name))
     return try decoder.decode(BackendEnvelope.self, from: data)

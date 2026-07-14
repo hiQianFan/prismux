@@ -623,18 +623,12 @@ struct DashboardView: View {
     }
 
     private func quotaWindow(_ account: TargetAccount, preferred: WindowPreference) -> QuotaWindow? {
-        let windows = account.quota?.windows ?? []
+        let selection = selectCodexQuotaWindows(account.quota?.windows ?? [])
         switch preferred {
         case .short:
-            return windows.first { window in
-                let text = "\(window.id) \(window.label)".lowercased()
-                return text.contains("5h") || text.contains("session") || text.contains("short")
-            } ?? account.quota?.primaryWindow
+            return selection.short
         case .weekly:
-            return windows.first { window in
-                let text = "\(window.id) \(window.label)".lowercased()
-                return text.contains("7d") || text.contains("week")
-            } ?? windows.first { $0.id != account.quota?.primaryWindow?.id }
+            return selection.weekly
         }
     }
 

@@ -7,10 +7,29 @@ may include breaking changes to the CLI or internal plugin API.
 
 ## Unreleased
 
+## v0.2.3 - 2026-07-14
+
 ### Added
 
 - GitHub launch readiness plan, including repository cleanup, bilingual user
   documentation, release automation, and macOS v0.1 distribution policy.
+- Added OpenSpec proposals for portable target backups and the Menubar feedback
+  experience.
+
+### Changed
+
+- Menubar no longer shows persistent operation-result banners, standalone
+  diagnostics cards, or foreground refresh loading just because the popover was
+  opened.
+- Menubar account/profile diagnostics now appear as compact target-scoped lines
+  on the owning card.
+
+### Fixed
+
+- Codex usage refresh now renews expired OAuth access tokens inside the managed
+  runtime scope and retries once after auth rejection.
+- Menubar filters Codex quota windows before display so reset-credit details do
+  not leak into the main usage bars.
 
 ## v0.2.2 - 2026-07-03
 

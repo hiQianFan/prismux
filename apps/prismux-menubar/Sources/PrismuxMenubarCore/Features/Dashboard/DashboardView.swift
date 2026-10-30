@@ -235,8 +235,7 @@ struct DashboardView: View {
                     refreshing: store.refreshingProvider != nil || store.refreshingTargetId == account.id,
                     confirmingDelete: store.confirmingDeleteTargetId == account.id,
                     confirmingReset: store.confirmingResetTargetId == account.id,
-                    primary: quotaWindow(account, preferred: .short),
-                    secondary: quotaWindow(account, preferred: .weekly),
+                    quotaSlots: selectCodexQuotaWindows(account.quota?.windows ?? []).slots,
                     accent: providerColor(account.provider),
                     switchAction: { Task { await store.switchAccount(account) } },
                     requestResetConfirmation: { store.confirmReset(account.id) },
@@ -615,21 +614,6 @@ struct DashboardView: View {
         let accountText = accounts.isEmpty ? "No accounts" : "\(accounts.count) account\(accounts.count == 1 ? "" : "s")"
         let profileText = profiles.isEmpty ? "No profiles" : "\(profiles.count) profile\(profiles.count == 1 ? "" : "s")"
         return "\(accountText) · \(profileText)"
-    }
-
-    private enum WindowPreference {
-        case short
-        case weekly
-    }
-
-    private func quotaWindow(_ account: TargetAccount, preferred: WindowPreference) -> QuotaWindow? {
-        let selection = selectCodexQuotaWindows(account.quota?.windows ?? [])
-        switch preferred {
-        case .short:
-            return selection.short
-        case .weekly:
-            return selection.weekly
-        }
     }
 
     private func timeLabel(_ timestamp: UInt64) -> String {

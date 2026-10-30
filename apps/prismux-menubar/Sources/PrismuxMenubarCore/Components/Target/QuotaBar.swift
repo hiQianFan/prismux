@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Shared column widths so every quota line (5h / 7d) aligns vertically across
+/// Shared column widths so every supported quota line aligns vertically across
 /// account cards and the Overview's provider cards. One set of constants instead
 /// of ad-hoc per-row widths.
 enum QuotaLayout {
